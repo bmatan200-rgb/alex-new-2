@@ -294,17 +294,14 @@ async function runAutomatedRemindersCheck() {
     const { dateIso, tomorrowIso, hour, minute, timeStr } = getIsraelTime();
     const currentTotalMinutes = hour * 60 + minute;
 
-    // 1. Same-Day Morning Reminder (Trigger strictly within 45 minutes of scheduled morning time, e.g. 08:00 - 08:45)
+    // 1. Same-Day Morning Reminder (Trigger from scheduled morning time onwards, e.g. from 08:00 till end of day)
     if (activeServerSettings?.notifyCustomerToday !== false) {
       const morningTime = activeServerSettings?.morningReminderTime || '08:00';
       const [targetMornHour, targetMornMin] = morningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
       const targetMornTotalMinutes = targetMornHour * 60 + targetMornMin;
 
-      // Only dispatch during the morning scheduled window (prevents retroactive sends on afternoon bookings)
-      if (
-        currentTotalMinutes >= targetMornTotalMinutes &&
-        currentTotalMinutes <= targetMornTotalMinutes + 45
-      ) {
+      // Has the scheduled morning time arrived today?
+      if (currentTotalMinutes >= targetMornTotalMinutes) {
         const todayAppointments = serverAppointments.filter(
           (a) =>
             a.appointment_date === dateIso &&
@@ -314,80 +311,43 @@ async function runAutomatedRemindersCheck() {
             !a.customer_name.includes('חסימה')
         );
 
-        // Group appointments by customer phone to prevent duplicate/spam messages when customer has multiple appointments
-        const customerGroups: Record<string, typeof todayAppointments> = {};
         for (const appt of todayAppointments) {
-          const phoneKey = cleanPhoneForWhatsApp(appt.customer_phone || '');
-          if (!phoneKey) continue;
-          if (!customerGroups[phoneKey]) customerGroups[phoneKey] = [];
-          customerGroups[phoneKey].push(appt);
-        }
+          const key = `morning_${appt.id}_${dateIso}`;
+          const legacyKey = `${appt.id}_morning`;
+          if (!sentHistory[key] && !sentHistory[legacyKey]) {
+            // Mark immediately to prevent concurrent duplicates
+            recordSentReminder(key);
+            recordSentReminder(legacyKey);
 
-        for (const [phoneKey, appts] of Object.entries(customerGroups)) {
-          // Check if any appointment in this group hasn't been sent yet
-          const unsentAppts = appts.filter((a) => {
-            const key = `morning_${a.id}_${dateIso}`;
-            const legacyKey = `${a.id}_morning`;
-            return !sentHistory[key] && !sentHistory[legacyKey];
-          });
-
-          if (unsentAppts.length === 0) continue;
-
-          // Mark all appointments in group as sent immediately
-          for (const a of appts) {
-            recordSentReminder(`morning_${a.id}_${dateIso}`);
-            recordSentReminder(`${a.id}_morning`);
-          }
-
-          const firstAppt = unsentAppts[0];
-          let morningMessage = '';
-
-          if (appts.length === 1) {
-            // Single appointment: format with standard template
             const defaultMorningText = `היי {customer_name} 🌸
 תזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨
 לבירור או שינוי: {phone}
 נתראה! 💖`;
+
             const rawTemplate = activeServerSettings?.customerTodayTemplate || defaultMorningText;
-            morningMessage = formatMessageTemplate(rawTemplate, firstAppt);
-          } else {
-            // Multiple appointments on the same day: list each with its specific start time
-            const [y, m, d] = dateIso.split('-');
-            const israeliDate = `${d}/${m}/${y}`;
-            const appointmentsList = appts
-              .map((a) => `✨ בשעה ${a.start_time || 'הנקבעה'} - ${a.service_name || 'טיפול'}`)
-              .join('\n');
+            const morningMessage = formatMessageTemplate(rawTemplate, appt);
 
-            morningMessage = `היי ${firstAppt.customer_name} 🌸
-תזכורת לתורים שלך להיום (${israeliDate}):
-${appointmentsList}
-לבירור או שינוי: 054-6307114
-נתראה! 💖`;
-          }
-
-          console.log(`[Auto Morning Runner (${morningTime})] Dispatching reminder to ${firstAppt.customer_name} (${firstAppt.customer_phone}) with ${appts.length} appointments [Israel time: ${timeStr}]`);
-          const res = await sendWhatsAppViaProvider({
-            phone: firstAppt.customer_phone,
-            message: morningMessage,
-          });
-          if (!res.success) {
-            console.warn(`[Auto Morning Runner] Note: dispatch status:`, res.error);
+            console.log(`[Auto Morning Runner (${morningTime})] Dispatching reminder for ${appt.customer_name} (${appt.customer_phone}) [Israel time: ${timeStr}]`);
+            const res = await sendWhatsAppViaProvider({
+              phone: appt.customer_phone,
+              message: morningMessage,
+            });
+            if (!res.success) {
+              console.warn(`[Auto Morning Runner] Note: dispatch for ${appt.id} status:`, res.error);
+            }
           }
         }
       }
     }
 
-    // 2. 1-Day Before Evening Reminder (Trigger strictly within 45 minutes of scheduled evening time, e.g. 20:56 - 21:41)
+    // 2. 1-Day Before Evening Reminder (Trigger from scheduled evening time onwards, e.g. from 20:56 till end of day)
     if (activeServerSettings?.notifyCustomer1DayBefore !== false) {
       const eveningTime = activeServerSettings?.eveningReminderTime || '20:56';
       const [targetEveHour, targetEveMin] = eveningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
       const targetEveTotalMinutes = targetEveHour * 60 + targetEveMin;
 
-      // Only dispatch during the evening scheduled window
-      if (
-        currentTotalMinutes >= targetEveTotalMinutes &&
-        currentTotalMinutes <= targetEveTotalMinutes + 45
-      ) {
+      // Has the scheduled evening time arrived tonight?
+      if (currentTotalMinutes >= targetEveTotalMinutes) {
         const tomorrowAppointments = serverAppointments.filter(
           (a) =>
             a.appointment_date === tomorrowIso &&
@@ -397,62 +357,31 @@ ${appointmentsList}
             !a.customer_name.includes('חסימה')
         );
 
-        // Group appointments by customer phone
-        const customerGroups: Record<string, typeof tomorrowAppointments> = {};
         for (const appt of tomorrowAppointments) {
-          const phoneKey = cleanPhoneForWhatsApp(appt.customer_phone || '');
-          if (!phoneKey) continue;
-          if (!customerGroups[phoneKey]) customerGroups[phoneKey] = [];
-          customerGroups[phoneKey].push(appt);
-        }
+          const key = `evening_${appt.id}_${tomorrowIso}`;
+          const legacyKey = `${appt.id}_evening`;
+          if (!sentHistory[key] && !sentHistory[legacyKey]) {
+            // Mark immediately to prevent concurrent duplicates
+            recordSentReminder(key);
+            recordSentReminder(legacyKey);
 
-        for (const [phoneKey, appts] of Object.entries(customerGroups)) {
-          const unsentAppts = appts.filter((a) => {
-            const key = `evening_${a.id}_${tomorrowIso}`;
-            const legacyKey = `${a.id}_evening`;
-            return !sentHistory[key] && !sentHistory[legacyKey];
-          });
-
-          if (unsentAppts.length === 0) continue;
-
-          // Mark all appointments in group as sent immediately
-          for (const a of appts) {
-            recordSentReminder(`evening_${a.id}_${tomorrowIso}`);
-            recordSentReminder(`${a.id}_evening`);
-          }
-
-          const firstAppt = unsentAppts[0];
-          let eveningMessage = '';
-
-          if (appts.length === 1) {
             const defaultEveningText = `היי {customer_name} 🌸
 תזכורת לתור שלך למחר ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨
 לשינוי או בירור: {phone}
 מחכים לראותך! 💖`;
+
             const rawTemplate = activeServerSettings?.customer1DayTemplate || defaultEveningText;
-            eveningMessage = formatMessageTemplate(rawTemplate, firstAppt);
-          } else {
-            const [y, m, d] = tomorrowIso.split('-');
-            const israeliDate = `${d}/${m}/${y}`;
-            const appointmentsList = appts
-              .map((a) => `✨ בשעה ${a.start_time || 'הנקבעה'} - ${a.service_name || 'טיפול'}`)
-              .join('\n');
+            const eveningMessage = formatMessageTemplate(rawTemplate, appt);
 
-            eveningMessage = `היי ${firstAppt.customer_name} 🌸
-תזכורת לתורים שלך למחר (${israeliDate}):
-${appointmentsList}
-לשינוי או בירור: 054-6307114
-מחכים לראותך! 💖`;
-          }
-
-          console.log(`[Auto Evening Runner (${eveningTime})] Dispatching reminder to ${firstAppt.customer_name} (${firstAppt.customer_phone}) with ${appts.length} appointments [Israel time: ${timeStr}]`);
-          const res = await sendWhatsAppViaProvider({
-            phone: firstAppt.customer_phone,
-            message: eveningMessage,
-          });
-          
-          if (!res.success) {
-            console.warn(`[Auto Evening Runner] Note: dispatch status:`, res.error);
+            console.log(`[Auto Evening Runner (${eveningTime})] Dispatching reminder for ${appt.customer_name} (${appt.customer_phone}) [Israel time: ${timeStr}]`);
+            const res = await sendWhatsAppViaProvider({
+              phone: appt.customer_phone,
+              message: eveningMessage,
+            });
+            
+            if (!res.success) {
+              console.warn(`[Auto Evening Runner] Note: dispatch for ${appt.id} status:`, res.error);
+            }
           }
         }
       }
@@ -524,7 +453,8 @@ app.post('/api/whatsapp/sync-appointments', (req: Request, res: Response) => {
         });
       }
 
-      // Successfully synced in-memory appointments for background cron check
+      // Trigger instant check
+      runAutomatedRemindersCheck();
       return res.json({ success: true, count: serverAppointments.length });
     }
     return res.status(400).json({ success: false, error: 'Expected appointments array' });

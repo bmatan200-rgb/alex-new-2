@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "Appointment": {
+      "title": "Appointment",
+      "description": "A scheduled appointment for nail salon services",
+      "type": "object",
+      "properties": {
+        "customer_name": {
+          "type": "string",
+          "description": "Full name of the client"
+        },
+        "customer_phone": {
+          "type": "string",
+          "description": "Phone number of the client"
+        },
+        "customer_email": {
+          "type": "string",
+          "description": "Email address of the client (optional)"
+        },
+        "service_name": {
+          "type": "string",
+          "description": "Name of the booked service"
+        },
+        "price": {
+          "type": "number",
+          "description": "Service price in ILS"
+        },
+        "appointment_date": {
+          "type": "string",
+          "description": "Appointment date in YYYY-MM-DD format"
+        },
+        "start_time": {
+          "type": "string",
+          "description": "Start time in HH:mm format"
+        },
+        "end_time": {
+          "type": "string",
+          "description": "End time in HH:mm format"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["confirmed", "cancelled"],
+          "description": "Current status of appointment"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Customer notes or requests"
+        },
+        "created_at": {
+          "type": "string",
+          "description": "ISO timestamp when the appointment was created"
+        }
+      },
+      "required": ["customer_name", "customer_phone", "appointment_date", "start_time", "end_time", "status"]
+    }
+  },
+  "firestore": {
+    "/appointments/{appointmentId}": {
+      "entity": "Appointment",
+      "description": "Collection of all booked and cancelled appointments"
+    }
+  }
+}

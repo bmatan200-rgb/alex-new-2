@@ -1,0 +1,6 @@
+{
+  "name": "Alex טיפוח ויופי",
+  "description": "קביעת תורים אונליין ללק ג'ל - Alex טיפוח ויופי",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

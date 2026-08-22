@@ -720,88 +720,111 @@ export async function autoDispatchAllPendingReminders(appointments: Appointment[
   if (!settings.enabled || !settings.autoSendEnabled) return;
 
   const log = getSentRemindersLog();
-  const { hour, minute, totalMinutes } = getIsraelTimeParts();
+  const { dateIso, hour, minute, totalMinutes } = getIsraelTimeParts();
 
   // 1. Parse Morning Reminder Target Time (default 08:00)
   const morningTimeStr = settings.morningReminderTime || '08:00';
   const [mornH, mornM] = morningTimeStr.split(':').map((v) => parseInt(v, 10) || 0);
   const targetMornTotalMinutes = mornH * 60 + mornM;
-  const isMorningDue = totalMinutes >= targetMornTotalMinutes;
+  const isMorningDue = totalMinutes >= targetMornTotalMinutes && totalMinutes <= targetMornTotalMinutes + 45;
 
   // 2. Parse Evening Reminder Target Time (default 20:56)
   const eveningTimeStr = settings.eveningReminderTime || '20:56';
   const [eveH, eveM] = eveningTimeStr.split(':').map((v) => parseInt(v, 10) || 0);
   const targetEveTotalMinutes = eveH * 60 + eveM;
-  const isEveningDue = totalMinutes >= targetEveTotalMinutes;
+  const isEveningDue = totalMinutes >= targetEveTotalMinutes && totalMinutes <= targetEveTotalMinutes + 45;
 
-  for (const appt of appointments) {
-    if (appt.status !== 'confirmed') continue;
-    if (
-      appt.customer_name.includes('🔒') ||
-      appt.customer_name.includes('חופש') ||
-      appt.customer_name.includes('חסימה') ||
-      appt.price === 0
-    ) {
-      continue;
+  // Group confirmed client appointments by phone
+  const clientAppts = appointments.filter(
+    (a) =>
+      a.status === 'confirmed' &&
+      !a.customer_name.includes('🔒') &&
+      !a.customer_name.includes('חופש') &&
+      !a.customer_name.includes('חסימה') &&
+      a.price !== 0
+  );
+
+  const phoneGroups: Record<string, Appointment[]> = {};
+  for (const a of clientAppts) {
+    const p = a.customer_phone.replace(/\D/g, '');
+    if (!p) continue;
+    if (!phoneGroups[p]) phoneGroups[p] = [];
+    phoneGroups[p].push(a);
+  }
+
+  for (const [phoneKey, appts] of Object.entries(phoneGroups)) {
+    // 1. Same-Day Morning Reminders for this customer
+    if (isMorningDue && settings.notifyCustomerToday) {
+      const todayAppts = appts.filter((a) => isAppointmentToday(a));
+      const unsentToday = todayAppts.filter((a) => !log[String(a.id)]?.customerTodaySentAt);
+
+      if (unsentToday.length > 0) {
+        for (const a of todayAppts) {
+          markReminderSent(a.id, 'customer', 'today');
+        }
+
+        let msg = '';
+        if (todayAppts.length === 1) {
+          msg = buildCustomerTodayReminderText(todayAppts[0]);
+        } else {
+          const [y, m, d] = dateIso.split('-');
+          const israeliDate = `${d}/${m}/${y}`;
+          const list = todayAppts
+            .map((a) => `✨ בשעה ${a.start_time} - ${a.service_name || "לק ג'ל"}`)
+            .join('\n');
+          msg = `היי ${todayAppts[0].customer_name} 🌸
+תזכורת לתורים שלך להיום (${israeliDate}):
+${list}
+לבירור או שינוי: ${SALON_INFO.phone}
+נתראה! 💖`;
+        }
+
+        await dispatchAutomatedWhatsAppApi({
+          phone: todayAppts[0].customer_phone,
+          message: msg,
+          settings,
+          recipientType: 'customer',
+          appointment: todayAppts[0],
+          reminderType: 'today',
+        });
+      }
     }
 
-    const apptKey = String(appt.id);
-    const entry = log[apptKey] || {};
+    // 2. 1-Day Before Evening Reminders for this customer
+    if (isEveningDue && settings.notifyCustomer1DayBefore) {
+      const tomorrowAppts = appts.filter((a) => isAppointmentIn1DayReminderWindow(a));
+      const unsentTomorrow = tomorrowAppts.filter((a) => !log[String(a.id)]?.customer1DaySentAt);
 
-    // 1. Same-Day Morning Reminder (from configured hour onwards, e.g. 08:00 AM)
-    if (
-      isMorningDue &&
-      isAppointmentToday(appt) &&
-      settings.notifyCustomerToday &&
-      !entry.customerTodaySentAt
-    ) {
-      markReminderSent(appt.id, 'customer', 'today');
-      const msg = buildCustomerTodayReminderText(appt);
-      await dispatchAutomatedWhatsAppApi({
-        phone: appt.customer_phone,
-        message: msg,
-        settings,
-        recipientType: 'customer',
-        appointment: appt,
-        reminderType: 'today',
-      });
-    }
+      if (unsentTomorrow.length > 0) {
+        for (const a of tomorrowAppts) {
+          markReminderSent(a.id, 'customer', '1day');
+        }
 
-    // 2. 1-Day Before Evening Reminder (from configured hour onwards, e.g. 20:56 PM)
-    if (
-      isEveningDue &&
-      isAppointmentIn1DayReminderWindow(appt) &&
-      settings.notifyCustomer1DayBefore &&
-      !entry.customer1DaySentAt
-    ) {
-      markReminderSent(appt.id, 'customer', '1day');
-      const msg = buildCustomer1DayReminderText(appt);
-      await dispatchAutomatedWhatsAppApi({
-        phone: appt.customer_phone,
-        message: msg,
-        settings,
-        recipientType: 'customer',
-        appointment: appt,
-        reminderType: '1day',
-      });
-    }
+        let msg = '';
+        if (tomorrowAppts.length === 1) {
+          msg = buildCustomer1DayReminderText(tomorrowAppts[0]);
+        } else {
+          const [y, m, d] = tomorrowAppts[0].appointment_date.split('-');
+          const israeliDate = `${d}/${m}/${y}`;
+          const list = tomorrowAppts
+            .map((a) => `✨ בשעה ${a.start_time} - ${a.service_name || "לק ג'ל"}`)
+            .join('\n');
+          msg = `היי ${tomorrowAppts[0].customer_name} 🌸
+תזכורת לתורים שלך למחר (${israeliDate}):
+${list}
+לשינוי או בירור: ${SALON_INFO.phone}
+מחכים לראותך! 💖`;
+        }
 
-    // 3. 2-Hours Before Reminder (in the alert window before appointment)
-    if (
-      settings.notifyCustomer2HoursBefore &&
-      isAppointmentIn2HourAlertWindow(appt) &&
-      !entry.customerSentAt
-    ) {
-      markReminderSent(appt.id, 'customer', '2hours');
-      const msg = buildCustomerReminderText(appt);
-      await dispatchAutomatedWhatsAppApi({
-        phone: appt.customer_phone,
-        message: msg,
-        settings,
-        recipientType: 'customer',
-        appointment: appt,
-        reminderType: '2hours',
-      });
+        await dispatchAutomatedWhatsAppApi({
+          phone: tomorrowAppts[0].customer_phone,
+          message: msg,
+          settings,
+          recipientType: 'customer',
+          appointment: tomorrowAppts[0],
+          reminderType: '1day',
+        });
+      }
     }
   }
 }

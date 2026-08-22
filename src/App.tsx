@@ -134,9 +134,6 @@ export default function App() {
             sentLog: getSentRemindersLog()
           }),
         }).catch(() => {});
-
-        // Also run client-side background check for instant redundancy
-        autoDispatchAllPendingReminders(appointments).catch(() => {});
       }
     };
 
@@ -329,10 +326,10 @@ export default function App() {
                 אשת צוות
               </span>
               
-              <div className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/90 shadow-sm flex items-center justify-between">
+              <div className="bg-white rounded-3xl px-4 sm:px-5 border border-slate-200/90 shadow-sm flex items-center justify-between h-[71px]">
                 <div className="flex items-center gap-3.5">
                   <div className="relative">
-                    <div className="w-14 h-14 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-600 p-0.5 shadow-md">
+                    <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-600 p-0.5 shadow-md">
                       <div className="w-full h-full rounded-full bg-slate-950 flex items-center justify-center text-white font-black text-lg">
                         A
                       </div>
@@ -343,7 +340,7 @@ export default function App() {
                   </div>
 
                   <div>
-                    <h2 className="text-base sm:text-lg font-black text-slate-900">
+                    <h2 className="text-base sm:text-lg font-black text-slate-900 leading-tight">
                       {SALON_INFO.ownerName}
                     </h2>
                     <p className="text-xs text-purple-700 font-bold">
@@ -363,7 +360,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsTorModalOpen(true)}
-                className="w-full py-5 px-6 rounded-3xl bg-white border-2 border-purple-500/80 hover:border-purple-600 hover:bg-purple-50/40 shadow-lg shadow-purple-500/10 hover:shadow-xl hover:shadow-purple-500/20 text-slate-950 font-black text-lg sm:text-xl transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99]"
+                className="w-full px-6 rounded-3xl bg-white border-2 border-purple-500/80 hover:border-purple-600 hover:bg-purple-50/40 shadow-lg shadow-purple-500/10 hover:shadow-xl hover:shadow-purple-500/20 text-slate-950 font-black text-lg sm:text-xl transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99] h-[150px]"
               >
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-2xl bg-purple-600 text-white flex items-center justify-center shadow-sm group-hover:scale-105 transition">

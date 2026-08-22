@@ -50,7 +50,7 @@ export const ServiceCard: React.FC<ServiceCardProps> = ({
                 {service.durationMinutes} דקות
               </span>
               <span className="bg-[#1a1a1a] text-[#888888] text-xs font-medium px-2.5 py-0.5 rounded-full border border-[#262626]">
-                כולל מבנה אנטומי
+                מניקור מקצועי
               </span>
             </div>
 

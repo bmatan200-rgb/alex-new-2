@@ -46,7 +46,7 @@ export const ServiceDurationModal: React.FC<ServiceDurationModalProps> = ({
     duration_minutes: 110,
     price: 150,
     category: 'nails',
-    description: 'מניקור יסודי משולב, חיזוק במבנה אנטומי ומריחת לק ג׳ל עמיד ואיכותי בגימור מושלם',
+    description: 'מניקור יסודי משולב ומריחת לק ג׳ל איכותי בגימור מושלם',
   };
 
   const [name, setName] = useState(currentService.name);
@@ -103,7 +103,7 @@ export const ServiceDurationModal: React.FC<ServiceDurationModalProps> = ({
     setDurationMinutes(110);
     setPrice(150);
     setName("לק ג'ל");
-    setDescription('מניקור יסודי משולב, חיזוק במבנה אנטומי ומריחת לק ג׳ל עמיד ואיכותי בגימור מושלם');
+    setDescription('מניקור יסודי משולב ומריחת לק ג׳ל איכותי בגימור מושלם');
   };
 
   return (

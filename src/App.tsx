@@ -316,7 +316,7 @@ export default function App() {
                 <span className="text-purple-600">Alex</span> <span>טיפוח ויופי</span>
               </h1>
               <p className="text-xs sm:text-sm text-slate-600 font-medium">
-                מניקור מכשירי מדויק וחיזוק הציפורן הטבעית במבנה אנטומי
+                מניקור מכשירי מדויק וחיזוק הציפורן הטבעית
               </p>
             </div>
 
@@ -344,7 +344,7 @@ export default function App() {
                       {SALON_INFO.ownerName}
                     </h2>
                     <p className="text-xs text-purple-700 font-bold">
-                      מומחית ללק ג'ל ומבנה אנטומי
+                      מומחית ללק ג'ל ומניקור מקצועי
                     </p>
                   </div>
                 </div>
@@ -371,7 +371,7 @@ export default function App() {
                       בחירת טיפול ותור
                     </span>
                     <span className="block text-xs text-slate-500 font-medium">
-                      לק ג'ל במבנה אנטומי • {mainService.price} ₪ ({formatDurationMinutes(mainService.duration_minutes || 110)})
+                      {mainService.name} • {mainService.price} ₪ ({formatDurationMinutes(mainService.duration_minutes || 110)})
                     </span>
                   </div>
                 </div>

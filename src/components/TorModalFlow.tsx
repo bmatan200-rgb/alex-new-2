@@ -50,11 +50,11 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
 }) => {
   const [step, setStep] = useState<Step>('treatment');
   const [selectedService, setSelectedService] = useState<Service>(services[0] || {
-    id: 'gel_polish_structured',
-    name: 'לק ג\'ל במבנה אנטומי',
-    description: 'מניקור מכשירי מדויק וחיזוק הציפורן הטבעית במבנה אנטומי מוקפד',
+    id: 'gel_polish',
+    name: "לק ג'ל",
+    description: 'מניקור מכשירי מדויק וטיפוח הציפורן הטבעית',
     duration_minutes: 110,
-    price: 130,
+    price: 150,
   });
 
   const [selectedDate, setSelectedDate] = useState<string>('');
@@ -281,7 +281,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                           {service.name}
                         </h3>
                         <p className="text-xs text-slate-500 line-clamp-1">
-                          {service.description || 'מניקור מכשירי ומבנה אנטומי יסודי'}
+                          {service.description || 'מניקור מכשירי יסודי ומקצועי'}
                         </p>
                       </div>
 

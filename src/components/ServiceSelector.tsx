@@ -19,7 +19,7 @@ export const ServiceSelector: React.FC<ServiceSelectorProps> = ({
     name: "לק ג'ל",
     duration_minutes: 110,
     price: 150,
-    description: 'מניקור משולב ומבנה אנטומי',
+    description: 'מניקור משולב ומקצועי',
   };
 
   return (
@@ -41,7 +41,7 @@ export const ServiceSelector: React.FC<ServiceSelectorProps> = ({
         {/* Floating Feature Tag */}
         <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-purple-50 via-white to-purple-50 border border-purple-200 text-purple-950 text-xs font-bold shadow-xs">
           <Sparkles className="w-3.5 h-3.5 text-purple-600 animate-spin-slow" />
-          <span>מבנה אנטומי יסודי ומקצועי</span>
+          <span>מניקור יסודי ומקצועי</span>
         </div>
       </div>
 
@@ -66,7 +66,7 @@ export const ServiceSelector: React.FC<ServiceSelectorProps> = ({
                     {currentService.name}
                   </h4>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-purple-100/70 text-purple-900 border border-purple-200">
-                    מבנה אנטומי
+                    מניקור יסודי
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 font-medium mt-0.5">

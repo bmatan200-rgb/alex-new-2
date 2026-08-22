@@ -109,7 +109,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
     customer_name: 'שרה לוי',
     customer_phone: '050-1234567',
     service_id: 1,
-    service_name: "לק ג'ל (מבנה אנטומי)",
+    service_name: "לק ג'ל",
     price: 150,
     appointment_date: new Date().toISOString().split('T')[0],
     start_time: '12:00',

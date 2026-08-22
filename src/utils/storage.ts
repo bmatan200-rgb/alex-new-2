@@ -18,7 +18,7 @@ export function isAdminPhone(phone: string): boolean {
 
 export const SALON_INFO: SalonInfo = {
   name: 'Alex טיפוח ויופי',
-  tagline: 'מניקור מקצועי, מבנה אנטומי ולק ג׳ל עמיד',
+  tagline: 'מניקור מקצועי ולק ג׳ל',
   ownerName: 'Alex',
   phone: '054-6307114',
   whatsappNumber: '972546307114',
@@ -38,7 +38,7 @@ export const SERVICES: Service[] = [
     duration_minutes: 110,
     price: 150,
     category: 'nails',
-    description: 'מניקור יסודי משולב, חיזוק במבנה אנטומי ומריחת לק ג׳ל עמיד ואיכותי בגימור מושלם',
+    description: 'מניקור יסודי משולב ומריחת לק ג׳ל איכותי בגימור מושלם',
   },
 ];
 

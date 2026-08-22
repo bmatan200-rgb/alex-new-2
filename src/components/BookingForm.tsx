@@ -91,7 +91,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
       duration_minutes: 110,
       price: 150,
       category: 'nails',
-      description: 'מניקור יסודי משולב, מבנה אנטומי ומריחת לק ג׳ל עמיד ואיכותי בגימור מושלם',
+      description: 'מניקור יסודי משולב ומריחת לק ג׳ל איכותי בגימור מושלם',
     };
   }, [services, selectedServiceId]);
 

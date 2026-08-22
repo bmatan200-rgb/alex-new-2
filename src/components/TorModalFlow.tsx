@@ -26,9 +26,8 @@ import {
   formatILS,
   getAllStandardSlots,
 } from '../utils/dateUtils';
-import { SALON_INFO, saveUserSession } from '../utils/storage';
+import { SALON_INFO, saveUserSession, isAdminPhone } from '../utils/storage';
 import { addAppointmentToFirestore } from '../lib/firebase';
-import { autoDispatchAppointmentBooking } from '../utils/whatsappReminder';
 
 interface TorModalFlowProps {
   isOpen: boolean;
@@ -62,9 +61,25 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
   const [selectedSlot, setSelectedSlot] = useState<string>('');
   const [customerName, setCustomerName] = useState<string>(currentUser?.name || '');
   const [customerPhone, setCustomerPhone] = useState<string>(currentUser?.phone || '');
+  const [isEditingDetails, setIsEditingDetails] = useState(false);
   const [notes, setNotes] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+
+  // Sync user info from session whenever currentUser or modal opens
+  React.useEffect(() => {
+    if (currentUser) {
+      if (currentUser.name) setCustomerName(currentUser.name);
+      if (currentUser.phone) setCustomerPhone(currentUser.phone);
+    }
+  }, [currentUser, isOpen]);
+
+  React.useEffect(() => {
+    if (!isOpen) {
+      setIsEditingDetails(false);
+      setErrorMessage('');
+    }
+  }, [isOpen]);
 
   // 21 days for the booking calendar
   const days: DayInfo[] = useMemo(() => buildNextDays(21), []);
@@ -175,15 +190,12 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
       saveUserSession({
         name: cleanName,
         phone: cleanPhone,
-        isAdmin: false,
+        isAdmin: isAdminPhone(cleanPhone),
         loggedInAt: new Date().toISOString(),
       });
 
       // Save to Firestore & local storage
       await addAppointmentToFirestore(newAppt);
-
-      // Auto-dispatch confirmation WhatsApp reminder
-      autoDispatchAppointmentBooking(newAppt);
 
       setIsSubmitting(false);
       onBookSuccess(newAppt);
@@ -503,46 +515,87 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                 </div>
               )}
 
-              {/* Name Input */}
-              <div className="space-y-1">
-                <label className="block text-xs font-bold text-slate-700">
-                  שם מלא <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-slate-400">
-                    <User className="w-4 h-4" />
+              {/* User details card or editable inputs */}
+              {currentUser?.name && currentUser?.phone && !isEditingDetails ? (
+                <div className="bg-purple-50/70 border border-purple-200/80 p-4 rounded-2xl flex items-center justify-between shadow-2xs">
+                  <div className="space-y-1 text-right">
+                    <span className="text-[10px] font-extrabold text-purple-900 block">התור ייקבע עבור:</span>
+                    <span className="text-base font-black text-slate-900 block">{customerName || currentUser.name}</span>
+                    <span className="text-xs text-slate-600 font-semibold block" dir="ltr">{customerPhone || currentUser.phone}</span>
                   </div>
-                  <input
-                    type="text"
-                    required
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                    placeholder="לדוגמה: מאי כהן"
-                    className="w-full pr-9 pl-3 py-2.5 rounded-xl border border-slate-300 focus:border-purple-600 focus:ring-2 focus:ring-purple-100 text-sm font-medium outline-hidden"
-                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingDetails(true)}
+                      className="text-xs text-purple-700 hover:text-purple-900 font-bold bg-white px-3 py-1.5 rounded-xl border border-purple-200 shadow-2xs hover:bg-purple-50 transition cursor-pointer"
+                    >
+                      שינוי פרטים
+                    </button>
+                    <div className="w-8 h-8 rounded-full bg-purple-600 text-white flex items-center justify-center shadow-xs">
+                      <CheckCircle2 className="w-4 h-4" />
+                    </div>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-3">
+                  {currentUser?.name && currentUser?.phone && isEditingDetails && (
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomerName(currentUser.name);
+                          setCustomerPhone(currentUser.phone);
+                          setIsEditingDetails(false);
+                        }}
+                        className="text-xs text-purple-600 font-bold hover:underline cursor-pointer"
+                      >
+                        ← חזרה לפרטים המחוברים
+                      </button>
+                    </div>
+                  )}
 
-              {/* Phone Input */}
-              <div className="space-y-1">
-                <label className="block text-xs font-bold text-slate-700">
-                  מספר טלפון נייד (לוואטסאפ) <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-slate-400">
-                    <Phone className="w-4 h-4" />
+                  {/* Name Input */}
+                  <div className="space-y-1 text-right">
+                    <label className="block text-xs font-bold text-slate-700">
+                      שם מלא <span className="text-red-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-slate-400">
+                        <User className="w-4 h-4" />
+                      </div>
+                      <input
+                        type="text"
+                        required
+                        value={customerName}
+                        onChange={(e) => setCustomerName(e.target.value)}
+                        placeholder="לדוגמה: מתן כהן"
+                        className="w-full pr-9 pl-3 py-2.5 rounded-xl border border-slate-300 focus:border-purple-600 focus:ring-2 focus:ring-purple-100 text-sm font-medium outline-hidden"
+                      />
+                    </div>
                   </div>
-                  <input
-                    type="tel"
-                    required
-                    dir="ltr"
-                    value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                    placeholder="05X-XXXXXXX"
-                    className="w-full pr-9 pl-3 py-2.5 rounded-xl border border-slate-300 focus:border-purple-600 focus:ring-2 focus:ring-purple-100 text-sm font-medium outline-hidden text-right"
-                  />
+
+                  {/* Phone Input */}
+                  <div className="space-y-1 text-right">
+                    <label className="block text-xs font-bold text-slate-700">
+                      מספר טלפון נייד (לוואטסאפ) <span className="text-red-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-slate-400">
+                        <Phone className="w-4 h-4" />
+                      </div>
+                      <input
+                        type="tel"
+                        required
+                        dir="ltr"
+                        value={customerPhone}
+                        onChange={(e) => setCustomerPhone(e.target.value)}
+                        placeholder="05X-XXXXXXX"
+                        className="w-full pr-9 pl-3 py-2.5 rounded-xl border border-slate-300 focus:border-purple-600 focus:ring-2 focus:ring-purple-100 text-sm font-medium outline-hidden text-right"
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Notes Input */}
               <div className="space-y-1">

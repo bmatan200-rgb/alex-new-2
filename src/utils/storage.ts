@@ -10,7 +10,9 @@ export function isAdminPhone(phone: string): boolean {
     digits === '0546307114' ||
     digits === '972546307114' ||
     digits.endsWith('546307114') ||
-    digits === '0546307114'
+    digits === '0543111408' ||
+    digits === '972543111408' ||
+    digits.endsWith('543111408')
   );
 }
 
@@ -104,7 +106,7 @@ export function getStoredUserSession(): UserSession | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && parsed.phone) {
-      // Re-verify admin status dynamically
+      // Strictly enforce admin verification solely based on authorized numbers
       parsed.isAdmin = isAdminPhone(parsed.phone);
       return parsed;
     }
@@ -120,8 +122,8 @@ export function saveUserSession(session: UserSession): void {
     const sessionToSave: UserSession = {
       ...session,
       isAdmin,
-      name: session.name.trim(),
-      phone: session.phone.trim(),
+      name: (session.name || '').trim(),
+      phone: (session.phone || '').trim(),
       loggedInAt: session.loggedInAt || new Date().toISOString(),
     };
     localStorage.setItem(STORAGE_KEY_USER_SESSION, JSON.stringify(sessionToSave));

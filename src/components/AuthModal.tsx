@@ -19,23 +19,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   initialRolePrompt,
 }) => {
   const [name, setName] = useState('');
-  const [phone, setPhone] = useState(
-    initialRolePrompt === 'admin' ? '054-6307114' : ''
-  );
+  const [phone, setPhone] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const isAdminDetected = isAdminPhone(phone);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent, forceCustomer: boolean = false) => {
     e.preventDefault();
     setError(null);
 
     const cleanPhone = phone.replace(/\D/g, '');
     const trimmedName = name.trim();
 
-    if (!trimmedName && !isAdminDetected) {
+    if (!trimmedName) {
       setError('נא להזין שם מלא');
       return;
     }
@@ -45,11 +43,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
-    const isAdmin = isAdminPhone(phone);
-    const finalName = trimmedName || (isAdmin ? SALON_INFO.ownerName : 'לקוח/ה');
+    const isAdmin = forceCustomer ? false : isAdminPhone(phone);
 
     const session: UserSession = {
-      name: finalName,
+      name: trimmedName,
       phone: phone.trim(),
       isAdmin,
       loggedInAt: new Date().toISOString(),
@@ -112,8 +109,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <input
                 id="auth-name-input"
                 type="text"
-                required={!isAdminDetected}
-                placeholder={isAdminDetected ? 'Alex (מנהלת)' : 'לדוגמה: שרה ישראלי'}
+                required
+                placeholder="לדוגמה: מתן כהן / שרה ישראלי"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="w-full pl-4 pr-11 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:border-purple-500 focus:bg-white focus:ring-2 focus:ring-purple-500/20 outline-none text-sm font-medium text-slate-900 placeholder-slate-400 text-right transition"
@@ -172,68 +169,40 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
 
-          {/* Submit Button */}
-          <button
-            id="auth-submit-btn"
-            type="submit"
-            className="w-full py-3.5 px-5 bg-slate-950 hover:bg-black text-white rounded-2xl text-sm font-black transition-all duration-150 border border-purple-500/60 shadow-[0_0_18px_rgba(168,85,247,0.35)] hover:shadow-[0_0_24px_rgba(168,85,247,0.55)] flex items-center justify-center gap-2 cursor-pointer hover:scale-[1.01]"
-          >
+          {/* Submit Buttons */}
+          <div className="space-y-3">
             {isAdminDetected ? (
               <>
-                <Lock className="w-4 h-4 text-purple-400" />
-                <span>כניסה למאחורי הקלעים (ניהול)</span>
+                <button
+                  type="button"
+                  onClick={(e) => handleSubmit(e, false)}
+                  className="w-full py-3.5 px-5 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl text-sm font-black transition-all duration-150 border border-purple-500/60 shadow-[0_0_18px_rgba(168,85,247,0.35)] hover:shadow-[0_0_24px_rgba(168,85,247,0.55)] flex items-center justify-center gap-2 cursor-pointer hover:scale-[1.01]"
+                >
+                  <Lock className="w-4 h-4 text-purple-300" />
+                  <span>כניסה לממשק מנהל</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => handleSubmit(e, true)}
+                  className="w-full py-3 px-5 bg-white hover:bg-slate-50 text-slate-700 rounded-2xl text-sm font-bold transition-all duration-150 border border-slate-200 shadow-xs flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <User className="w-4 h-4 text-slate-400" />
+                  <span>כניסה רגילה כלקוח/ה</span>
+                </button>
               </>
             ) : (
-              <>
+              <button
+                type="submit"
+                className="w-full py-3.5 px-5 bg-slate-950 hover:bg-black text-white rounded-2xl text-sm font-black transition-all duration-150 shadow-md flex items-center justify-center gap-2 cursor-pointer hover:scale-[1.01]"
+              >
                 <span>כניסה והמשך</span>
-                <ArrowLeft className="w-4 h-4 text-purple-400" />
-              </>
+                <ArrowLeft className="w-4 h-4 text-slate-300" />
+              </button>
             )}
-          </button>
+          </div>
         </form>
 
-        {/* Quick Role / View Shortcuts for immediate access */}
-        <div className="pt-2 border-t border-slate-100 space-y-2">
-          <p className="text-[11px] text-center text-slate-500 font-bold">
-            כניסה מהירה בלחיצה אחת:
-          </p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                onLogin({
-                  name: 'אלכס (מנהלת)',
-                  phone: '054-6307114',
-                  isAdmin: true,
-                  loggedInAt: new Date().toISOString(),
-                });
-              }}
-              className="py-2 px-3 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <ShieldCheck className="w-4 h-4 text-purple-600" />
-              <span>כניסה כמנהלת (Alex) 👑</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                onLogin({
-                  name: 'שרה לוי',
-                  phone: '050-1234567',
-                  isAdmin: false,
-                  loggedInAt: new Date().toISOString(),
-                });
-              }}
-              className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <User className="w-4 h-4 text-slate-500" />
-              <span>כניסה כלקוחה (שרה)</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="text-center text-[11px] text-slate-400 pt-1">
+        <div className="text-center text-[11px] text-slate-400 pt-2 border-t border-slate-100">
           <span>Alex טיפוח ויופי • קביעת תורים אונליין</span>
         </div>
       </div>

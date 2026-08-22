@@ -67,6 +67,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
   // Step 4: Customer Details - Pre-filled from current session if available
   const [customerName, setCustomerName] = useState<string>(currentUser?.name || '');
   const [customerPhone, setCustomerPhone] = useState<string>(currentUser?.phone || '');
+  const [isEditingDetails, setIsEditingDetails] = useState<boolean>(false);
   const [notes, setNotes] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -74,8 +75,8 @@ export const BookingForm: React.FC<BookingFormProps> = ({
   // Sync user info if session updates
   React.useEffect(() => {
     if (currentUser) {
-      if (currentUser.name && !customerName) setCustomerName(currentUser.name);
-      if (currentUser.phone && !customerPhone) setCustomerPhone(currentUser.phone);
+      if (currentUser.name) setCustomerName(currentUser.name);
+      if (currentUser.phone) setCustomerPhone(currentUser.phone);
     }
   }, [currentUser]);
 
@@ -531,54 +532,94 @@ export const BookingForm: React.FC<BookingFormProps> = ({
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {/* Customer Name */}
-          <div>
-            <label
-              htmlFor="customer-name-input"
-              className="block text-xs font-extrabold text-slate-800 mb-1.5"
-            >
-              שם מלא <span className="text-purple-600">*</span>
-            </label>
-            <div className="relative">
-              <input
-                id="customer-name-input"
-                type="text"
-                required
-                placeholder="למשל: דנה לוי"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                className="w-full pl-3 pr-11 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:border-purple-500 focus:bg-white focus:ring-4 focus:ring-purple-500/15 outline-none text-sm font-semibold text-slate-900 placeholder-slate-400 transition-all shadow-xs"
-              />
-              <div className="w-7 h-7 rounded-xl bg-white border border-slate-200 text-purple-700 flex items-center justify-center absolute right-2.5 top-2.5 shadow-2xs">
-                <User className="w-3.5 h-3.5" />
+          {currentUser?.name && currentUser?.phone && !isEditingDetails ? (
+            <div className="sm:col-span-2 bg-purple-50/70 border border-purple-200/80 p-4 rounded-2xl flex items-center justify-between shadow-2xs">
+              <div className="space-y-0.5 text-right">
+                <span className="text-xs font-bold text-purple-900 block">התור ייקבע עבור:</span>
+                <span className="text-base font-black text-slate-900 block">{customerName || currentUser.name}</span>
+                <span className="text-xs text-slate-600 font-semibold block" dir="ltr">{customerPhone || currentUser.phone}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsEditingDetails(true)}
+                  className="text-xs text-purple-700 hover:text-purple-900 font-bold bg-white px-3 py-1.5 rounded-xl border border-purple-200 shadow-2xs hover:bg-purple-50 transition cursor-pointer"
+                >
+                  שינוי פרטים
+                </button>
+                <div className="w-9 h-9 rounded-full bg-purple-600 text-white flex items-center justify-center shadow-xs">
+                  <CheckCircle className="w-4 h-4" />
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <>
+              {currentUser?.name && currentUser?.phone && isEditingDetails && (
+                <div className="sm:col-span-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomerName(currentUser.name);
+                      setCustomerPhone(currentUser.phone);
+                      setIsEditingDetails(false);
+                    }}
+                    className="text-xs text-purple-600 font-bold hover:underline cursor-pointer"
+                  >
+                    ← חזרה לפרטים המחוברים
+                  </button>
+                </div>
+              )}
 
-          {/* Customer Phone */}
-          <div>
-            <label
-              htmlFor="customer-phone-input"
-              className="block text-xs font-extrabold text-slate-800 mb-1.5"
-            >
-              טלפון נייד <span className="text-purple-600">*</span>
-            </label>
-            <div className="relative">
-              <input
-                id="customer-phone-input"
-                type="tel"
-                required
-                placeholder="050-1234567"
-                value={customerPhone}
-                onChange={(e) => setCustomerPhone(e.target.value)}
-                dir="ltr"
-                className="w-full pl-3 pr-11 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:border-purple-500 focus:bg-white focus:ring-4 focus:ring-purple-500/15 outline-none text-sm font-semibold text-slate-900 placeholder-slate-400 text-right transition-all shadow-xs"
-              />
-              <div className="w-7 h-7 rounded-xl bg-white border border-slate-200 text-purple-700 flex items-center justify-center absolute right-2.5 top-2.5 shadow-2xs">
-                <Phone className="w-3.5 h-3.5" />
+              {/* Customer Name */}
+              <div>
+                <label
+                  htmlFor="customer-name-input"
+                  className="block text-xs font-extrabold text-slate-800 mb-1.5"
+                >
+                  שם מלא <span className="text-purple-600">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    id="customer-name-input"
+                    type="text"
+                    required
+                    placeholder="למשל: מתן כהן"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    className="w-full pl-3 pr-11 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:border-purple-500 focus:bg-white focus:ring-4 focus:ring-purple-500/15 outline-none text-sm font-semibold text-slate-900 placeholder-slate-400 transition-all shadow-xs"
+                  />
+                  <div className="w-7 h-7 rounded-xl bg-white border border-slate-200 text-purple-700 flex items-center justify-center absolute right-2.5 top-2.5 shadow-2xs">
+                    <User className="w-3.5 h-3.5" />
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+
+              {/* Customer Phone */}
+              <div>
+                <label
+                  htmlFor="customer-phone-input"
+                  className="block text-xs font-extrabold text-slate-800 mb-1.5"
+                >
+                  טלפון נייד <span className="text-purple-600">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    id="customer-phone-input"
+                    type="tel"
+                    required
+                    placeholder="050-1234567"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    dir="ltr"
+                    className="w-full pl-3 pr-11 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:border-purple-500 focus:bg-white focus:ring-4 focus:ring-purple-500/15 outline-none text-sm font-semibold text-slate-900 placeholder-slate-400 text-right transition-all shadow-xs"
+                  />
+                  <div className="w-7 h-7 rounded-xl bg-white border border-slate-200 text-purple-700 flex items-center justify-center absolute right-2.5 top-2.5 shadow-2xs">
+                    <Phone className="w-3.5 h-3.5" />
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Notes */}

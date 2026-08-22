@@ -29,6 +29,7 @@ import {
   clearUserSession,
   getStoredServices,
   saveStoredServices,
+  isAdminPhone,
 } from './utils/storage';
 import {
   autoDispatchAppointmentBooking,
@@ -133,9 +134,6 @@ export default function App() {
             sentLog: getSentRemindersLog()
           }),
         }).catch(() => {});
-
-        // Also run client-side background check for instant redundancy
-        autoDispatchAllPendingReminders(appointments).catch(() => {});
       }
     };
 
@@ -162,12 +160,19 @@ export default function App() {
     };
   }, [appointments]);
 
+  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin && isAdminPhone(currentUser.phone));
+
   const handleLogin = (session: UserSession) => {
-    saveUserSession(session);
-    setCurrentUser(session);
+    const verifiedAdmin = Boolean(session.isAdmin && isAdminPhone(session.phone));
+    const cleanSession: UserSession = {
+      ...session,
+      isAdmin: verifiedAdmin,
+    };
+    saveUserSession(cleanSession);
+    setCurrentUser(cleanSession);
     setIsAuthModalOpen(false);
 
-    if (session.isAdmin) {
+    if (verifiedAdmin) {
       setActiveTab('admin');
     } else {
       setActiveTab('booking');
@@ -188,10 +193,11 @@ export default function App() {
   };
 
   const handleQuickSwitchRole = (role: 'admin' | 'customer') => {
-    if (role === 'admin') {
+    const current = currentUser || getStoredUserSession();
+    if (role === 'admin' && current && isAdminPhone(current.phone)) {
       const adminSession: UserSession = {
-        name: 'אלכס (מנהלת)',
-        phone: '054-6307114',
+        name: current.name || 'מנהלת',
+        phone: current.phone,
         isAdmin: true,
         loggedInAt: new Date().toISOString(),
       };
@@ -200,8 +206,8 @@ export default function App() {
       setActiveTab('admin');
     } else {
       const clientSession: UserSession = {
-        name: currentUser?.isAdmin ? 'לקוח/ה' : (currentUser?.name || 'לקוח/ה'),
-        phone: currentUser?.isAdmin ? '050-1234567' : (currentUser?.phone || '050-1234567'),
+        name: current?.name || 'לקוח/ה',
+        phone: current?.phone || '',
         isAdmin: false,
         loggedInAt: new Date().toISOString(),
       };
@@ -217,13 +223,7 @@ export default function App() {
     setAppointments((prev) => [newAppointment, ...prev.filter((a) => a.id !== newAppointment.id)]);
     setConfirmedAppointment(newAppointment);
 
-    // Automatically send WhatsApp booking confirmation / reminder immediately on booking day
-    try {
-      await autoDispatchAppointmentBooking(newAppointment);
-    } catch (err) {
-      console.warn('Auto dispatch WhatsApp on booking error:', err);
-    }
-
+    // Save appointment to Firestore (no immediate messages sent on booking per user requirement)
     try {
       await addAppointmentToFirestore(newAppointment);
     } catch (err) {
@@ -285,10 +285,14 @@ export default function App() {
       <Header
         activeTab={activeTab}
         onSelectTab={(tab) => {
-          if (tab === 'admin' && !currentUser?.isAdmin) {
-            handleQuickSwitchRole('admin');
+          if (tab === 'admin') {
+            if (isUserAdmin) {
+              setActiveTab('admin');
+            } else {
+              handleOpenAuthModal('admin');
+            }
           } else {
-            setActiveTab(tab);
+            setActiveTab('booking');
           }
         }}
         onOpenMyBooking={() => setIsMyBookingOpen(true)}
@@ -300,7 +304,7 @@ export default function App() {
 
       {/* Main Content Container */}
       <main className="flex-1 max-w-xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-10 space-y-6">
-        {activeTab === 'booking' ? (
+        {activeTab === 'booking' || !isUserAdmin ? (
           <div className="space-y-6 animate-in fade-in duration-300">
             {/* Salon Brand Title */}
             <div className="text-center space-y-2">
@@ -322,10 +326,10 @@ export default function App() {
                 אשת צוות
               </span>
               
-              <div className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/90 shadow-sm flex items-center justify-between">
+              <div className="bg-white rounded-3xl px-4 sm:px-5 border border-slate-200/90 shadow-sm flex items-center justify-between h-[71px]">
                 <div className="flex items-center gap-3.5">
                   <div className="relative">
-                    <div className="w-14 h-14 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-600 p-0.5 shadow-md">
+                    <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-600 p-0.5 shadow-md">
                       <div className="w-full h-full rounded-full bg-slate-950 flex items-center justify-center text-white font-black text-lg">
                         A
                       </div>
@@ -336,7 +340,7 @@ export default function App() {
                   </div>
 
                   <div>
-                    <h2 className="text-base sm:text-lg font-black text-slate-900">
+                    <h2 className="text-base sm:text-lg font-black text-slate-900 leading-tight">
                       {SALON_INFO.ownerName}
                     </h2>
                     <p className="text-xs text-purple-700 font-bold">
@@ -356,7 +360,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsTorModalOpen(true)}
-                className="w-full py-5 px-6 rounded-3xl bg-white border-2 border-purple-500/80 hover:border-purple-600 hover:bg-purple-50/40 shadow-lg shadow-purple-500/10 hover:shadow-xl hover:shadow-purple-500/20 text-slate-950 font-black text-lg sm:text-xl transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99]"
+                className="w-full px-6 rounded-3xl bg-white border-2 border-purple-500/80 hover:border-purple-600 hover:bg-purple-50/40 shadow-lg shadow-purple-500/10 hover:shadow-xl hover:shadow-purple-500/20 text-slate-950 font-black text-lg sm:text-xl transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99] h-[150px]"
               >
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-2xl bg-purple-600 text-white flex items-center justify-center shadow-sm group-hover:scale-105 transition">
@@ -411,46 +415,17 @@ export default function App() {
             </div>
           </div>
         ) : (
-          /* Admin View */
+          /* Admin View - strictly for verified admin phone numbers */
           <section id="admin-dashboard-section" className="animate-in fade-in duration-200">
-            {currentUser?.isAdmin ? (
-              <AdminDashboard
-                appointments={appointments}
-                services={services}
-                onAddAppointment={handleAddManualAppointment}
-                onCancelAppointment={handleCancelAppointment}
-                onDeleteAppointment={handleDeleteAppointment}
-                onSwitchToClientView={() => handleQuickSwitchRole('customer')}
-                onUpdateServices={handleUpdateServices}
-              />
-            ) : (
-              <div className="text-center py-12 px-6 bg-white rounded-3xl border border-slate-200 shadow-sm space-y-4 max-w-md mx-auto">
-                <div className="w-14 h-14 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center mx-auto border border-purple-200">
-                  <ShieldCheck className="w-7 h-7" />
-                </div>
-                <h3 className="text-xl font-bold text-slate-900">ממשק מנהלת (Alex)</h3>
-                <p className="text-xs text-slate-500">
-                  צפייה במאחורי הקלעים, ניהול יומן התורים, חסימת שעות, תזכורות WhatsApp ודוחות.
-                </p>
-                <div className="space-y-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => handleQuickSwitchRole('admin')}
-                    className="w-full py-3 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl shadow-md shadow-purple-600/30 cursor-pointer transition flex items-center justify-center gap-2"
-                  >
-                    <ShieldCheck className="w-4 h-4" />
-                    <span>כניסה ישירה כמנהלת (Alex)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleOpenAuthModal('admin')}
-                    className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl border border-slate-200 cursor-pointer"
-                  >
-                    הזדהות עם מספר טלפון
-                  </button>
-                </div>
-              </div>
-            )}
+            <AdminDashboard
+              appointments={appointments}
+              services={services}
+              onAddAppointment={handleAddManualAppointment}
+              onCancelAppointment={handleCancelAppointment}
+              onDeleteAppointment={handleDeleteAppointment}
+              onSwitchToClientView={() => handleQuickSwitchRole('customer')}
+              onUpdateServices={handleUpdateServices}
+            />
           </section>
         )}
       </main>
@@ -477,24 +452,20 @@ export default function App() {
         </p>
         <div className="flex items-center justify-center gap-4 pt-2 text-slate-400">
           <span>© {new Date().getFullYear()} כל הזכויות שמורות ל-{SALON_INFO.name}</span>
-          <span>•</span>
-          <button
-            type="button"
-            onClick={() => {
-              if (currentUser?.isAdmin) {
-                setActiveTab(activeTab === 'booking' ? 'admin' : 'booking');
-              } else {
-                handleOpenAuthModal('admin');
-              }
-            }}
-            className="hover:text-purple-700 underline cursor-pointer transition font-medium"
-          >
-            {currentUser?.isAdmin
-              ? activeTab === 'booking'
-                ? 'מעבר למאחורי הקלעים'
-                : 'חזרה לתצוגת לקוח'
-              : 'כניסת מנהלת (0546307114)'}
-          </button>
+          {isUserAdmin && (
+            <>
+              <span>•</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab(activeTab === 'booking' ? 'admin' : 'booking');
+                }}
+                className="hover:text-purple-700 underline cursor-pointer transition font-medium"
+              >
+                {activeTab === 'booking' ? 'מעבר לממשק מנהל' : 'חזרה לתצוגת לקוח'}
+              </button>
+            </>
+          )}
         </div>
       </footer>
 

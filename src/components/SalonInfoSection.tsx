@@ -6,6 +6,8 @@ import {
   MessageCircle,
   User,
   Sparkles,
+  MapPin,
+  Navigation,
 } from 'lucide-react';
 import { SALON_INFO } from '../utils/storage';
 
@@ -108,6 +110,21 @@ export const SalonInfoSection: React.FC = () => {
                 </div>
                 <span>וואטסאפ מהיר</span>
               </a>
+
+              {SALON_INFO.address ? (
+                <a
+                  href={`https://waze.com/ul?q=${encodeURIComponent(SALON_INFO.address)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-sky-50 hover:bg-sky-100 text-sky-800 hover:text-sky-900 rounded-xl text-xs font-bold transition-all border border-sky-200 cursor-pointer shadow-xs hover:-translate-y-0.5"
+                  title="ניווט בוויז"
+                >
+                  <div className="w-6 h-6 rounded-lg bg-sky-200/60 text-sky-800 flex items-center justify-center">
+                    <Navigation className="w-3.5 h-3.5" />
+                  </div>
+                  <span>{SALON_INFO.address} (Waze)</span>
+                </a>
+              ) : null}
             </div>
           </motion.div>
 

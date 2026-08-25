@@ -22,7 +22,7 @@ export const SALON_INFO: SalonInfo = {
   ownerName: 'אלכסנדרה ביטון',
   phone: '054-6307114',
   whatsappNumber: '972546307114',
-  address: '',
+  address: 'הנרי קנדל 12',
   city: '',
   openingHours: [
     { days: 'ראשון - חמישי', hours: '09:20 - 20:30' },

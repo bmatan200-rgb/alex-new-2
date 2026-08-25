@@ -56,6 +56,7 @@ import {
   buildAlexReminderText,
   createWhatsAppDirectLink,
   openWhatsAppDirect,
+  formatIsraeliPhoneToE164,
   isProviderConfigured,
   markReminderSent,
   getSentRemindersLog,
@@ -127,9 +128,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setSendingApptId(key);
     const settings = getStoredReminderSettings();
 
-    // If Twilio is selected as provider but SID/Token are not configured yet, open automation tab immediately
-    if (settings.provider === 'twilio' && (!settings.twilioAccountSid || !settings.twilioAuthToken)) {
-      showToast('כדי לשלוח אוטומטית ברקע דרך Twilio, יש להזין את ה-Account SID וה-Auth Token', 'error');
+    // If a provider is selected but not properly configured (except Twilio which is server-side only)
+    if (settings.provider !== 'direct' && settings.provider !== 'twilio' && !isProviderConfigured(settings)) {
+      showToast('כדי לשלוח אוטומטית ברקע, יש להשלים את הגדרות ספק ה-API במסך ההגדרות', 'error');
       setWhatsAppModalTab('automation');
       setIsWhatsAppModalOpen(true);
       setSendingApptId(null);
@@ -1280,6 +1281,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 >
                                   <Phone className="w-3.5 h-3.5" />
                                 </a>
+                                <a
+                                  href={`https://wa.me/${formatIsraeliPhoneToE164(slot.appointment.customer_phone)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="p-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl text-xs font-bold transition border border-emerald-200 shadow-xs"
+                                  title="וואטסאפ ללקוח/ה"
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5" />
+                                </a>
                               </>
                             )}
                           </div>
@@ -1592,6 +1602,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           title="חיוג ללקוח/ה"
                         >
                           <Phone className="w-3.5 h-3.5 text-slate-700" />
+                        </a>
+                        <a
+                          href={`https://wa.me/${formatIsraeliPhoneToE164(appt.customer_phone)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl text-xs font-bold flex items-center gap-1 transition border border-emerald-200 shadow-xs"
+                          title="וואטסאפ ללקוח/ה"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5 text-emerald-700" />
                         </a>
                       </div>
                     )}

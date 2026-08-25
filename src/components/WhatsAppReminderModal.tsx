@@ -231,10 +231,6 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
           instanceId: settings.instanceId,
           apiKey: settings.apiKey,
           webhookUrl: settings.webhookUrl,
-          twilioAccountSid: settings.twilioAccountSid,
-          twilioAuthToken: settings.twilioAuthToken,
-          twilioPhoneNumber: settings.twilioPhoneNumber,
-          twilioType: settings.twilioType || 'sms',
           reminderType: '1day',
           appointment: demoAppt,
         }),
@@ -242,7 +238,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
 
       const serverData = await serverRes.json();
       if (serverData.success) {
-        const providerName = settings.provider === 'twilio' ? `Twilio (${settings.twilioType === 'sms' ? 'SMS' : 'WhatsApp'})` : settings.provider;
+        const providerName = settings.provider === 'twilio' ? `Twilio` : settings.provider;
         setTestResult({
           status: 'success',
           message: `ההודעה נשלחה בהצלחה דרך ${providerName} למספר ${targetPhone}! (Message SID: ${serverData.data?.sid || 'ok'})`,
@@ -1112,91 +1108,11 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                       <Smartphone className="w-4 h-4 text-purple-600" />
                       <span>פרטי חשבון Twilio</span>
                     </span>
-
-                    {/* Channel Selector: WhatsApp vs SMS */}
-                    <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200">
-                      <button
-                        type="button"
-                        onClick={() => setSettings({ ...settings, twilioType: 'whatsapp' })}
-                        className={`px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer ${
-                          settings.twilioType !== 'sms'
-                            ? 'bg-emerald-600 text-white shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        WhatsApp
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSettings({ ...settings, twilioType: 'sms' })}
-                        className={`px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer ${
-                          settings.twilioType === 'sms'
-                            ? 'bg-purple-600 text-white shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        SMS
-                      </button>
-                    </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block font-bold text-slate-700 mb-1">
-                        Account SID
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                        value={settings.twilioAccountSid || ''}
-                        onChange={(e) => setSettings({ ...settings, twilioAccountSid: e.target.value.trim() })}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:border-purple-600 outline-none font-mono text-xs"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block font-bold text-slate-700 mb-1">
-                        Auth Token
-                      </label>
-                      <div className="relative">
-                        <input
-                          type={showTwilioToken ? 'text' : 'password'}
-                          placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                          value={settings.twilioAuthToken || ''}
-                          onChange={(e) => setSettings({ ...settings, twilioAuthToken: e.target.value.trim() })}
-                          className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl focus:border-purple-600 outline-none font-mono text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowTwilioToken(!showTwilioToken)}
-                          className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
-                        >
-                          {showTwilioToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-slate-700 mb-1">
-                      מספר השולח ב-Twilio (From Number)
-                    </label>
-                    <input
-                      type="text"
-                      placeholder={
-                        settings.twilioType === 'sms'
-                          ? '+1234567890 (Twilio Phone Number)'
-                          : 'whatsapp:+14155238886 (Twilio Sandbox / Number)'
-                      }
-                      value={settings.twilioPhoneNumber || ''}
-                      onChange={(e) => setSettings({ ...settings, twilioPhoneNumber: e.target.value.trim() })}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:border-purple-600 outline-none font-mono text-xs"
-                    />
-                    <span className="text-[11px] text-slate-500 mt-1 block">
-                      {settings.twilioType === 'sms'
-                        ? 'מספר הטלפון הווירטואלי שלך ב-Twilio (ברירת מחדל: +15599345376)'
-                        : 'עבור WhatsApp Sandbox: whatsapp:+14155238886'}
-                    </span>
+                  <div className="bg-emerald-50 text-emerald-800 p-3 rounded-xl border border-emerald-200 text-xs text-center font-medium">
+                    <p>מפתחות ה-API של Twilio (Account SID, Auth Token) מוגדרים בצורה מאובטחת ישירות בשרת דרך משתני סביבה.</p>
+                    <p className="mt-1">החיבור מוכן לפעולה ואין צורך בהזנת פרטים נוספים בצד הלקוח.</p>
                   </div>
 
                   {/* Live Twilio Diagnostics Box */}

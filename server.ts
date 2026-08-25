@@ -1,23 +1,7 @@
-import dotenv from 'dotenv';
 import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-
-import { fileURLToPath } from 'url';
-
-// Robust dotenv loading to ensure it finds the .env file regardless of how the app is started
-const rootEnvPath = path.resolve(process.cwd(), '.env');
-// Fallback for dist folder in case of esbuild output
-const currentDir = typeof __dirname !== 'undefined' ? __dirname : path.dirname(fileURLToPath(import.meta.url));
-const distEnvPath = path.resolve(currentDir, '../.env');
-if (fs.existsSync(rootEnvPath)) {
-  dotenv.config({ path: rootEnvPath });
-} else if (fs.existsSync(distEnvPath)) {
-  dotenv.config({ path: distEnvPath });
-} else {
-  dotenv.config(); // fallback
-}
 
 const app = express();
 const PORT = 3000;
@@ -123,6 +107,10 @@ async function sendWhatsAppViaProvider(params: {
   instanceId?: string;
   apiKey?: string;
   webhookUrl?: string;
+  twilioAccountSid?: string;
+  twilioAuthToken?: string;
+  twilioPhoneNumber?: string;
+  twilioType?: 'whatsapp' | 'sms';
 }): Promise<{ success: boolean; data?: any; error?: string }> {
   const { phone, message } = params;
   const formattedPhone = cleanPhoneForWhatsApp(phone);
@@ -131,7 +119,7 @@ async function sendWhatsAppViaProvider(params: {
     params.provider ||
     activeServerSettings?.provider ||
     process.env.WHATSAPP_PROVIDER ||
-    (process.env.TWILIO_ACCOUNT_SID ? 'twilio' : '') ||
+    (params.twilioAccountSid || activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID ? 'twilio' : '') ||
     (params.instanceId ? 'greenapi' : 'webhook');
 
   if (provider === 'direct') {
@@ -142,13 +130,13 @@ async function sendWhatsAppViaProvider(params: {
   const apiKey = params.apiKey || activeServerSettings?.apiKey || process.env.GREEN_API_TOKEN || process.env.ULTRAMSG_TOKEN || '';
   const webhookUrl = params.webhookUrl || activeServerSettings?.webhookUrl || process.env.WHATSAPP_WEBHOOK_URL || '';
 
-  const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID || '';
-  const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN || '';
-  let twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || '';
-  if (twilioPhoneNumber === 'whatsapp:+14155238886' && process.env.TWILIO_TYPE === 'sms') {
+  const twilioAccountSid = params.twilioAccountSid || activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
+  const twilioAuthToken = params.twilioAuthToken || activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
+  let twilioPhoneNumber = params.twilioPhoneNumber || activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '';
+  if (twilioPhoneNumber === 'whatsapp:+14155238886' && (process.env.TWILIO_TYPE === 'sms' || activeServerSettings?.twilioType === 'sms')) {
     twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || '';
   }
-  const twilioType = process.env.TWILIO_TYPE || 'sms';
+  const twilioType = params.twilioType || activeServerSettings?.twilioType || 'sms';
 
   try {
     // 1. Twilio Integration (WhatsApp & SMS)
@@ -156,13 +144,7 @@ async function sendWhatsAppViaProvider(params: {
       if (!twilioAccountSid || !twilioAuthToken) {
         return {
           success: false,
-          error: 'חסר Twilio Account SID או Auth Token בהגדרות השרת (Environment Variables)',
-        };
-      }
-      if (!twilioPhoneNumber) {
-        return {
-          success: false,
-          error: 'חסר Twilio Phone Number (מספר השולח) בהגדרות השרת (Environment Variable: TWILIO_PHONE_NUMBER).',
+          error: 'חסר Twilio Account SID או Auth Token בהגדרות המערכת',
         };
       }
 
@@ -170,7 +152,7 @@ async function sendWhatsAppViaProvider(params: {
       const twilioFactory: any = (twilioModule as any).default || twilioModule;
       const client = twilioFactory(twilioAccountSid.trim(), twilioAuthToken.trim());
 
-      let resolvedTwilioType = process.env.TWILIO_TYPE || twilioType;
+      let resolvedTwilioType = process.env.TWILIO_TYPE || params.twilioType || activeServerSettings?.twilioType;
       
       // Auto-detect if user entered a plain number without "whatsapp:" prefix
       if (resolvedTwilioType === 'whatsapp' && !twilioPhoneNumber.toLowerCase().startsWith('whatsapp:') && twilioPhoneNumber !== '+14155238886' && !twilioPhoneNumber.includes('14155238886')) {
@@ -542,15 +524,11 @@ app.get('/api/whatsapp/settings', (req: Request, res: Response) => {
       success: true,
       settings: {
         ...activeServerSettings,
+        twilioAccountSid: activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '',
+        twilioAuthToken: activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '',
+        twilioPhoneNumber: activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '',
       },
       hasEnvTwilio,
-      diagnostics: {
-        hasSid: Boolean(process.env.TWILIO_ACCOUNT_SID),
-        hasToken: Boolean(process.env.TWILIO_AUTH_TOKEN),
-        hasPhone: Boolean(process.env.TWILIO_PHONE_NUMBER),
-        nodeEnv: process.env.NODE_ENV,
-        twilioType: process.env.TWILIO_TYPE || 'sms',
-      }
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message });
@@ -563,8 +541,11 @@ app.post('/api/whatsapp/sync-settings', (req: Request, res: Response) => {
     const { settings } = req.body;
     if (settings && typeof settings === 'object') {
       activeServerSettings = { ...activeServerSettings, ...settings };
-      console.log('[Server Settings] WhatsApp settings synced:', {
+      console.log('[Server Settings] WhatsApp & Twilio settings synced:', {
         provider: activeServerSettings.provider,
+        hasTwilioSid: Boolean(activeServerSettings.twilioAccountSid),
+        hasTwilioToken: Boolean(activeServerSettings.twilioAuthToken),
+        twilioType: activeServerSettings.twilioType,
         hasGreenApi: Boolean(activeServerSettings.instanceId),
       });
       return res.json({ success: true, settings: activeServerSettings });
@@ -609,6 +590,10 @@ app.post('/api/whatsapp/send', async (req: Request, res: Response) => {
       instanceId,
       apiKey,
       webhookUrl,
+      twilioAccountSid,
+      twilioAuthToken,
+      twilioPhoneNumber,
+      twilioType,
       reminderType,
       appointment,
     } = req.body;
@@ -624,6 +609,10 @@ app.post('/api/whatsapp/send', async (req: Request, res: Response) => {
       instanceId,
       apiKey,
       webhookUrl,
+      twilioAccountSid,
+      twilioAuthToken,
+      twilioPhoneNumber,
+      twilioType,
     });
 
     if (appointment && reminderType) {
@@ -779,10 +768,10 @@ app.get('/api/whatsapp/status', (req: Request, res: Response) => {
 
 // Comprehensive Twilio & WhatsApp Diagnostic Endpoint
 app.get('/api/whatsapp/diagnose', async (req: Request, res: Response) => {
-  const twilioSid = process.env.TWILIO_ACCOUNT_SID || '';
-  const twilioToken = process.env.TWILIO_AUTH_TOKEN || '';
-  const twilioPhone = process.env.TWILIO_PHONE_NUMBER || '';
-  let twilioType = process.env.TWILIO_TYPE || 'sms';
+  const twilioSid = activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
+  const twilioToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
+  const twilioPhone = activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '';
+  let twilioType = process.env.TWILIO_TYPE || activeServerSettings?.twilioType || 'sms';
   if (twilioType === 'whatsapp' && twilioPhone && !twilioPhone.toLowerCase().startsWith('whatsapp:') && !twilioPhone.includes('14155238886')) {
     twilioType = 'sms';
   }

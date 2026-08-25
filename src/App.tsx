@@ -126,6 +126,25 @@ export default function App() {
 
   // Background settings, appointments synchronization, and keep-alive to server scheduler
   useEffect(() => {
+    // Initial fetch from server to get any backend env Twilio keys
+    fetch('/api/whatsapp/settings')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && data.settings) {
+          const current = getStoredReminderSettings();
+          if (!current.twilioAccountSid && data.settings.twilioAccountSid) {
+            saveReminderSettings({
+              ...current,
+              twilioAccountSid: data.settings.twilioAccountSid,
+              twilioAuthToken: data.settings.twilioAuthToken || current.twilioAuthToken,
+              twilioPhoneNumber: data.settings.twilioPhoneNumber || current.twilioPhoneNumber,
+              twilioType: data.settings.twilioType || current.twilioType,
+            });
+          }
+        }
+      })
+      .catch(() => {});
+
     const doSyncAndCheck = () => {
       const liveSettings = getStoredReminderSettings();
       fetch('/api/whatsapp/sync-settings', {

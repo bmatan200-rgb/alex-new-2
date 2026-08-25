@@ -64,6 +64,10 @@ export interface WhatsAppReminderSettings {
   webhookUrl?: string;
   apiKey?: string;
   instanceId?: string;
+  twilioAccountSid?: string;
+  twilioAuthToken?: string;
+  twilioPhoneNumber?: string;
+  twilioType?: 'whatsapp' | 'sms';
   eveningReminderTime?: string; // e.g. "20:56" (HH:mm)
   morningReminderTime?: string; // e.g. "08:00" (HH:mm)
   customerBookingConfirmationTemplate?: string;

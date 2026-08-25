@@ -74,7 +74,6 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
     message: '',
   });
   const [diagnostics, setDiagnostics] = useState<any>(null);
-  const [serverSettingsState, setServerSettingsState] = useState<any>(null);
   const [isDiagnosing, setIsDiagnosing] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -88,20 +87,9 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
   const fetchDiagnostics = async () => {
     setIsDiagnosing(true);
     try {
-      const [diagRes, settingsRes] = await Promise.all([
-        fetch('/api/whatsapp/diagnose').catch(() => null),
-        fetch('/api/whatsapp/settings').catch(() => null),
-      ]);
-      if (diagRes && diagRes.ok) {
-        const diagData = await diagRes.json();
-        setDiagnostics(diagData);
-      } else {
-        setDiagnostics(null);
-      }
-      if (settingsRes && settingsRes.ok) {
-        const settingsData = await settingsRes.json();
-        setServerSettingsState(settingsData);
-      }
+      const res = await fetch('/api/whatsapp/diagnose');
+      const data = await res.json();
+      setDiagnostics(data);
     } catch (err) {
       console.warn('Failed to load diagnostics:', err);
     } finally {
@@ -243,6 +231,10 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
           instanceId: settings.instanceId,
           apiKey: settings.apiKey,
           webhookUrl: settings.webhookUrl,
+          twilioAccountSid: settings.twilioAccountSid,
+          twilioAuthToken: settings.twilioAuthToken,
+          twilioPhoneNumber: settings.twilioPhoneNumber,
+          twilioType: settings.twilioType || 'sms',
           reminderType: '1day',
           appointment: demoAppt,
         }),
@@ -250,7 +242,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
 
       const serverData = await serverRes.json();
       if (serverData.success) {
-        const providerName = settings.provider === 'twilio' ? `Twilio` : settings.provider;
+        const providerName = settings.provider === 'twilio' ? `Twilio (${settings.twilioType === 'sms' ? 'SMS' : 'WhatsApp'})` : settings.provider;
         setTestResult({
           status: 'success',
           message: `ההודעה נשלחה בהצלחה דרך ${providerName} למספר ${targetPhone}! (Message SID: ${serverData.data?.sid || 'ok'})`,
@@ -1120,34 +1112,92 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                       <Smartphone className="w-4 h-4 text-purple-600" />
                       <span>פרטי חשבון Twilio</span>
                     </span>
+
+                    {/* Channel Selector: WhatsApp vs SMS */}
+                    <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setSettings({ ...settings, twilioType: 'whatsapp' })}
+                        className={`px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer ${
+                          settings.twilioType !== 'sms'
+                            ? 'bg-emerald-600 text-white shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        WhatsApp
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSettings({ ...settings, twilioType: 'sms' })}
+                        className={`px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer ${
+                          settings.twilioType === 'sms'
+                            ? 'bg-purple-600 text-white shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        SMS
+                      </button>
+                    </div>
                   </div>
 
-                  {serverSettingsState?.diagnostics ? (
-                    <div className="p-3 rounded-xl border text-xs font-medium space-y-1.5 bg-white border-slate-200">
-                      <p className="font-bold text-slate-800 mb-2 border-b border-slate-100 pb-1">סטטוס משתני סביבה בשרת (Backend Env):</p>
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-600">Account SID (TWILIO_ACCOUNT_SID):</span>
-                        {serverSettingsState.diagnostics.hasSid ? <span className="text-emerald-600 font-bold">✅ מוגדר</span> : <span className="text-red-600 font-bold">❌ חסר</span>}
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-600">Auth Token (TWILIO_AUTH_TOKEN):</span>
-                        {serverSettingsState.diagnostics.hasToken ? <span className="text-emerald-600 font-bold">✅ מוגדר</span> : <span className="text-red-600 font-bold">❌ חסר</span>}
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-600">Phone Number (TWILIO_PHONE_NUMBER):</span>
-                        {serverSettingsState.diagnostics.hasPhone ? <span className="text-emerald-600 font-bold">✅ מוגדר</span> : <span className="text-red-600 font-bold">❌ חסר</span>}
-                      </div>
-                      {(!serverSettingsState.diagnostics.hasSid || !serverSettingsState.diagnostics.hasToken || !serverSettingsState.diagnostics.hasPhone) && (
-                        <p className="text-red-700 mt-2 p-2 bg-red-50 rounded-lg text-[11px] leading-tight font-normal border border-red-100">
-                          <strong>שים לב:</strong> חסרים משתני סביבה בשרת. יש להגדיר אותם כדי ששליחת ההודעות תעבוד! אם המערכת באונליין, הגדר את ה-Secrets בהגדרות השרת.
-                        </p>
-                      )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">
+                        Account SID
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                        value={settings.twilioAccountSid || ''}
+                        onChange={(e) => setSettings({ ...settings, twilioAccountSid: e.target.value.trim() })}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:border-purple-600 outline-none font-mono text-xs"
+                      />
                     </div>
-                  ) : (
-                    <div className="bg-slate-50 text-slate-600 p-3 rounded-xl border border-slate-200 text-xs text-center font-medium">
-                      <p>טוען נתוני שרת...</p>
+
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1">
+                        Auth Token
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showTwilioToken ? 'text' : 'password'}
+                          placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                          value={settings.twilioAuthToken || ''}
+                          onChange={(e) => setSettings({ ...settings, twilioAuthToken: e.target.value.trim() })}
+                          className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl focus:border-purple-600 outline-none font-mono text-xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowTwilioToken(!showTwilioToken)}
+                          className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                        >
+                          {showTwilioToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
                     </div>
-                  )}
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      מספר השולח ב-Twilio (From Number)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder={
+                        settings.twilioType === 'sms'
+                          ? '+1234567890 (Twilio Phone Number)'
+                          : 'whatsapp:+14155238886 (Twilio Sandbox / Number)'
+                      }
+                      value={settings.twilioPhoneNumber || ''}
+                      onChange={(e) => setSettings({ ...settings, twilioPhoneNumber: e.target.value.trim() })}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:border-purple-600 outline-none font-mono text-xs"
+                    />
+                    <span className="text-[11px] text-slate-500 mt-1 block">
+                      {settings.twilioType === 'sms'
+                        ? 'מספר הטלפון הווירטואלי שלך ב-Twilio (ברירת מחדל: +15599345376)'
+                        : 'עבור WhatsApp Sandbox: whatsapp:+14155238886'}
+                    </span>
+                  </div>
 
                   {/* Live Twilio Diagnostics Box */}
                   <div className="mt-3 p-3.5 bg-white rounded-xl border border-slate-200 space-y-3">

@@ -128,9 +128,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setSendingApptId(key);
     const settings = getStoredReminderSettings();
 
-    // If a provider is selected but not properly configured (except Twilio which is server-side only)
-    if (settings.provider !== 'direct' && settings.provider !== 'twilio' && !isProviderConfigured(settings)) {
-      showToast('כדי לשלוח אוטומטית ברקע, יש להשלים את הגדרות ספק ה-API במסך ההגדרות', 'error');
+    // If Twilio is selected as provider but SID/Token are not configured yet, open automation tab immediately
+    if (settings.provider === 'twilio' && (!settings.twilioAccountSid || !settings.twilioAuthToken)) {
+      showToast('כדי לשלוח אוטומטית ברקע דרך Twilio, יש להזין את ה-Account SID וה-Auth Token', 'error');
       setWhatsAppModalTab('automation');
       setIsWhatsAppModalOpen(true);
       setSendingApptId(null);

@@ -21,6 +21,10 @@ export const DEFAULT_REMINDER_SETTINGS: WhatsAppReminderSettings = {
   webhookUrl: '',
   apiKey: '',
   instanceId: '',
+  twilioAccountSid: '',
+  twilioAuthToken: '',
+  twilioPhoneNumber: '',
+  twilioType: 'sms',
   eveningReminderTime: '20:56',
   morningReminderTime: '08:00',
   customerTodayTemplate: `היי {customer_name} 🌸
@@ -70,12 +74,14 @@ export function getStoredReminderSettings(): WhatsAppReminderSettings {
     const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
     if (!raw) return DEFAULT_REMINDER_SETTINGS;
     const parsed = JSON.parse(raw);
-
-    // Filter out Twilio legacy configs if they were stored
-    delete parsed.twilioAccountSid;
-    delete parsed.twilioAuthToken;
-    delete parsed.twilioPhoneNumber;
-    delete parsed.twilioType;
+    
+    // Sanitize old WhatsApp sandbox defaults if present
+    if (parsed.twilioPhoneNumber === 'whatsapp:+14155238886' || parsed.twilioPhoneNumber?.includes('14155238886')) {
+      parsed.twilioPhoneNumber = '';
+    }
+    if (!parsed.twilioType) {
+      parsed.twilioType = 'sms';
+    }
 
     return { ...DEFAULT_REMINDER_SETTINGS, ...parsed };
   } catch {
@@ -534,7 +540,7 @@ export function isProviderConfigured(settings?: WhatsAppReminderSettings): boole
   if (settings.provider === 'greenapi' && settings.instanceId && settings.apiKey) return true;
   if (settings.provider === 'ultramsg' && settings.instanceId && settings.apiKey) return true;
   if (settings.provider === 'webhook' && settings.webhookUrl) return true;
-  if (settings.provider === 'twilio') return true;
+  if (settings.provider === 'twilio' && settings.twilioAccountSid && settings.twilioAuthToken) return true;
   return false;
 }
 
@@ -644,6 +650,10 @@ export async function dispatchAutomatedWhatsAppApi({
         phone: formattedPhone,
         message,
         provider: 'twilio',
+        twilioAccountSid: settings.twilioAccountSid || undefined,
+        twilioAuthToken: settings.twilioAuthToken || undefined,
+        twilioPhoneNumber: settings.twilioPhoneNumber || undefined,
+        twilioType: settings.twilioType || 'sms',
         reminderType,
         appointment,
       }),
@@ -658,10 +668,10 @@ export async function dispatchAutomatedWhatsAppApi({
     }
 
     if (res.ok && (data.success || data.data?.sid)) {
-      // By default the channel is handled on backend side via env vars
+      const channel = settings.twilioType === 'sms' ? 'SMS' : 'WhatsApp';
       return {
         success: true,
-        message: `התזכורת נשלחה אוטומטית בהצלחה! ⚡`,
+        message: `התזכורת נשלחה אוטומטית בהצלחה דרך Twilio (${channel})! ⚡`,
       };
     }
 

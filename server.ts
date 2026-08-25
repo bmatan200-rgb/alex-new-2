@@ -1,8 +1,23 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
+
+import { fileURLToPath } from 'url';
+
+// Robust dotenv loading to ensure it finds the .env file regardless of how the app is started
+const rootEnvPath = path.resolve(process.cwd(), '.env');
+// Fallback for dist folder in case of esbuild output
+const currentDir = typeof __dirname !== 'undefined' ? __dirname : path.dirname(fileURLToPath(import.meta.url));
+const distEnvPath = path.resolve(currentDir, '../.env');
+if (fs.existsSync(rootEnvPath)) {
+  dotenv.config({ path: rootEnvPath });
+} else if (fs.existsSync(distEnvPath)) {
+  dotenv.config({ path: distEnvPath });
+} else {
+  dotenv.config(); // fallback
+}
 
 const app = express();
 const PORT = 3000;
@@ -142,6 +157,12 @@ async function sendWhatsAppViaProvider(params: {
         return {
           success: false,
           error: 'חסר Twilio Account SID או Auth Token בהגדרות השרת (Environment Variables)',
+        };
+      }
+      if (!twilioPhoneNumber) {
+        return {
+          success: false,
+          error: 'חסר Twilio Phone Number (מספר השולח) בהגדרות השרת (Environment Variable: TWILIO_PHONE_NUMBER).',
         };
       }
 
@@ -523,6 +544,13 @@ app.get('/api/whatsapp/settings', (req: Request, res: Response) => {
         ...activeServerSettings,
       },
       hasEnvTwilio,
+      diagnostics: {
+        hasSid: Boolean(process.env.TWILIO_ACCOUNT_SID),
+        hasToken: Boolean(process.env.TWILIO_AUTH_TOKEN),
+        hasPhone: Boolean(process.env.TWILIO_PHONE_NUMBER),
+        nodeEnv: process.env.NODE_ENV,
+        twilioType: process.env.TWILIO_TYPE || 'sms',
+      }
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message });

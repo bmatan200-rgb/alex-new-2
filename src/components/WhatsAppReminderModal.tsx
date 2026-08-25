@@ -74,6 +74,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
     message: '',
   });
   const [diagnostics, setDiagnostics] = useState<any>(null);
+  const [serverSettingsState, setServerSettingsState] = useState<any>(null);
   const [isDiagnosing, setIsDiagnosing] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -87,9 +88,20 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
   const fetchDiagnostics = async () => {
     setIsDiagnosing(true);
     try {
-      const res = await fetch('/api/whatsapp/diagnose');
-      const data = await res.json();
-      setDiagnostics(data);
+      const [diagRes, settingsRes] = await Promise.all([
+        fetch('/api/whatsapp/diagnose').catch(() => null),
+        fetch('/api/whatsapp/settings').catch(() => null),
+      ]);
+      if (diagRes && diagRes.ok) {
+        const diagData = await diagRes.json();
+        setDiagnostics(diagData);
+      } else {
+        setDiagnostics(null);
+      }
+      if (settingsRes && settingsRes.ok) {
+        const settingsData = await settingsRes.json();
+        setServerSettingsState(settingsData);
+      }
     } catch (err) {
       console.warn('Failed to load diagnostics:', err);
     } finally {
@@ -1110,10 +1122,32 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                     </span>
                   </div>
 
-                  <div className="bg-emerald-50 text-emerald-800 p-3 rounded-xl border border-emerald-200 text-xs text-center font-medium">
-                    <p>מפתחות ה-API של Twilio (Account SID, Auth Token) מוגדרים בצורה מאובטחת ישירות בשרת דרך משתני סביבה.</p>
-                    <p className="mt-1">החיבור מוכן לפעולה ואין צורך בהזנת פרטים נוספים בצד הלקוח.</p>
-                  </div>
+                  {serverSettingsState?.diagnostics ? (
+                    <div className="p-3 rounded-xl border text-xs font-medium space-y-1.5 bg-white border-slate-200">
+                      <p className="font-bold text-slate-800 mb-2 border-b border-slate-100 pb-1">סטטוס משתני סביבה בשרת (Backend Env):</p>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-600">Account SID (TWILIO_ACCOUNT_SID):</span>
+                        {serverSettingsState.diagnostics.hasSid ? <span className="text-emerald-600 font-bold">✅ מוגדר</span> : <span className="text-red-600 font-bold">❌ חסר</span>}
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-600">Auth Token (TWILIO_AUTH_TOKEN):</span>
+                        {serverSettingsState.diagnostics.hasToken ? <span className="text-emerald-600 font-bold">✅ מוגדר</span> : <span className="text-red-600 font-bold">❌ חסר</span>}
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-600">Phone Number (TWILIO_PHONE_NUMBER):</span>
+                        {serverSettingsState.diagnostics.hasPhone ? <span className="text-emerald-600 font-bold">✅ מוגדר</span> : <span className="text-red-600 font-bold">❌ חסר</span>}
+                      </div>
+                      {(!serverSettingsState.diagnostics.hasSid || !serverSettingsState.diagnostics.hasToken || !serverSettingsState.diagnostics.hasPhone) && (
+                        <p className="text-red-700 mt-2 p-2 bg-red-50 rounded-lg text-[11px] leading-tight font-normal border border-red-100">
+                          <strong>שים לב:</strong> חסרים משתני סביבה בשרת. יש להגדיר אותם כדי ששליחת ההודעות תעבוד! אם המערכת באונליין, הגדר את ה-Secrets בהגדרות השרת.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="bg-slate-50 text-slate-600 p-3 rounded-xl border border-slate-200 text-xs text-center font-medium">
+                      <p>טוען נתוני שרת...</p>
+                    </div>
+                  )}
 
                   {/* Live Twilio Diagnostics Box */}
                   <div className="mt-3 p-3.5 bg-white rounded-xl border border-slate-200 space-y-3">

@@ -317,7 +317,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
             </div>
             <div>
               <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                <span>מערכת תזכורות WhatsApp אוטומטית</span>
+                <span>מערכת תזכורות SMS ו-WhatsApp אוטומטית</span>
                 <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold border border-emerald-300">
                   מופעל
                 </span>
@@ -513,7 +513,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                     <span>שליחה אוטומטית מלאה ברקע (Auto Send)</span>
                   </span>
                   <p className="text-[11px] text-emerald-800">
-                    המערכת שולחת אוטומטית בשעות שהוגדרו ({eveningTime} ו-{morningTime}) ישירות לוואטסאפ של הלקוחות ללא כל פעולה ידנית
+                    המערכת שולחת אוטומטית הודעות SMS או וואטסאפ בשעות שהוגדרו ({eveningTime} ו-{morningTime}) ישירות ללקוחות ללא כל פעולה ידנית
                   </p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">

@@ -44,6 +44,7 @@ import {
   playNotificationChime,
   triggerBrowserPushNotification,
   DEFAULT_REMINDER_SETTINGS,
+  formatIsraeliPhoneToE164,
 } from '../utils/whatsappReminder';
 
 interface WhatsAppReminderModalProps {
@@ -218,7 +219,8 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
   const handleTestAutomatedApi = async () => {
     setTestResult({ status: 'loading', message: 'שולח בדיקה דרך השרת...' });
     try {
-      const targetPhone = testPhoneNumber.trim() || SALON_INFO.whatsappNumber;
+      const rawTargetPhone = testPhoneNumber.trim() || SALON_INFO.whatsappNumber;
+      const targetPhone = formatIsraeliPhoneToE164(rawTargetPhone);
       const serverRes = await fetch('/api/whatsapp/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -232,7 +234,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
           twilioAccountSid: settings.twilioAccountSid,
           twilioAuthToken: settings.twilioAuthToken,
           twilioPhoneNumber: settings.twilioPhoneNumber,
-          twilioType: settings.twilioType || 'whatsapp',
+          twilioType: settings.twilioType || 'sms',
           reminderType: '1day',
           appointment: demoAppt,
         }),
@@ -410,7 +412,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                           <span>תזכורת ערב יום לפני התור</span>
                         </span>
                         <p className="text-xs text-indigo-900 mt-0.5">
-                          הודעת ערב נעימה המזכירה ללקוחה את התור שנקבע לה למחרת
+                          הודעת ערב נעימה המזכירה ללקוח/ה את התור שנקבע למחרת
                         </p>
                       </div>
                     </label>
@@ -1191,7 +1193,9 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                       className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:border-purple-600 outline-none font-mono text-xs"
                     />
                     <span className="text-[11px] text-slate-500 mt-1 block">
-                      עבור WhatsApp Sandbox השאירי: <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[10px]">whatsapp:+14155238886</code>
+                      {settings.twilioType === 'sms'
+                        ? 'מספר הטלפון הווירטואלי שלך ב-Twilio (ברירת מחדל: +15599345376)'
+                        : 'עבור WhatsApp Sandbox: whatsapp:+14155238886'}
                     </span>
                   </div>
 

@@ -54,11 +54,13 @@ import { AdminDashboard } from './components/AdminDashboard';
 import { MyBookingModal } from './components/MyBookingModal';
 import { SalonInfoSection } from './components/SalonInfoSection';
 import { AuthModal } from './components/AuthModal';
+import { TermsOfServiceModal } from './components/TermsOfServiceModal';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => !getStoredUserSession());
   const [authPromptRole, setAuthPromptRole] = useState<'admin' | 'customer'>('customer');
+  const [isTermsOpen, setIsTermsOpen] = useState<boolean>(false);
 
   const [activeTab, setActiveTab] = useState<'booking' | 'admin'>(() => {
     const session = getStoredUserSession();
@@ -315,44 +317,6 @@ export default function App() {
               <h1 className="text-3xl sm:text-4xl font-black text-slate-950 tracking-tight font-['Rubik',sans-serif]">
                 <span className="text-purple-600">Alex</span> <span>טיפוח ויופי</span>
               </h1>
-              <p className="text-xs sm:text-sm text-slate-600 font-medium">
-                מניקור מכשירי מדויק וחיזוק הציפורן הטבעית
-              </p>
-            </div>
-
-            {/* Specialist Card matching video */}
-            <div className="space-y-2 pt-2">
-              <span className="text-xs font-black text-slate-500 uppercase tracking-wider px-1 block">
-                אשת צוות
-              </span>
-              
-              <div className="bg-white rounded-3xl px-4 sm:px-5 border border-slate-200/90 shadow-sm flex items-center justify-between h-[71px]">
-                <div className="flex items-center gap-3.5">
-                  <div className="relative">
-                    <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-600 p-0.5 shadow-md">
-                      <div className="w-full h-full rounded-full bg-slate-950 flex items-center justify-center text-white font-black text-lg">
-                        A
-                      </div>
-                    </div>
-                    <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white flex items-center justify-center">
-                      <Check className="w-2.5 h-2.5 text-white" />
-                    </div>
-                  </div>
-
-                  <div>
-                    <h2 className="text-base sm:text-lg font-black text-slate-900 leading-tight">
-                      {SALON_INFO.ownerName}
-                    </h2>
-                    <p className="text-xs text-purple-700 font-bold">
-                      מומחית ללק ג'ל ומניקור מקצועי
-                    </p>
-                  </div>
-                </div>
-
-                <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">
-                  זמינה לתורים
-                </span>
-              </div>
             </div>
 
             {/* Big Action Button "בחירת טיפול" matching video */}
@@ -450,8 +414,16 @@ export default function App() {
             {SALON_INFO.phone}
           </a>
         </p>
-        <div className="flex items-center justify-center gap-4 pt-2 text-slate-400">
+        <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 pt-2 text-slate-400">
           <span>© {new Date().getFullYear()} כל הזכויות שמורות ל-{SALON_INFO.name}</span>
+          <span>•</span>
+          <button
+            type="button"
+            onClick={() => setIsTermsOpen(true)}
+            className="hover:text-purple-700 underline cursor-pointer transition font-medium text-slate-500"
+          >
+            תקנון ותנאי שימוש
+          </button>
           {isUserAdmin && (
             <>
               <span>•</span>
@@ -468,6 +440,12 @@ export default function App() {
           )}
         </div>
       </footer>
+
+      {/* Terms of Service Modal */}
+      <TermsOfServiceModal
+        isOpen={isTermsOpen}
+        onClose={() => setIsTermsOpen(false)}
+      />
 
       {/* Auth / Registration Modal */}
       <AuthModal

@@ -568,7 +568,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                         required
                         value={customerName}
                         onChange={(e) => setCustomerName(e.target.value)}
-                        placeholder="לדוגמה: מתן כהן"
+                        placeholder="שם מלא (פרטי ומשפחה)"
                         className="w-full pr-9 pl-3 py-2.5 rounded-xl border border-slate-300 focus:border-purple-600 focus:ring-2 focus:ring-purple-100 text-sm font-medium outline-hidden"
                       />
                     </div>

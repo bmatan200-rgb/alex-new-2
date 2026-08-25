@@ -23,8 +23,8 @@ export const DEFAULT_REMINDER_SETTINGS: WhatsAppReminderSettings = {
   instanceId: '',
   twilioAccountSid: '',
   twilioAuthToken: '',
-  twilioPhoneNumber: 'whatsapp:+14155238886',
-  twilioType: 'whatsapp',
+  twilioPhoneNumber: '',
+  twilioType: 'sms',
   eveningReminderTime: '20:56',
   morningReminderTime: '08:00',
   customerTodayTemplate: `היי {customer_name} 🌸
@@ -51,11 +51,38 @@ export const DEFAULT_REMINDER_SETTINGS: WhatsAppReminderSettings = {
 {notes_section}`,
 };
 
+export function formatIsraeliPhoneToE164(phone: string): string {
+  if (!phone) return '';
+  let cleaned = String(phone).replace(/\D/g, '');
+  if (cleaned.startsWith('00972')) {
+    cleaned = '972' + cleaned.slice(5);
+  }
+  if (cleaned.startsWith('9720')) {
+    cleaned = '972' + cleaned.slice(4);
+  }
+  if (cleaned.startsWith('0')) {
+    cleaned = '972' + cleaned.slice(1);
+  }
+  if (!cleaned.startsWith('972') && (cleaned.length === 9 || cleaned.length === 8)) {
+    cleaned = '972' + cleaned;
+  }
+  return '+' + cleaned;
+}
+
 export function getStoredReminderSettings(): WhatsAppReminderSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
     if (!raw) return DEFAULT_REMINDER_SETTINGS;
     const parsed = JSON.parse(raw);
+    
+    // Sanitize old WhatsApp sandbox defaults if present
+    if (parsed.twilioPhoneNumber === 'whatsapp:+14155238886' || parsed.twilioPhoneNumber?.includes('14155238886')) {
+      parsed.twilioPhoneNumber = '';
+    }
+    if (!parsed.twilioType) {
+      parsed.twilioType = 'sms';
+    }
+
     return { ...DEFAULT_REMINDER_SETTINGS, ...parsed };
   } catch {
     return DEFAULT_REMINDER_SETTINGS;
@@ -410,20 +437,8 @@ export function buildAlexReminderText(
  * Creates direct WhatsApp link with pre-filled message (wa.me universal format)
  */
 export function createWhatsAppDirectLink(phone: string, text: string): string {
-  let cleanPhone = phone.replace(/\D/g, '');
-
-  // Handle Israeli phone format variations:
-  // e.g. "0541234567" -> "972541234567"
-  // e.g. "9720541234567" -> "972541234567"
-  // e.g. "541234567" -> "972541234567"
-  if (cleanPhone.startsWith('9720')) {
-    cleanPhone = `972${cleanPhone.slice(4)}`;
-  } else if (cleanPhone.startsWith('0')) {
-    cleanPhone = `972${cleanPhone.slice(1)}`;
-  } else if (!cleanPhone.startsWith('972') && cleanPhone.length === 9) {
-    cleanPhone = `972${cleanPhone}`;
-  }
-
+  const e164 = formatIsraeliPhoneToE164(phone);
+  const cleanPhone = e164.replace(/\D/g, '');
   const encoded = encodeURIComponent(text);
   return `https://wa.me/${cleanPhone}?text=${encoded}`;
 }
@@ -548,9 +563,8 @@ export async function dispatchAutomatedWhatsAppApi({
   reminderType?: 'booking' | 'today' | '1day' | '2hours';
 }): Promise<{ success: boolean; message: string }> {
   try {
-    const cleanPhone = phone.replace(/\D/g, '');
-    let formattedPhone = cleanPhone;
-    if (formattedPhone.startsWith('0')) formattedPhone = `972${formattedPhone.slice(1)}`;
+    const formattedPhone = formatIsraeliPhoneToE164(phone);
+    const cleanPhoneDigits = formattedPhone.replace(/\D/g, '');
 
     // 1. Green API if explicitly configured
     if (settings.provider === 'greenapi' && settings.instanceId && settings.apiKey) {
@@ -559,7 +573,7 @@ export async function dispatchAutomatedWhatsAppApi({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          chatId: `${formattedPhone}@c.us`,
+          chatId: `${cleanPhoneDigits}@c.us`,
           message: message,
         }),
       });
@@ -639,7 +653,7 @@ export async function dispatchAutomatedWhatsAppApi({
         twilioAccountSid: settings.twilioAccountSid || undefined,
         twilioAuthToken: settings.twilioAuthToken || undefined,
         twilioPhoneNumber: settings.twilioPhoneNumber || undefined,
-        twilioType: settings.twilioType || 'whatsapp',
+        twilioType: settings.twilioType || 'sms',
         reminderType,
         appointment,
       }),

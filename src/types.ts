@@ -82,5 +82,7 @@ export interface UserSession {
   phone: string;
   isAdmin: boolean;
   loggedInAt: string;
+  acceptedTerms?: boolean;
+  acceptedTermsAt?: string;
 }
 

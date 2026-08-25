@@ -583,7 +583,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
                     id="customer-name-input"
                     type="text"
                     required
-                    placeholder="למשל: מתן כהן"
+                    placeholder="שם מלא (פרטי ומשפחה)"
                     value={customerName}
                     onChange={(e) => setCustomerName(e.target.value)}
                     className="w-full pl-3 pr-11 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:border-purple-500 focus:bg-white focus:ring-4 focus:ring-purple-500/15 outline-none text-sm font-semibold text-slate-900 placeholder-slate-400 transition-all shadow-xs"

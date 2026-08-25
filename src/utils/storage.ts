@@ -19,7 +19,7 @@ export function isAdminPhone(phone: string): boolean {
 export const SALON_INFO: SalonInfo = {
   name: 'Alex טיפוח ויופי',
   tagline: 'מניקור מקצועי ולק ג׳ל',
-  ownerName: 'Alex',
+  ownerName: 'אלכסנדרה ביטון',
   phone: '054-6307114',
   whatsappNumber: '972546307114',
   address: '',

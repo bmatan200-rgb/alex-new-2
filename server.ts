@@ -43,16 +43,29 @@ function recordSentReminder(key: string) {
   }
 }
 
-// Helper to format phone for WhatsApp / Twilio
-function cleanPhoneForWhatsApp(phone: string): string {
-  let cleaned = phone.replace(/\D/g, '');
-  if (cleaned.startsWith('0')) {
-    cleaned = '972' + cleaned.substring(1);
+// Helper to format any phone number to E.164 (+972 for Israel)
+function formatIsraeliPhoneToE164(phone: string): string {
+  if (!phone) return '';
+  let cleaned = String(phone).replace(/\D/g, '');
+  if (cleaned.startsWith('00972')) {
+    cleaned = '972' + cleaned.slice(5);
   }
-  if (!cleaned.startsWith('+') && !cleaned.startsWith('972') && cleaned.length <= 10) {
+  if (cleaned.startsWith('9720')) {
+    cleaned = '972' + cleaned.slice(4);
+  }
+  if (cleaned.startsWith('0')) {
+    cleaned = '972' + cleaned.slice(1);
+  }
+  if (!cleaned.startsWith('972') && (cleaned.length === 9 || cleaned.length === 8)) {
     cleaned = '972' + cleaned;
   }
-  return cleaned;
+  return '+' + cleaned;
+}
+
+// Helper to format phone for WhatsApp (digits only with 972)
+function cleanPhoneForWhatsApp(phone: string): string {
+  const e164 = formatIsraeliPhoneToE164(phone);
+  return e164.replace(/\D/g, '');
 }
 
 // Get current Israel Date & Time
@@ -119,8 +132,11 @@ async function sendWhatsAppViaProvider(params: {
 
   const twilioAccountSid = params.twilioAccountSid || activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
   const twilioAuthToken = params.twilioAuthToken || activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
-  const twilioPhoneNumber = params.twilioPhoneNumber || activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || 'whatsapp:+14155238886';
-  const twilioType = params.twilioType || activeServerSettings?.twilioType || 'whatsapp';
+  let twilioPhoneNumber = params.twilioPhoneNumber || activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '';
+  if (twilioPhoneNumber === 'whatsapp:+14155238886' && (process.env.TWILIO_TYPE === 'sms' || activeServerSettings?.twilioType === 'sms')) {
+    twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || '';
+  }
+  const twilioType = params.twilioType || activeServerSettings?.twilioType || 'sms';
 
   try {
     // 1. Twilio Integration (WhatsApp & SMS)
@@ -136,21 +152,47 @@ async function sendWhatsAppViaProvider(params: {
       const twilioFactory: any = (twilioModule as any).default || twilioModule;
       const client = twilioFactory(twilioAccountSid.trim(), twilioAuthToken.trim());
 
-      const isWhatsApp = twilioType === 'whatsapp' || twilioPhoneNumber.includes('whatsapp') || twilioPhoneNumber.includes('14155238886');
+      let resolvedTwilioType = process.env.TWILIO_TYPE || params.twilioType || activeServerSettings?.twilioType;
       
-      let fromNumber = twilioPhoneNumber.trim();
-      let toNumber = formattedPhone.startsWith('+') ? formattedPhone : `+${formattedPhone}`;
+      // Auto-detect if user entered a plain number without "whatsapp:" prefix
+      if (resolvedTwilioType === 'whatsapp' && !twilioPhoneNumber.toLowerCase().startsWith('whatsapp:') && twilioPhoneNumber !== '+14155238886' && !twilioPhoneNumber.includes('14155238886')) {
+        resolvedTwilioType = 'sms';
+      }
+
+      if (!resolvedTwilioType) {
+        resolvedTwilioType = twilioPhoneNumber.toLowerCase().startsWith('whatsapp:') ? 'whatsapp' : 'sms';
+      }
+      
+      // Force SMS if requested explicitly via env
+      if (process.env.TWILIO_TYPE === 'sms') {
+        resolvedTwilioType = 'sms';
+      }
+
+      const isWhatsApp = resolvedTwilioType === 'whatsapp';
+      
+      let fromNumber = (twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '+15599345376').trim();
+      let toNumber = formatIsraeliPhoneToE164(phone);
 
       if (isWhatsApp) {
-        if (!fromNumber.startsWith('whatsapp:')) {
+        if (!fromNumber.toLowerCase().startsWith('whatsapp:')) {
           fromNumber = `whatsapp:${fromNumber}`;
         }
-        if (!toNumber.startsWith('whatsapp:')) {
+        if (!toNumber.toLowerCase().startsWith('whatsapp:')) {
           toNumber = `whatsapp:${toNumber}`;
         }
       } else {
-        fromNumber = fromNumber.replace('whatsapp:', '');
-        toNumber = toNumber.replace('whatsapp:', '');
+        // Standard SMS mode via Twilio virtual number
+        fromNumber = fromNumber.replace(/^whatsapp:/i, '').trim();
+        if (fromNumber === '+14155238886' || fromNumber === '14155238886' || !fromNumber) {
+          fromNumber = (process.env.TWILIO_PHONE_NUMBER || '+15599345376').trim();
+        }
+        if (!fromNumber.startsWith('+') && fromNumber.length >= 7) {
+          fromNumber = `+${fromNumber}`;
+        }
+        toNumber = toNumber.replace(/^whatsapp:/i, '').trim();
+        if (!toNumber.startsWith('+')) {
+          toNumber = `+${toNumber}`;
+        }
       }
 
       console.log(`[Twilio Gateway] Sending ${isWhatsApp ? 'WhatsApp' : 'SMS'} to ${toNumber} from ${fromNumber}...`);
@@ -238,7 +280,10 @@ async function sendWhatsAppViaProvider(params: {
       console.warn('[WhatsApp/Twilio Server Gateway] Twilio quota exceeded for this trial account.');
     }
 
-    let friendlyError = err?.message || 'שגיאה בשליחת ההודעה דרך Twilio.';
+    let friendlyError = `שגיאה משרת Twilio: ${err?.message || 'שגיאה לא ידועה'}`;
+    
+    // Add context about recipient phone
+    const debugContext = ` (ניסיון שליחה אל: ${formattedPhone})`;
 
     if (isQuotaError) {
       friendlyError =
@@ -252,6 +297,8 @@ async function sendWhatsAppViaProvider(params: {
     } else if (err?.code === 20003 || err?.message?.includes('Authenticate')) {
       friendlyError =
         'שגיאת Twilio: פרטי ה-Account SID או ה-Auth Token שגויים. אנא בדקי את הפרטים בהגדרות.';
+    } else if (err?.code === 21408 || err?.message?.includes('Permission to send an SMS has not been enabled')) {
+      friendlyError = 'שגיאת הרשאות יעד ב-Twilio (Geo Permissions): חשבונך חסום לשליחת SMS לישראל. יש להתחבר ל-Twilio, לנווט ל-Messaging -> Settings -> Geo Permissions ולאפשר שליחת SMS לישראל (Israel).' + debugContext;
     } else if (err?.code === 21211 || err?.message?.includes('not a valid phone number')) {
       friendlyError =
         'שגיאת Twilio: מספר הטלפון אינו בפורמט בינלאומי תקין.';
@@ -259,7 +306,7 @@ async function sendWhatsAppViaProvider(params: {
 
     return {
       success: false,
-      error: friendlyError,
+      error: friendlyError + (!friendlyError.includes('ניסיון שליחה') ? debugContext : ''),
     };
   }
 }
@@ -479,7 +526,7 @@ app.get('/api/whatsapp/settings', (req: Request, res: Response) => {
         ...activeServerSettings,
         twilioAccountSid: activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '',
         twilioAuthToken: activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '',
-        twilioPhoneNumber: activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || 'whatsapp:+14155238886',
+        twilioPhoneNumber: activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '',
       },
       hasEnvTwilio,
     });
@@ -583,6 +630,117 @@ app.post('/api/whatsapp/send', async (req: Request, res: Response) => {
   }
 });
 
+// ============================================================================
+// USER REGISTRATION WEBHOOK (Twilio SMS / WhatsApp / Make / Zapier Integration)
+// ============================================================================
+// Note for developer: Configure your specific external backend Webhook URL below
+// or set the REGISTRATION_WEBHOOK_URL environment variable.
+let customRegistrationWebhookUrl: string = process.env.REGISTRATION_WEBHOOK_URL || '';
+
+export function setCustomRegistrationWebhookUrl(url: string) {
+  customRegistrationWebhookUrl = url;
+}
+
+// User Registration Webhook Handler
+app.post('/api/register-webhook', async (req: Request, res: Response) => {
+  try {
+    const { name, phone, acceptedTerms, registeredAt, platform, userAgent } = req.body;
+
+    if (!name || !phone) {
+      return res.status(400).json({
+        success: false,
+        error: 'Name and phone are required fields for registration',
+      });
+    }
+
+    const cleanPhone = cleanPhoneForWhatsApp(phone);
+    const timestamp = registeredAt || new Date().toISOString();
+
+    console.log(`\n========================================`);
+    console.log(`[Registration Webhook] New User Registered!`);
+    console.log(`Name: ${name}`);
+    console.log(`Phone: ${phone} (formatted: +${cleanPhone})`);
+    console.log(`Accepted Terms: ${Boolean(acceptedTerms)}`);
+    console.log(`Timestamp: ${timestamp}`);
+    console.log(`========================================\n`);
+
+    const registrationPayload = {
+      event: 'user_registered',
+      name: String(name).trim(),
+      phone: String(phone).trim(),
+      formattedPhone: `+${cleanPhone}`,
+      acceptedTerms: Boolean(acceptedTerms),
+      registeredAt: timestamp,
+      source: 'alex_beauty_app',
+      platform: platform || 'web_mobile',
+      userAgent: userAgent || '',
+    };
+
+    let forwarded = false;
+    let forwardResponse: any = null;
+
+    // 1. Forward to external backend Webhook URL if configured
+    const targetWebhookUrl = customRegistrationWebhookUrl || activeServerSettings?.webhookUrl || process.env.REGISTRATION_WEBHOOK_URL;
+    if (targetWebhookUrl) {
+      try {
+        console.log(`[Registration Webhook] Forwarding payload to external backend: ${targetWebhookUrl}`);
+        const response = await fetch(targetWebhookUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Source': 'alex-beauty-registration',
+          },
+          body: JSON.stringify(registrationPayload),
+        });
+
+        forwarded = true;
+        const textResp = await response.text();
+        try {
+          forwardResponse = JSON.parse(textResp);
+        } catch {
+          forwardResponse = textResp;
+        }
+        console.log(`[Registration Webhook] Forward response status: ${response.status}`);
+      } catch (forwardErr: any) {
+        console.warn(`[Registration Webhook] Could not forward to ${targetWebhookUrl}:`, forwardErr?.message);
+      }
+    }
+
+    // 2. Return successful response to client
+    return res.json({
+      success: true,
+      message: 'Registration received and processed successfully',
+      data: registrationPayload,
+      forwarded,
+      forwardResponse,
+    });
+  } catch (err: any) {
+    console.error('[Registration Webhook] Error processing registration:', err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Internal server error processing registration webhook',
+    });
+  }
+});
+
+// Endpoint to view or configure registration webhook info
+app.get('/api/register-webhook/info', (req: Request, res: Response) => {
+  res.json({
+    status: 'active',
+    webhookEndpoint: '/api/register-webhook',
+    configuredExternalUrl: customRegistrationWebhookUrl || process.env.REGISTRATION_WEBHOOK_URL || null,
+    samplePayload: {
+      event: 'user_registered',
+      name: 'ישראל ישראלי',
+      phone: '050-1234567',
+      formattedPhone: '+972501234567',
+      acceptedTerms: true,
+      registeredAt: new Date().toISOString(),
+      source: 'alex_beauty_app',
+    },
+  });
+});
+
 // Status & diagnostics route
 app.get('/api/whatsapp/status', (req: Request, res: Response) => {
   const israelTime = getIsraelTime();
@@ -612,8 +770,11 @@ app.get('/api/whatsapp/status', (req: Request, res: Response) => {
 app.get('/api/whatsapp/diagnose', async (req: Request, res: Response) => {
   const twilioSid = activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
   const twilioToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
-  const twilioPhone = activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || 'whatsapp:+14155238886';
-  const twilioType = activeServerSettings?.twilioType || 'whatsapp';
+  const twilioPhone = activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '';
+  let twilioType = process.env.TWILIO_TYPE || activeServerSettings?.twilioType || 'sms';
+  if (twilioType === 'whatsapp' && twilioPhone && !twilioPhone.toLowerCase().startsWith('whatsapp:') && !twilioPhone.includes('14155238886')) {
+    twilioType = 'sms';
+  }
 
   const diagnostics: any = {
     timestamp: new Date().toISOString(),

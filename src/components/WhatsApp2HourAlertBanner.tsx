@@ -327,60 +327,36 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
                     )}
                   </div>
 
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
-                    {/* Primary: Instant Automated Send Button in Background */}
+                  <div className="pt-2 border-t border-slate-100 flex items-center gap-2">
+                    {/* Primary: Instant Automated Send Button via SMS */}
                     <button
                       type="button"
                       disabled={isCurrentlySending}
                       onClick={() => handleSendAutomatedNow(appt, 'today')}
-                      className={`flex-1 py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs ${
+                      className={`w-full py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs ${
                         customerTodaySent
                           ? 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200'
                           : 'bg-amber-500 hover:bg-amber-600 text-white shadow-amber-500/25'
                       } disabled:opacity-50`}
-                      title="שליחת הודעה אוטומטית ברקע ללא פתיחת וואטסאפ"
+                      title="שליחת תזכורת SMS ישירה"
                     >
                       {isCurrentlySending ? (
                         <>
                           <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-                          <span>שולח אוטומטית...</span>
+                          <span>שולח תזכורת SMS...</span>
                         </>
                       ) : customerTodaySent ? (
                         <>
                           <CheckCircle2 className="w-3.5 h-3.5 text-amber-800" />
-                          <span>נשלח אוטומטית ✓ (שלח שוב ⚡)</span>
+                          <span>נשלחה תזכורת SMS ✓ (שלח שוב ⚡)</span>
                         </>
                       ) : (
                         <>
                           <Zap className="w-3.5 h-3.5 fill-white" />
-                          <span>שלח תזכורת אוטומטית ⚡</span>
+                          <span>שלח תזכורת SMS ⚡</span>
                         </>
                       )}
                     </button>
-
-                    {/* Secondary: Manual WhatsApp Link */}
-                    <a
-                      href={createWhatsAppDirectLink(
-                        appt.customer_phone,
-                        buildCustomerTodayReminderText(appt, settings.customerTodayTemplate)
-                      )}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => {
-                        markReminderSent(appt.id, 'customer', 'today');
-                        setSentLog(getSentRemindersLog());
-                        setStatusNotification({
-                          type: 'success',
-                          message: `נפתח וואטסאפ ל-${appt.customer_name}! 💬`,
-                        });
-                        setTimeout(() => setStatusNotification(null), 3500);
-                      }}
-                      className="py-2 px-2.5 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 border border-slate-200 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
-                      title="פתיחת שיחה בוואטסאפ ידנית (פותח אפליקציה במכשיר)"
-                    >
-                      <MessageCircle className="w-3.5 h-3.5 text-emerald-600" />
-                      <span className="text-[11px]">שליחה ידנית</span>
-                    </a>
                   </div>
                 </div>
               );
@@ -481,60 +457,36 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
                     )}
                   </div>
 
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
-                    {/* Primary: Instant Automated Send Button in Background */}
+                  <div className="pt-2 border-t border-slate-100 flex items-center gap-2">
+                    {/* Primary: Instant Automated Send Button via SMS */}
                     <button
                       type="button"
                       disabled={isCurrentlySending}
                       onClick={() => handleSendAutomatedNow(appt, '1day')}
-                      className={`flex-1 py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs ${
+                      className={`w-full py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs ${
                         customer1DaySent
                           ? 'bg-indigo-100 text-indigo-900 border border-indigo-300 hover:bg-indigo-200'
                           : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/25'
                       } disabled:opacity-50`}
-                      title="שליחת הודעה אוטומטית ברקע ללא פתיחת וואטסאפ"
+                      title="שליחת תזכורת SMS ישירה"
                     >
                       {isCurrentlySending ? (
                         <>
                           <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-                          <span>שולח אוטומטית...</span>
+                          <span>שולח תזכורת SMS...</span>
                         </>
                       ) : customer1DaySent ? (
                         <>
                           <CheckCircle2 className="w-3.5 h-3.5 text-indigo-800" />
-                          <span>נשלח אוטומטית ✓ (שלח שוב ⚡)</span>
+                          <span>נשלחה תזכורת SMS ✓ (שלח שוב ⚡)</span>
                         </>
                       ) : (
                         <>
                           <Zap className="w-3.5 h-3.5 fill-white" />
-                          <span>שלח תזכורת אוטומטית ⚡</span>
+                          <span>שלח תזכורת SMS ⚡</span>
                         </>
                       )}
                     </button>
-
-                    {/* Secondary: Manual WhatsApp Link */}
-                    <a
-                      href={createWhatsAppDirectLink(
-                        appt.customer_phone,
-                        buildCustomer1DayReminderText(appt, settings.customer1DayTemplate)
-                      )}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => {
-                        markReminderSent(appt.id, 'customer', '1day');
-                        setSentLog(getSentRemindersLog());
-                        setStatusNotification({
-                          type: 'success',
-                          message: `נפתח וואטסאפ ל-${appt.customer_name}! 💬`,
-                        });
-                        setTimeout(() => setStatusNotification(null), 3500);
-                      }}
-                      className="py-2 px-2.5 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 border border-slate-200 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer"
-                      title="פתיחת שיחה בוואטסאפ ידנית (פותח אפליקציה במכשיר)"
-                    >
-                      <MessageCircle className="w-3.5 h-3.5 text-emerald-600" />
-                      <span className="text-[11px]">שליחה ידנית</span>
-                    </a>
                   </div>
                 </div>
               );

@@ -13,9 +13,6 @@ import {
   Sun,
   Sunset,
   Moon,
-  FileText,
-  ExternalLink,
-  Check,
 } from 'lucide-react';
 import { Appointment, DayInfo, ScheduleSettings, Service, UserSession } from '../types';
 import {
@@ -34,8 +31,6 @@ import {
 } from '../utils/dateUtils';
 import { SALON_INFO, saveUserSession, isAdminPhone } from '../utils/storage';
 import { addAppointmentToFirestore } from '../lib/firebase';
-import { TermsOfServiceModal } from './TermsOfServiceModal';
-import { SignaturePad } from './SignaturePad';
 
 interface TorModalFlowProps {
   isOpen: boolean;
@@ -72,9 +67,6 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
   const [customerName, setCustomerName] = useState<string>(currentUser?.name || '');
   const [customerPhone, setCustomerPhone] = useState<string>(currentUser?.phone || '');
   const [isEditingDetails, setIsEditingDetails] = useState(false);
-  const [acceptedTerms, setAcceptedTerms] = useState(Boolean(currentUser?.acceptedTerms));
-  const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(currentUser?.signatureDataUrl || null);
-  const [isTermsModalOpen, setIsTermsModalOpen] = useState(false);
   const [notes, setNotes] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -84,8 +76,6 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     if (currentUser) {
       if (currentUser.name) setCustomerName(currentUser.name);
       if (currentUser.phone) setCustomerPhone(currentUser.phone);
-      if (currentUser.acceptedTerms) setAcceptedTerms(true);
-      if (currentUser.signatureDataUrl) setSignatureDataUrl(currentUser.signatureDataUrl);
     }
   }, [currentUser, isOpen]);
 
@@ -186,18 +176,6 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
 
     const isAdmin = isAdminPhone(cleanPhone);
 
-    // Validate Terms & Digital Signature if not yet signed
-    if (!isAdmin && (!currentUser?.acceptedTerms || isEditingDetails)) {
-      if (!signatureDataUrl) {
-        setErrorMessage('יש לחתום דיגיטלית בלוח החתימה על מנת לאשר את התקנון');
-        return;
-      }
-      if (!acceptedTerms) {
-        setErrorMessage('יש לסמן אישור על תקנון ותנאי השימוש');
-        return;
-      }
-    }
-
     setIsSubmitting(true);
 
     try {
@@ -220,15 +198,15 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         notes: notes.trim() || undefined,
       };
 
-      // Save user session in localStorage with signature & terms timestamp
+      // Save user session in localStorage
       saveUserSession({
         name: cleanName,
         phone: cleanPhone,
         isAdmin,
         loggedInAt: new Date().toISOString(),
-        acceptedTerms: true,
-        acceptedTermsAt: new Date().toISOString(),
-        signatureDataUrl: signatureDataUrl || currentUser?.signatureDataUrl,
+        acceptedTerms: currentUser?.acceptedTerms ?? true,
+        acceptedTermsAt: currentUser?.acceptedTermsAt || new Date().toISOString(),
+        signatureDataUrl: currentUser?.signatureDataUrl,
       });
 
       // Save to Firestore & local storage
@@ -653,100 +631,6 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                 </div>
               </div>
 
-              {/* Customer Terms & Signature (if not previously signed or editing details) */}
-              {(!currentUser?.acceptedTerms || isEditingDetails) && (
-                <div className="space-y-3 pt-1 text-right">
-                  {/* Terms Summary Card */}
-                  <div className="p-3 bg-purple-50/70 rounded-2xl border border-purple-200/90 text-xs space-y-2 text-slate-700">
-                    <div className="flex items-center justify-between font-bold text-purple-950 border-b border-purple-200/60 pb-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <FileText className="w-4 h-4 text-purple-700" />
-                        <span>תקנון ותנאי שימוש</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setIsTermsModalOpen(true)}
-                        className="text-[11px] text-purple-700 hover:text-purple-950 font-extrabold underline flex items-center gap-1 cursor-pointer"
-                      >
-                        <span>לתקנון המלא</span>
-                        <ExternalLink className="w-3 h-3" />
-                      </button>
-                    </div>
-
-                    <ul className="text-[11px] text-slate-600 space-y-1 pr-1 list-disc list-inside leading-snug">
-                      <li><strong>שמירת פרטיות:</strong> הפרטים משמשים רק לתיאום תורים ויצירת קשר.</li>
-                      <li><strong>תזכורות:</strong> אישור קבלת תזכורות SMS / עדכונים לתור.</li>
-                      <li><strong>ביטולים:</strong> נא לעדכן מראש על כל שינוי או ביטול.</li>
-                    </ul>
-                  </div>
-
-                  {/* Digital Signature Pad */}
-                  <SignaturePad
-                    onSignatureChange={(dataUrl) => {
-                      setSignatureDataUrl(dataUrl);
-                      if (dataUrl) {
-                        setAcceptedTerms(true);
-                        setErrorMessage('');
-                      }
-                    }}
-                    required={true}
-                  />
-
-                  {/* Mandatory Terms Checkbox */}
-                  <div
-                    className={`p-3 rounded-2xl border transition-all ${
-                      acceptedTerms
-                        ? 'bg-purple-50/70 border-purple-200/90'
-                        : 'bg-slate-50/90 border-slate-200 hover:border-slate-300'
-                    }`}
-                  >
-                    <label
-                      htmlFor="tor-terms-checkbox"
-                      className="flex items-start gap-2.5 cursor-pointer select-none text-xs leading-snug"
-                    >
-                      <div className="relative flex items-center justify-center shrink-0 mt-0.5">
-                        <input
-                          id="tor-terms-checkbox"
-                          type="checkbox"
-                          checked={acceptedTerms}
-                          onChange={(e) => {
-                            setAcceptedTerms(e.target.checked);
-                            if (e.target.checked) setErrorMessage('');
-                          }}
-                          className="sr-only peer"
-                        />
-                        <div
-                          className={`w-5 h-5 rounded-lg border-2 flex items-center justify-center transition-all ${
-                            acceptedTerms
-                              ? 'bg-purple-600 border-purple-600 text-white shadow-xs'
-                              : 'bg-white border-slate-300 peer-focus:border-purple-500'
-                          }`}
-                        >
-                          {acceptedTerms && <Check className="w-3.5 h-3.5 stroke-[3]" />}
-                        </div>
-                      </div>
-
-                      <div className="text-slate-700 text-xs font-medium">
-                        <span>קראתי את </span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setIsTermsModalOpen(true);
-                          }}
-                          className="text-purple-700 font-bold underline hover:text-purple-900 cursor-pointer focus:outline-none transition inline-block px-0.5"
-                        >
-                          תקנון ותנאי השימוש
-                        </button>
-                        <span>, ואני חותם/ת ומאשר/ת אותם</span>
-                        <span className="text-purple-600 font-bold mr-0.5">*</span>
-                      </div>
-                    </label>
-                  </div>
-                </div>
-              )}
-
               {/* Submit Button */}
               <button
                 type="submit"
@@ -768,16 +652,6 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         </div>
 
       </div>
-
-      {/* Full Terms Modal */}
-      <TermsOfServiceModal
-        isOpen={isTermsModalOpen}
-        onClose={() => setIsTermsModalOpen(false)}
-        onAccept={() => {
-          setAcceptedTerms(true);
-          setErrorMessage('');
-        }}
-      />
     </div>
   );
 };

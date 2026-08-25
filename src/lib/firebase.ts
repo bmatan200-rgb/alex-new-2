@@ -36,7 +36,7 @@ export function subscribeAppointments(
   try {
     const q = query(
       collection(db, APPOINTMENTS_COLLECTION),
-      orderBy('appointment_date', 'desc')
+      orderBy('appointment_date', 'asc')
     );
 
     const unsubscribe = onSnapshot(
@@ -64,6 +64,12 @@ export function subscribeAppointments(
             created_at: data.created_at || new Date().toISOString(),
           });
         }
+        // Sort ascending: from closest date and time to furthest
+        list.sort((a, b) => {
+          const dComp = (a.appointment_date || '').localeCompare(b.appointment_date || '');
+          if (dComp !== 0) return dComp;
+          return (a.start_time || '').localeCompare(b.start_time || '');
+        });
         onUpdate(list);
       },
       (err) => {
@@ -86,6 +92,9 @@ export function subscribeAppointments(
 export async function addAppointmentToFirestore(
   appointment: Omit<Appointment, 'id'> | Appointment
 ): Promise<string> {
+  const docId =
+    'id' in appointment && appointment.id ? String(appointment.id) : String(Date.now());
+
   const dataToSave = {
     customer_name: appointment.customer_name,
     customer_phone: appointment.customer_phone,
@@ -100,30 +109,42 @@ export async function addAppointmentToFirestore(
     created_at: appointment.created_at || new Date().toISOString(),
   };
 
-  if ('id' in appointment && typeof appointment.id === 'string' && appointment.id.length > 5) {
-    const docRef = doc(db, APPOINTMENTS_COLLECTION, appointment.id);
-    await setDoc(docRef, dataToSave);
-    return appointment.id;
-  } else {
-    const docRef = await addDoc(collection(db, APPOINTMENTS_COLLECTION), dataToSave);
-    return docRef.id;
-  }
+  const docRef = doc(db, APPOINTMENTS_COLLECTION, docId);
+  await setDoc(docRef, dataToSave, { merge: true });
+  return docId;
 }
 
 /**
  * Cancel appointment in Firestore
  */
 export async function cancelAppointmentInFirestore(appointmentId: string | number): Promise<void> {
-  const docRef = doc(db, APPOINTMENTS_COLLECTION, String(appointmentId));
-  await updateDoc(docRef, { status: 'cancelled' });
+  const idStr = String(appointmentId);
+  try {
+    const docRef = doc(db, APPOINTMENTS_COLLECTION, idStr);
+    await updateDoc(docRef, { status: 'cancelled' });
+  } catch (err) {
+    console.warn(`Direct updateDoc for ${idStr} failed, trying fallback:`, err);
+    // If setDoc fallback is needed
+    try {
+      const docRef = doc(db, APPOINTMENTS_COLLECTION, idStr);
+      await setDoc(docRef, { status: 'cancelled' }, { merge: true });
+    } catch (fallbackErr) {
+      console.error('Failed to cancel appointment in Firestore fallback:', fallbackErr);
+    }
+  }
 }
 
 /**
  * Permanently delete appointment in Firestore
  */
 export async function deleteAppointmentInFirestore(appointmentId: string | number): Promise<void> {
-  const docRef = doc(db, APPOINTMENTS_COLLECTION, String(appointmentId));
-  await deleteDoc(docRef);
+  const idStr = String(appointmentId);
+  try {
+    const docRef = doc(db, APPOINTMENTS_COLLECTION, idStr);
+    await deleteDoc(docRef);
+  } catch (err) {
+    console.error(`Failed to delete appointment ${idStr} in Firestore:`, err);
+  }
 }
 
 const SETTINGS_COLLECTION = 'settings';
@@ -160,5 +181,48 @@ export async function saveServicesToFirestore(services: Service[]): Promise<void
     await setDoc(docRef, { services, updatedAt: new Date().toISOString() });
   } catch (err) {
     console.warn('Could not save services to Firestore:', err);
+  }
+}
+
+/**
+ * Real-time listener for salon schedule / working hours settings
+ */
+export function subscribeScheduleSettings(
+  onUpdate: (settings: import('../types').ScheduleSettings) => void
+): () => void {
+  try {
+    const docRef = doc(db, SETTINGS_COLLECTION, 'schedule_settings');
+    const unsubscribe = onSnapshot(docRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (data && data.businessOpen && data.businessClose) {
+          onUpdate({
+            businessOpen: data.businessOpen,
+            businessClose: data.businessClose,
+            fridayOpen: data.fridayOpen || '09:20',
+            fridayClose: data.fridayClose || '15:00',
+            durationMinutes: Number(data.durationMinutes) || 90,
+          });
+        }
+      }
+    });
+    return unsubscribe;
+  } catch (err) {
+    console.warn('Failed to set up schedule Firestore listener:', err);
+    return () => {};
+  }
+}
+
+/**
+ * Save salon schedule / working hours settings to Firestore
+ */
+export async function saveScheduleSettingsToFirestore(
+  settings: import('../types').ScheduleSettings
+): Promise<void> {
+  try {
+    const docRef = doc(db, SETTINGS_COLLECTION, 'schedule_settings');
+    await setDoc(docRef, { ...settings, updatedAt: new Date().toISOString() });
+  } catch (err) {
+    console.warn('Could not save schedule settings to Firestore:', err);
   }
 }

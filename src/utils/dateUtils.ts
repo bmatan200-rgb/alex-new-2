@@ -2,8 +2,9 @@ import { Appointment, DayInfo } from '../types';
 
 export const BUSINESS_OPEN = '09:20';
 export const BUSINESS_CLOSE = '20:30';
+export const FRIDAY_OPEN = '09:20';
 export const FRIDAY_CLOSE = '15:00';
-export const SLOT_INTERVAL = 110; // 1 hour and 50 minutes (110 mins)
+export const SLOT_INTERVAL = 90; // 1 hour and 30 minutes (90 mins / 1:30)
 
 export const HEBREW_WEEKDAYS = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
 
@@ -153,15 +154,21 @@ export function calculateAvailableSlots({
   return slots;
 }
 
-// Returns all standard slot start times for a given day according to business hours & 110-minute intervals
-export function getAllStandardSlots(dateString: string, durationMinutes: number = SLOT_INTERVAL): string[] {
+// Returns all standard slot start times for a given day according to business hours & duration intervals
+export function getAllStandardSlots(
+  dateString: string,
+  durationMinutes: number = SLOT_INTERVAL,
+  businessOpen: string = BUSINESS_OPEN,
+  businessClose: string = BUSINESS_CLOSE,
+  fridayClose: string = FRIDAY_CLOSE
+): string[] {
   if (!dateString) return [];
   const [y, m, d] = dateString.split('-').map(Number);
   const dayOfWeek = new Date(y, m - 1, d).getDay();
   if (dayOfWeek === 6) return []; // Saturday is closed
 
-  const effectiveClose = dayOfWeek === 5 ? FRIDAY_CLOSE : BUSINESS_CLOSE;
-  const openMin = timeToMinutes(BUSINESS_OPEN);
+  const effectiveClose = dayOfWeek === 5 ? fridayClose : businessClose;
+  const openMin = timeToMinutes(businessOpen);
   const closeMin = timeToMinutes(effectiveClose);
 
   const slots: string[] = [];
@@ -182,9 +189,12 @@ export interface SlotOccupancy {
 export function getDailySlotsOccupancy(
   dateString: string,
   appointments: Appointment[],
-  durationMinutes: number = SLOT_INTERVAL
+  durationMinutes: number = SLOT_INTERVAL,
+  businessOpen: string = BUSINESS_OPEN,
+  businessClose: string = BUSINESS_CLOSE,
+  fridayClose: string = FRIDAY_CLOSE
 ): SlotOccupancy[] {
-  const allSlots = getAllStandardSlots(dateString, durationMinutes);
+  const allSlots = getAllStandardSlots(dateString, durationMinutes, businessOpen, businessClose, fridayClose);
   const dateAppointments = appointments.filter(
     (a) => a.appointment_date === dateString && a.status === 'confirmed'
   );

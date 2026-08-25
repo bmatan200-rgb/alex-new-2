@@ -1,4 +1,4 @@
-import { Appointment, SalonInfo, Service, UserSession } from '../types';
+import { Appointment, SalonInfo, ScheduleSettings, Service, UserSession } from '../types';
 import { toISODateString } from './dateUtils';
 
 export const ADMIN_PHONE_RAW = '0546307114';
@@ -31,20 +31,54 @@ export const SALON_INFO: SalonInfo = {
   ],
 };
 
+export const DEFAULT_SCHEDULE_SETTINGS: ScheduleSettings = {
+  businessOpen: '09:20',
+  businessClose: '20:30',
+  fridayOpen: '09:20',
+  fridayClose: '15:00',
+  durationMinutes: 90, // 1 hour and 30 minutes (90 mins / 1:30)
+};
+
 export const SERVICES: Service[] = [
   {
     id: 1,
     name: "לק ג'ל",
-    duration_minutes: 110,
+    duration_minutes: 90, // 1:30 (90 minutes)
     price: 150,
     category: 'nails',
     description: 'מניקור יסודי משולב ומריחת לק ג׳ל איכותי בגימור מושלם',
   },
 ];
 
-const STORAGE_KEY_SERVICES = 'alex_beauty_services_v1';
+const STORAGE_KEY_SERVICES = 'alex_beauty_services_v2';
+const STORAGE_KEY_SCHEDULE_SETTINGS = 'alex_beauty_schedule_settings_v1';
 const STORAGE_KEY_APPOINTMENTS = 'alex_beauty_appointments_v5';
 const STORAGE_KEY_USER_SESSION = 'alex_beauty_user_session_v1';
+
+export function getStoredScheduleSettings(): ScheduleSettings {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_SCHEDULE_SETTINGS);
+    if (!raw) return DEFAULT_SCHEDULE_SETTINGS;
+    const parsed = JSON.parse(raw);
+    return {
+      businessOpen: parsed.businessOpen || DEFAULT_SCHEDULE_SETTINGS.businessOpen,
+      businessClose: parsed.businessClose || DEFAULT_SCHEDULE_SETTINGS.businessClose,
+      fridayOpen: parsed.fridayOpen || DEFAULT_SCHEDULE_SETTINGS.fridayOpen,
+      fridayClose: parsed.fridayClose || DEFAULT_SCHEDULE_SETTINGS.fridayClose,
+      durationMinutes: Number(parsed.durationMinutes) || DEFAULT_SCHEDULE_SETTINGS.durationMinutes,
+    };
+  } catch {
+    return DEFAULT_SCHEDULE_SETTINGS;
+  }
+}
+
+export function saveStoredScheduleSettings(settings: ScheduleSettings): void {
+  try {
+    localStorage.setItem(STORAGE_KEY_SCHEDULE_SETTINGS, JSON.stringify(settings));
+  } catch (err) {
+    console.warn('Error saving schedule settings to localStorage:', err);
+  }
+}
 
 export function getStoredServices(): Service[] {
   try {
@@ -88,15 +122,17 @@ export function saveAppointment(appointment: Appointment): void {
 
 export function cancelAppointment(appointmentId: number | string): void {
   const current = getStoredAppointments();
+  const idStr = String(appointmentId);
   const updated = current.map((app) =>
-    app.id === appointmentId ? { ...app, status: 'cancelled' as const } : app
+    String(app.id) === idStr ? { ...app, status: 'cancelled' as const } : app
   );
   localStorage.setItem(STORAGE_KEY_APPOINTMENTS, JSON.stringify(updated));
 }
 
 export function deleteAppointmentPermanently(appointmentId: number | string): void {
   const current = getStoredAppointments();
-  const updated = current.filter((app) => app.id !== appointmentId);
+  const idStr = String(appointmentId);
+  const updated = current.filter((app) => String(app.id) !== idStr);
   localStorage.setItem(STORAGE_KEY_APPOINTMENTS, JSON.stringify(updated));
 }
 

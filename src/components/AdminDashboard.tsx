@@ -23,8 +23,14 @@ import {
   Zap,
   Loader2,
   CheckCircle2,
+  Search,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  History,
+  CalendarDays,
 } from 'lucide-react';
-import { Appointment, Service } from '../types';
+import { Appointment, ScheduleSettings, Service } from '../types';
 import {
   toIsraeliDateString,
   formatILS,
@@ -34,6 +40,9 @@ import {
   getDailySlotsOccupancy,
   formatHebrewFullDate,
   formatDurationMinutes,
+  BUSINESS_OPEN,
+  BUSINESS_CLOSE,
+  FRIDAY_CLOSE,
 } from '../utils/dateUtils';
 import { SALON_INFO } from '../utils/storage';
 import { WhatsApp2HourAlertBanner } from './WhatsApp2HourAlertBanner';
@@ -62,6 +71,8 @@ interface AdminDashboardProps {
   onDeleteAppointment: (id: number | string) => void;
   onSwitchToClientView?: () => void;
   onUpdateServices?: (services: Service[]) => void;
+  scheduleSettings?: ScheduleSettings;
+  onUpdateScheduleSettings?: (settings: ScheduleSettings) => void;
 }
 
 const STATUS_LABELS: Record<string, { text: string; className: string }> = {
@@ -85,8 +96,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onUpdateServices,
 }) => {
   const todayIso = toISODateString(new Date());
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrowIso = toISODateString(tomorrowDate);
+
   const [selectedDate, setSelectedDate] = useState<string>(todayIso);
-  const [filter, setFilter] = useState<'all' | 'today' | 'upcoming' | 'blocked'>('all');
+  const [filter, setFilter] = useState<'upcoming' | 'all' | 'today' | 'blocked' | 'past'>('upcoming');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [searchQuery, setSearchQuery] = useState('');
   const [isAddingManual, setIsAddingManual] = useState(false);
   const [actionTab, setActionTab] = useState<'block' | 'client'>('block');
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
@@ -368,6 +385,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const filteredAppointments = appointments
     .filter((app) => {
       const isBlock = isBlockedAppointment(app);
+
+      // Search query filtering
+      if (searchQuery.trim()) {
+        const q = searchQuery.trim().toLowerCase();
+        const matchesName = (app.customer_name || '').toLowerCase().includes(q);
+        const matchesPhone = (app.customer_phone || '').replace(/\D/g, '').includes(q.replace(/\D/g, '')) || (app.customer_phone || '').includes(q);
+        const matchesService = (app.service_name || '').toLowerCase().includes(q);
+        const matchesNotes = (app.notes || '').toLowerCase().includes(q);
+        const matchesDate = (app.appointment_date || '').includes(q) || toIsraeliDateString(app.appointment_date).includes(q);
+        if (!matchesName && !matchesPhone && !matchesService && !matchesNotes && !matchesDate) {
+          return false;
+        }
+      }
+
       if (filter === 'blocked') return isBlock && app.status === 'confirmed';
       if (filter === 'today') return app.appointment_date === todayIso;
       if (filter === 'upcoming') {
@@ -377,12 +408,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           !isBlock
         );
       }
+      if (filter === 'past') {
+        return app.appointment_date < todayIso || app.status === 'cancelled';
+      }
       return true;
     })
     .sort((a, b) => {
-      const dComp = a.appointment_date.localeCompare(b.appointment_date);
-      if (dComp !== 0) return dComp;
-      return a.start_time.localeCompare(b.start_time);
+      const dateA = a.appointment_date || '';
+      const dateB = b.appointment_date || '';
+      const timeA = a.start_time || '';
+      const timeB = b.start_time || '';
+
+      if (filter === 'all' && sortOrder === 'asc') {
+        // When showing ALL with ascending sort: prioritize active upcoming/today appointments (>= today) from closest to farthest
+        const isUpcomingA = dateA >= todayIso;
+        const isUpcomingB = dateB >= todayIso;
+        if (isUpcomingA && !isUpcomingB) return -1;
+        if (!isUpcomingA && isUpcomingB) return 1;
+      }
+
+      const dComp = dateA.localeCompare(dateB);
+      if (dComp !== 0) {
+        return sortOrder === 'asc' ? dComp : -dComp;
+      }
+      const tComp = timeA.localeCompare(timeB);
+      return sortOrder === 'asc' ? tComp : -tComp;
     });
 
   return (
@@ -1261,53 +1311,110 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           )}
         </div>
 
-        {/* Filter Selection Tabs */}
-        <div className="flex items-center gap-2 pt-3 border-t border-slate-100">
-          <span className="text-xs text-slate-500 font-bold">הצג:</span>
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs border border-slate-200">
+        {/* Filter Selection & Search Controls */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-100">
+          {/* Quick Tabs */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-slate-500 font-bold ml-1">סינון:</span>
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs border border-slate-200 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setFilter('upcoming')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  filter === 'upcoming'
+                    ? 'bg-purple-600 text-white shadow-xs'
+                    : 'text-slate-700 hover:text-slate-900'
+                }`}
+              >
+                <span>עתידיים (מהקרוב לרחוק)</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'upcoming' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                  {appointments.filter((a) => a.appointment_date >= todayIso && a.status === 'confirmed' && !isBlockedAppointment(a)).length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFilter('today')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  filter === 'today'
+                    ? 'bg-purple-600 text-white shadow-xs'
+                    : 'text-slate-700 hover:text-slate-900'
+                }`}
+              >
+                <span>היום</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'today' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                  {appointments.filter((a) => a.appointment_date === todayIso).length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFilter('all')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  filter === 'all'
+                    ? 'bg-purple-600 text-white shadow-xs'
+                    : 'text-slate-700 hover:text-slate-900'
+                }`}
+              >
+                <span>הכל</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'all' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                  {appointments.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFilter('blocked')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  filter === 'blocked'
+                    ? 'bg-slate-900 text-purple-300 shadow-xs'
+                    : 'text-slate-700 hover:text-slate-900'
+                }`}
+              >
+                <Lock className="w-3 h-3 text-purple-400" />
+                <span>חסומים</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'blocked' ? 'bg-purple-950 text-purple-200' : 'bg-slate-200 text-slate-700'}`}>
+                  {appointments.filter((a) => isBlockedAppointment(a) && a.status === 'confirmed').length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFilter('past')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  filter === 'past'
+                    ? 'bg-slate-700 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <History className="w-3 h-3" />
+                <span>עבר / מבוטלים</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'past' ? 'bg-slate-800 text-slate-300' : 'bg-slate-200 text-slate-700'}`}>
+                  {appointments.filter((a) => a.appointment_date < todayIso || a.status === 'cancelled').length}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {/* Sort Order Toggle */}
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setFilter('all')}
-              className={`px-3 py-1 rounded-lg font-bold transition cursor-pointer ${
-                filter === 'all'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
+              onClick={() => setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
+              className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-950 border border-purple-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title={sortOrder === 'asc' ? 'מוצג בסדר עולה: מהקרוב ביותר לרחוק. לחצי לשינוי לסדר יורד' : 'מוצג בסדר יורד: מהרחוק לקרוב. לחצי לשינוי לסדר עולה'}
             >
-              הכל ({appointments.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setFilter('today')}
-              className={`px-3 py-1 rounded-lg font-bold transition cursor-pointer ${
-                filter === 'today'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              היום ({appointments.filter((a) => a.appointment_date === todayIso).length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setFilter('upcoming')}
-              className={`px-3 py-1 rounded-lg font-bold transition cursor-pointer ${
-                filter === 'upcoming'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              עתידיים
-            </button>
-            <button
-              type="button"
-              onClick={() => setFilter('blocked')}
-              className={`px-3 py-1 rounded-lg font-bold transition cursor-pointer ${
-                filter === 'blocked'
-                  ? 'bg-white text-purple-900 shadow-xs font-bold'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              🔒 חסומים ({appointments.filter((a) => isBlockedAppointment(a) && a.status === 'confirmed').length})
+              {sortOrder === 'asc' ? (
+                <>
+                  <ArrowUp className="w-3.5 h-3.5 text-purple-700" />
+                  <span>סדר עולה: מהקרוב לרחוק ⬆️</span>
+                </>
+              ) : (
+                <>
+                  <ArrowDown className="w-3.5 h-3.5 text-purple-700" />
+                  <span>סדר יורד: מהרחוק לקרוב ⬇️</span>
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -1315,19 +1422,52 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       {/* Appointments & Blocked Slots List */}
       <div className="space-y-3">
-        <h3 className="text-sm font-bold text-slate-900 flex items-center justify-between">
-          <span>רשימת יומן ותורים מלאה ({filteredAppointments.length})</span>
-          {filter !== 'all' && (
-            <span className="text-xs text-slate-500 font-normal">
-              סינון פעיל: {filter === 'today' ? 'היום' : filter === 'upcoming' ? 'עתידיים' : 'זמנים חסומים'}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <h3 className="text-base font-black text-slate-900 flex items-center gap-2 font-['Rubik',sans-serif]">
+              <CalendarDays className="w-5 h-5 text-purple-600" />
+              <span>רשימת יומן ותורים מלאה ({filteredAppointments.length})</span>
+            </h3>
+            <span className="text-xs bg-purple-100 text-purple-900 font-bold px-2.5 py-0.5 rounded-full border border-purple-200">
+              {sortOrder === 'asc' ? 'סדר עולה: מהקרוב ביותר לרחוק' : 'סדר יורד: מהרחוק לקרוב'}
             </span>
-          )}
-        </h3>
+          </div>
+
+          {/* Quick Search */}
+          <div className="relative min-w-[240px]">
+            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="חיפוש לפי שם, טלפון, תאריך..."
+              className="w-full pl-8 pr-9 py-2 bg-slate-50 text-slate-900 rounded-xl border border-slate-200 focus:border-purple-600 focus:bg-white text-xs outline-none font-medium transition"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
 
         {filteredAppointments.length === 0 ? (
-          <div className="p-8 bg-white rounded-2xl border border-slate-200 text-center text-xs text-slate-500 space-y-1 shadow-xs">
-            <AlertCircle className="w-6 h-6 mx-auto text-slate-400 mb-1" />
-            <p className="font-bold text-slate-800 text-sm">אין תורים או חסימות להצגה</p>
+          <div className="p-8 bg-white rounded-2xl border border-slate-200 text-center text-xs text-slate-500 space-y-2 shadow-xs">
+            <AlertCircle className="w-8 h-8 mx-auto text-slate-300" />
+            <p className="font-bold text-slate-800 text-sm">לא נמצאו תורים או חסימות בסינון זה</p>
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="text-purple-700 hover:text-purple-900 font-bold underline cursor-pointer"
+              >
+                איפוס חיפוש
+              </button>
+            )}
           </div>
         ) : (
           <div className="space-y-2.5">
@@ -1337,6 +1477,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 ? { text: 'חסום ביומן', className: 'bg-purple-100 text-purple-900 border border-purple-300 font-bold' }
                 : STATUS_LABELS[appt.status] || STATUS_LABELS.confirmed;
               const isCancelled = appt.status === 'cancelled';
+              const isToday = appt.appointment_date === todayIso && !isCancelled;
+              const isTomorrow = appt.appointment_date === tomorrowIso && !isCancelled;
+              const isPast = appt.appointment_date < todayIso && !isCancelled;
               const cleanPhone = appt.customer_phone.replace(/\D/g, '');
 
               return (
@@ -1347,48 +1490,77 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       ? 'border-slate-200 opacity-50 bg-slate-50'
                       : isBlock
                       ? 'border-purple-300 bg-purple-50/20 hover:border-purple-400'
+                      : isToday
+                      ? 'border-purple-400 bg-purple-50/30 ring-1 ring-purple-300/60 shadow-sm'
                       : 'border-slate-200 hover:border-slate-300'
                   }`}
                 >
-                  {/* Time Badge */}
+                  {/* Time & Date Badge */}
                   <div className="flex items-center gap-3.5">
                     <div
-                      className={`w-16 py-2 rounded-xl text-center flex-shrink-0 border ${
+                      className={`w-20 py-2.5 px-1.5 rounded-2xl text-center flex-shrink-0 border flex flex-col items-center justify-center ${
                         isBlock
                           ? 'bg-slate-950 border-purple-500/50 text-purple-300 shadow-[0_0_10px_rgba(168,85,247,0.25)]'
+                          : isToday
+                          ? 'bg-purple-600 border-purple-600 text-white shadow-xs'
                           : 'bg-slate-100 border-slate-200 text-slate-900'
                       }`}
                     >
-                      <div className="text-base font-black font-['Rubik',sans-serif]">
+                      <div className="text-base font-black font-['Rubik',sans-serif] tracking-tight">
                         {appt.start_time}
                       </div>
-                      <div className="text-[9px] text-slate-500 font-medium">
-                        שעה ו-50 דק׳
+                      <div className={`text-[9px] font-bold ${isToday ? 'text-purple-100' : isBlock ? 'text-purple-300' : 'text-slate-500'}`}>
+                        עד {appt.end_time || minutesToTime(timeToMinutes(appt.start_time) + 110)}
                       </div>
                     </div>
 
                     {/* Customer & Service Info */}
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
+                    <div className="space-y-1 text-right">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
                           {isBlock && <Lock className="w-3.5 h-3.5 text-purple-700 inline" />}
                           <span>{appt.customer_name}</span>
                         </span>
+
+                        {isToday && (
+                          <span className="text-[10px] bg-emerald-100 text-emerald-950 border border-emerald-300 px-2 py-0.5 rounded-full font-black animate-pulse">
+                            היום! ⚡
+                          </span>
+                        )}
+
+                        {isTomorrow && (
+                          <span className="text-[10px] bg-purple-100 text-purple-900 border border-purple-300 px-2 py-0.5 rounded-full font-bold">
+                            מחר 🗓️
+                          </span>
+                        )}
+
+                        {isPast && (
+                          <span className="text-[10px] bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 rounded-full font-bold">
+                            תור בעבר
+                          </span>
+                        )}
+
                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${statusInfo.className}`}>
                           {statusInfo.text}
                         </span>
                       </div>
 
-                      <div className="text-xs text-slate-500 flex flex-wrap items-center gap-x-3 gap-y-1">
-                        <span className="font-bold text-slate-800">
+                      <div className="text-xs text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <span className="font-bold text-purple-900 bg-purple-50 px-2 py-0.5 rounded-md border border-purple-100">
                           {appt.service_name} {appt.price > 0 ? `• ${formatILS(appt.price)}` : ''}
                         </span>
-                        <span>תאריך: {toIsraeliDateString(appt.appointment_date)}</span>
-                        {!isBlock && <span dir="ltr" className="text-slate-600 font-medium">{appt.customer_phone}</span>}
+                        <span className="font-medium text-slate-700">
+                          📅 {formatHebrewFullDate(appt.appointment_date)} ({toIsraeliDateString(appt.appointment_date)})
+                        </span>
+                        {!isBlock && (
+                          <span dir="ltr" className="text-slate-600 font-medium">
+                            {appt.customer_phone}
+                          </span>
+                        )}
                       </div>
 
                       {appt.notes && (
-                        <div className="text-[11px] bg-white text-slate-600 px-2 py-0.5 rounded-md inline-block border border-slate-200">
+                        <div className="text-[11px] bg-slate-50 text-slate-700 px-2 py-0.5 rounded-md inline-block border border-slate-200">
                           📝 {appt.notes}
                         </div>
                       )}

@@ -203,10 +203,10 @@ export const Header: React.FC<HeaderProps> = ({
               onClick={onOpenMyBooking}
               type="button"
               className="px-3.5 py-2 text-xs font-bold text-slate-700 bg-white hover:bg-purple-50 hover:text-purple-700 hover:border-purple-300 rounded-xl transition cursor-pointer border border-slate-200 shadow-xs flex items-center gap-1.5"
-              title="איתור תור לפי טלפון"
+              title="איתור או ביטול תור לפי טלפון"
             >
               <Calendar className="w-3.5 h-3.5 text-purple-600" />
-              <span>התור שלי</span>
+              <span>התור שלי / ביטול</span>
             </button>
           </div>
         </div>

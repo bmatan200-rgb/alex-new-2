@@ -15,8 +15,10 @@ import {
   User,
   Search,
   Check,
+  Trash2,
+  AlertTriangle,
 } from 'lucide-react';
-import { Appointment, UserSession, Service } from './types';
+import { Appointment, ScheduleSettings, Service, UserSession } from './types';
 import {
   SALON_INFO,
   SERVICES,
@@ -29,6 +31,8 @@ import {
   clearUserSession,
   getStoredServices,
   saveStoredServices,
+  getStoredScheduleSettings,
+  saveStoredScheduleSettings,
   isAdminPhone,
 } from './utils/storage';
 import {
@@ -45,6 +49,8 @@ import {
   deleteAppointmentInFirestore,
   subscribeServices,
   saveServicesToFirestore,
+  subscribeScheduleSettings,
+  saveScheduleSettingsToFirestore,
 } from './lib/firebase';
 import { formatDurationMinutes, formatILS } from './utils/dateUtils';
 import { Header } from './components/Header';
@@ -58,7 +64,12 @@ import { TermsOfServiceModal } from './components/TermsOfServiceModal';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => !getStoredUserSession());
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => {
+    const session = getStoredUserSession();
+    if (!session) return true;
+    if (!session.isAdmin && !session.acceptedTerms) return true;
+    return false;
+  });
   const [authPromptRole, setAuthPromptRole] = useState<'admin' | 'customer'>('customer');
   const [isTermsOpen, setIsTermsOpen] = useState<boolean>(false);
 
@@ -71,9 +82,17 @@ export default function App() {
   const [confirmedAppointment, setConfirmedAppointment] = useState<Appointment | null>(null);
   const [appointments, setAppointments] = useState<Appointment[]>(() => getStoredAppointments());
   const [services, setServices] = useState<Service[]>(() => getStoredServices());
+  const [scheduleSettings, setScheduleSettings] = useState<ScheduleSettings>(() => getStoredScheduleSettings());
   const [isMyBookingOpen, setIsMyBookingOpen] = useState(false);
+  const [customerApptToCancel, setCustomerApptToCancel] = useState<Appointment | null>(null);
+  const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
-  // Subscribe to real-time Firestore appointments & services updates
+  const showToast = (text: string, type: 'success' | 'error' = 'success') => {
+    setToastMessage({ text, type });
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  // Subscribe to real-time Firestore appointments & services & scheduleSettings updates
   useEffect(() => {
     const unsubscribeAppointments = subscribeAppointments((remoteAppointments) => {
       setAppointments(remoteAppointments);
@@ -91,9 +110,17 @@ export default function App() {
       }
     });
 
+    const unsubscribeSchedule = subscribeScheduleSettings((remoteSettings) => {
+      if (remoteSettings) {
+        setScheduleSettings(remoteSettings);
+        saveStoredScheduleSettings(remoteSettings);
+      }
+    });
+
     return () => {
       unsubscribeAppointments();
       unsubscribeServices();
+      unsubscribeSchedule();
     };
   }, []);
 
@@ -234,24 +261,28 @@ export default function App() {
   };
 
   const handleCancelAppointment = async (id: number | string) => {
-    cancelAppointment(id);
+    const idStr = String(id);
+    cancelAppointment(idStr);
     setAppointments((prev) =>
-      prev.map((app) => (app.id === id ? { ...app, status: 'cancelled' as const } : app))
+      prev.map((app) => (String(app.id) === idStr ? { ...app, status: 'cancelled' as const } : app))
     );
+    showToast('התור בוטל בהצלחה והשעה שוחררה ביומן 🌸', 'success');
 
     try {
-      await cancelAppointmentInFirestore(id);
+      await cancelAppointmentInFirestore(idStr);
     } catch (err) {
       console.error('Error cancelling appointment in Firestore:', err);
     }
   };
 
   const handleDeleteAppointment = async (id: number | string) => {
-    deleteAppointmentPermanently(id);
-    setAppointments((prev) => prev.filter((app) => app.id !== id));
+    const idStr = String(id);
+    deleteAppointmentPermanently(idStr);
+    setAppointments((prev) => prev.filter((app) => String(app.id) !== idStr));
+    showToast('הרשומה נמחקה בהצלחה', 'success');
 
     try {
-      await deleteAppointmentInFirestore(id);
+      await deleteAppointmentInFirestore(idStr);
     } catch (err) {
       console.error('Error deleting appointment in Firestore:', err);
     }
@@ -259,7 +290,7 @@ export default function App() {
 
   const handleAddManualAppointment = async (newApp: Appointment) => {
     saveAppointment(newApp);
-    setAppointments((prev) => [newApp, ...prev.filter((a) => a.id !== newApp.id)]);
+    setAppointments((prev) => [newApp, ...prev.filter((a) => String(a.id) !== String(newApp.id))]);
 
     try {
       await addAppointmentToFirestore(newApp);
@@ -279,7 +310,26 @@ export default function App() {
     }
   };
 
+  const handleUpdateScheduleSettings = async (updatedSettings: ScheduleSettings) => {
+    setScheduleSettings(updatedSettings);
+    saveStoredScheduleSettings(updatedSettings);
+
+    try {
+      await saveScheduleSettingsToFirestore(updatedSettings);
+    } catch (err) {
+      console.error('Error saving schedule settings to Firestore:', err);
+    }
+  };
+
   const mainService = services[0] || SERVICES[0];
+
+  const cleanUserPhone = currentUser?.phone ? currentUser.phone.replace(/\D/g, '') : '';
+  const customerActiveBookings = cleanUserPhone && cleanUserPhone.length >= 7
+    ? appointments.filter((app) => {
+        const cleanAppPhone = app.customer_phone.replace(/\D/g, '');
+        return cleanAppPhone === cleanUserPhone && app.status !== 'cancelled';
+      })
+    : [];
 
   return (
     <div className="min-h-screen bg-[#f8f9fa] text-slate-800 flex flex-col font-['Heebo',sans-serif]">
@@ -319,6 +369,63 @@ export default function App() {
               </h1>
             </div>
 
+            {/* Active Customer Bookings Alert Card with Direct Cancel Action */}
+            {customerActiveBookings.length > 0 && (
+              <div className="bg-purple-50/80 border-2 border-purple-200 rounded-3xl p-4 sm:p-5 space-y-3 shadow-xs animate-in fade-in">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-xs font-black text-purple-950">
+                      יש לך {customerActiveBookings.length === 1 ? 'תור משוריין במערכת' : `${customerActiveBookings.length} תורים משוריינים במערכת`}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsMyBookingOpen(true)}
+                    className="text-xs text-purple-700 hover:text-purple-900 font-bold underline cursor-pointer"
+                  >
+                    הצג את כל התורים
+                  </button>
+                </div>
+
+                <div className="space-y-2">
+                  {customerActiveBookings.slice(0, 2).map((app) => (
+                    <div
+                      key={app.id}
+                      className="bg-white rounded-2xl p-3.5 border border-purple-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm text-slate-900">
+                            {app.service_name}
+                          </span>
+                          <span className="text-[11px] bg-purple-100 text-purple-800 font-bold px-2 py-0.5 rounded-md">
+                            {app.start_time} - {app.end_time}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-600 flex items-center gap-1.5 font-medium">
+                          <Calendar className="w-3.5 h-3.5 text-purple-600" />
+                          <span>תאריך: {app.appointment_date}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => setCustomerApptToCancel(app)}
+                          className="w-full sm:w-auto px-3.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                          title="ביטול תור"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                          <span>ביטול תור</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Big Action Button "בחירת טיפול" matching video */}
             <div className="pt-2 space-y-3">
               <button
@@ -335,7 +442,7 @@ export default function App() {
                       בחירת טיפול ותור
                     </span>
                     <span className="block text-xs text-slate-500 font-medium">
-                      {mainService.name} • {mainService.price} ₪ ({formatDurationMinutes(mainService.duration_minutes || 110)})
+                      {mainService.name} • {mainService.price} ₪ ({formatDurationMinutes(mainService.duration_minutes || scheduleSettings.durationMinutes || 90)})
                     </span>
                   </div>
                 </div>
@@ -369,7 +476,7 @@ export default function App() {
               <div className="p-3 bg-white rounded-2xl border border-slate-200 text-center space-y-1">
                 <Clock className="w-4 h-4 text-purple-600 mx-auto" />
                 <span className="font-bold text-slate-900 block">שעות פתיחה</span>
-                <span className="text-slate-500 block">א'-ה' 09:20-20:30</span>
+                <span className="text-slate-500 block">א'-ה' {scheduleSettings.businessOpen}-{scheduleSettings.businessClose}</span>
               </div>
             </div>
 
@@ -389,6 +496,8 @@ export default function App() {
               onDeleteAppointment={handleDeleteAppointment}
               onSwitchToClientView={() => handleQuickSwitchRole('customer')}
               onUpdateServices={handleUpdateServices}
+              scheduleSettings={scheduleSettings}
+              onUpdateScheduleSettings={handleUpdateScheduleSettings}
             />
           </section>
         )}
@@ -473,6 +582,7 @@ export default function App() {
         appointments={appointments}
         currentUser={currentUser}
         onBookSuccess={handleBookSuccess}
+        scheduleSettings={scheduleSettings}
       />
 
       {/* Booking Confirmation Celebration Modal */}
@@ -480,6 +590,66 @@ export default function App() {
         appointment={confirmedAppointment}
         onClose={() => setConfirmedAppointment(null)}
       />
+
+      {/* Customer Direct Appointment Cancellation Confirmation Modal */}
+      {customerApptToCancel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-slate-900 font-['Rubik',sans-serif]">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-red-100 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="w-6 h-6 text-red-600" />
+              </div>
+              <div className="space-y-0.5 text-right flex-1">
+                <h3 className="text-lg font-black text-slate-900">
+                  ביטול תור
+                </h3>
+                <p className="text-xs text-slate-500 font-medium">
+                  האם את/ה בטוח/ה שברצונך לבטל את התור?
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200 text-xs space-y-1.5 text-right">
+              <div className="flex justify-between">
+                <span className="text-slate-500">טיפול:</span>
+                <span className="font-bold text-slate-900">{customerApptToCancel.service_name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">תאריך ושעה:</span>
+                <span className="font-bold text-slate-900">{customerApptToCancel.appointment_date} בשעה {customerApptToCancel.start_time}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  handleCancelAppointment(customerApptToCancel.id);
+                  setCustomerApptToCancel(null);
+                }}
+                className="w-full py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+              >
+                כן, בטל תור
+              </button>
+              <button
+                type="button"
+                onClick={() => setCustomerApptToCancel(null)}
+                className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                חזרה ולא לבטל
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Toast Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-950 text-white px-5 py-3 rounded-2xl shadow-xl border border-slate-800 flex items-center gap-2.5 text-xs font-bold animate-in fade-in duration-200">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          <span>{toastMessage.text}</span>
+        </div>
+      )}
     </div>
   );
 }

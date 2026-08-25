@@ -84,5 +84,14 @@ export interface UserSession {
   loggedInAt: string;
   acceptedTerms?: boolean;
   acceptedTermsAt?: string;
+  signatureDataUrl?: string;
+}
+
+export interface ScheduleSettings {
+  businessOpen: string; // e.g. "09:20"
+  businessClose: string; // e.g. "20:30"
+  fridayOpen: string; // e.g. "09:20"
+  fridayClose: string; // e.g. "15:00"
+  durationMinutes: number; // e.g. 90 (1 hour and 30 minutes)
 }
 

@@ -97,6 +97,14 @@ export function saveReminderSettings(settings: WhatsAppReminderSettings): void {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ settings }),
     }).catch(() => {});
+    
+    // Also save to Firestore so the server can fetch them independently when woken up by a cron job
+    import('../lib/firebase').then(({ db }) => {
+      import('firebase/firestore').then(({ doc, setDoc }) => {
+        const docRef = doc(db, 'settings', 'whatsapp_settings');
+        setDoc(docRef, settings, { merge: true }).catch(console.error);
+      });
+    });
   } catch (err) {
     console.error('Failed to save reminder settings:', err);
   }

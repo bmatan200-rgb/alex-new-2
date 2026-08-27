@@ -3,6 +3,19 @@ import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 
+import { initializeApp } from 'firebase/app';
+import { getFirestore, collection, getDocs, doc, getDoc } from 'firebase/firestore';
+
+// Initialize Firebase for the server
+let db: any = null;
+try {
+  const config = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
+  const firebaseApp = initializeApp(config);
+  db = getFirestore(firebaseApp, config.firestoreDatabaseId || undefined);
+} catch (err) {
+  console.log('Firebase config not found, server will rely on client sync', err);
+}
+
 const app = express();
 const PORT = 3000;
 
@@ -334,6 +347,24 @@ function formatMessageTemplate(template: string, appt: any): string {
 // ----------------------------------------------------------------------
 async function runAutomatedRemindersCheck() {
   try {
+    // Attempt to pull latest state directly from Firebase in case this is a cold-start background run
+    if (db) {
+      try {
+        const settingsDoc = await getDoc(doc(db, 'settings', 'whatsapp_settings'));
+        if (settingsDoc.exists()) {
+          activeServerSettings = { ...activeServerSettings, ...settingsDoc.data() };
+        }
+        
+        const apptsSnap = await getDocs(collection(db, 'appointments'));
+        const freshAppts = apptsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+        if (freshAppts.length > 0) {
+          serverAppointments = freshAppts;
+        }
+      } catch (err) {
+        console.log('Background task failed to fetch from Firebase:', err);
+      }
+    }
+
     if (activeServerSettings?.enabled === false || activeServerSettings?.autoSendEnabled === false) {
       return;
     }
@@ -347,10 +378,10 @@ async function runAutomatedRemindersCheck() {
       const [targetMornHour, targetMornMin] = morningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
       const targetMornTotalMinutes = targetMornHour * 60 + targetMornMin;
 
-      // Only dispatch during the morning scheduled window (prevents retroactive sends on afternoon bookings)
+      // Only dispatch during the morning scheduled window (up to 7 hours late, in case the server was asleep)
       if (
         currentTotalMinutes >= targetMornTotalMinutes &&
-        currentTotalMinutes <= targetMornTotalMinutes + 45
+        currentTotalMinutes <= targetMornTotalMinutes + 420
       ) {
         const todayAppointments = serverAppointments.filter(
           (a) =>
@@ -430,10 +461,10 @@ ${appointmentsList}
       const [targetEveHour, targetEveMin] = eveningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
       const targetEveTotalMinutes = targetEveHour * 60 + targetEveMin;
 
-      // Only dispatch during the evening scheduled window
+      // Only dispatch during the evening scheduled window (up to 3 hours late)
       if (
         currentTotalMinutes >= targetEveTotalMinutes &&
-        currentTotalMinutes <= targetEveTotalMinutes + 45
+        currentTotalMinutes <= targetEveTotalMinutes + 180
       ) {
         const tomorrowAppointments = serverAppointments.filter(
           (a) =>
@@ -515,6 +546,16 @@ setInterval(runAutomatedRemindersCheck, 30000);
 // ----------------------------------------------------
 // API Routes
 // ----------------------------------------------------
+
+// Endpoint for external cron jobs (e.g. cron-job.org) to ping the server and trigger the check
+app.get('/api/whatsapp/cron-trigger', async (req: Request, res: Response) => {
+  try {
+    await runAutomatedRemindersCheck();
+    res.json({ success: true, message: 'Automated reminders check executed via cron trigger.' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // Get current server settings & env configuration
 app.get('/api/whatsapp/settings', (req: Request, res: Response) => {

@@ -15,6 +15,7 @@ import {
   Calendar,
   Clock,
   Zap,
+  Globe,
   Moon,
   Sun,
   Eye,
@@ -61,7 +62,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
   initialTab = 'how_it_works',
 }) => {
   const [settings, setSettings] = useState<WhatsAppReminderSettings>(() => getStoredReminderSettings());
-  const [activeTab, setActiveTab] = useState<'how_it_works' | 'templates' | 'automation'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'how_it_works' | 'templates' | 'automation' | 'cron'>(initialTab);
   const [templateSubTab, setTemplateSubTab] = useState<'1day_evening' | 'today_morning' | 'booking' | '2hours' | 'alex'>(
     '1day_evening'
   );
@@ -375,7 +376,20 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
             }`}
           >
             <Settings className="w-4 h-4" />
-            <span>3. חיבור Twilio / API</span>
+            <span>3. חיבור ספק הודעות</span>
+          </button>
+          
+          <button
+            type="button"
+            onClick={() => setActiveTab('cron')}
+            className={`pb-3 px-3 transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap border-b-2 ${
+              activeTab === 'cron'
+                ? 'border-purple-600 text-purple-700'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Zap className="w-4 h-4" />
+            <span>4. הבטחת אוטומציה 24/7</span>
           </button>
         </div>
 
@@ -1425,6 +1439,57 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                     {testResult.message}
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: CRON / BACKGROUND WORKER */}
+          {activeTab === 'cron' && (
+            <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-3xl p-5 shadow-sm">
+                <h3 className="font-bold text-blue-900 text-base mb-2 flex items-center gap-2">
+                  <Zap className="w-5 h-5 text-blue-600" />
+                  הבטחת עבודה ב-100% אוטומט
+                </h3>
+                <div className="text-sm text-blue-800 space-y-3 leading-relaxed">
+                  <p>
+                    מכיוון שהמערכת מאוחסנת בסביבת ענן שחוסכת משאבים, השרת <strong>"נרדם"</strong> אם האתר סגור לגמרי במחשב שלך. במצב כזה, התזכורות האוטומטיות לא ישלחו בשעות המדויקות שהגדרת, אלא רק מתי שתפתחי את האתר בפעם הבאה.
+                  </p>
+                  <p>
+                    כדי שההודעות יישלחו תמיד (גם כשאת ישנה והמחשב כבוי), נוצר עבורך כפתור קסם (URL). פשוט יש להגדיר שירות חיצוני חינמי (כמו Cron-Job.org או Make.com) שייגש לקישור הזה כל חצי שעה או שעה. הקישור עצמו כבר ידאג לשלוח את ההודעות בדיוק בשעות הנכונות!
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-2xs space-y-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <Globe className="w-4 h-4 text-slate-500" />
+                  <h4 className="font-bold text-slate-800 text-sm">כתובת ה-Webhook להפעלה חיצונית:</h4>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono text-slate-700 overflow-hidden text-ellipsis whitespace-nowrap direction-ltr" dir="ltr">
+                    {window.location.origin}/api/whatsapp/cron-trigger
+                  </div>
+                  <button 
+                    onClick={() => {
+                      navigator.clipboard.writeText(`${window.location.origin}/api/whatsapp/cron-trigger`);
+                      alert('הקישור הועתק בהצלחה!');
+                    }}
+                    className="bg-purple-100 hover:bg-purple-200 text-purple-800 px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shrink-0 cursor-pointer"
+                  >
+                    העתק קישור
+                  </button>
+                </div>
+                
+                <div className="text-xs text-slate-500 bg-slate-50 p-3 rounded-xl">
+                  <strong>הוראות הפעלה חינמית:</strong><br/>
+                  1. היכנסי לאתר <a href="https://cron-job.org/" target="_blank" className="text-purple-600 underline">cron-job.org</a> (זה חינם לגמרי).<br/>
+                  2. צרי חשבון ולחצי על "Create Cronjob".<br/>
+                  3. הדביקי את הקישור המועתק בשדה ה-URL.<br/>
+                  4. הגדרי שזה ירוץ כל 30 דקות.<br/>
+                  5. שמרי! כעת ההודעות שלך תמיד יישלחו בזמן בלי שום קשר אליך.
+                </div>
               </div>
             </div>
           )}

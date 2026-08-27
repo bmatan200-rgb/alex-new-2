@@ -152,6 +152,13 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ settings: liveSettings }),
       }).catch(() => {});
+      
+      // Force sync local settings to Firestore so background cron jobs can read them
+      import('./lib/firebase').then(({ db }) => {
+        import('firebase/firestore').then(({ doc, setDoc }) => {
+          setDoc(doc(db, 'settings', 'whatsapp_settings'), liveSettings, { merge: true }).catch(console.error);
+        });
+      });
 
       if (appointments && appointments.length > 0) {
         // Sync appointments to server background scheduler for hands-free 20:56 and 08:00 dispatch

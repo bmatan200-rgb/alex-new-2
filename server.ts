@@ -1,74 +1,13 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
-import cors from 'cors';
 import cron from 'node-cron';
-import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
-
-import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, getDocs, doc, getDoc, setDoc, addDoc } from 'firebase/firestore';
-
-// Initialize Firebase for the server
-let db: any = null;
-try {
-  const config = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
-  const firebaseApp = initializeApp(config);
-  db = getFirestore(firebaseApp, config.firestoreDatabaseId || undefined);
-} catch (err) {
-  console.log('Firebase config not found, server will rely on client sync', err);
-}
 
 const app = express();
 const PORT = 3000;
 
-// Trust proxy for Cloud Run / Nginx reverse proxy
-app.set('trust proxy', 1);
-
-// Enable CORS
-app.use(cors());
-
-// Rate limiter for API endpoints (prevent abuse & brute force)
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 300, // max 300 requests per 15 mins per IP
-  standardHeaders: true,
-  legacyHeaders: false,
-  validate: {
-    xForwardedForHeader: false,
-    forwardedHeader: false,
-    trustProxy: false,
-  },
-  message: { success: false, error: 'חרגת ממספר הבקשות המותר, אנא נסה שוב מאוחר יותר.' },
-});
-
-app.use('/api/', apiLimiter);
-
 app.use(express.json());
-
-// Internal API key validation for protecting server endpoints
-const INTERNAL_SECRET =
-  process.env.INTERNAL_API_SECRET ||
-  'alex_sec_9f7c2b4e8a1d5c0e7b2a6f4d3c8e1b9a2d5f7e0c4b6a8d1e3f5a7c9b0e2d4f6';
-
-function verifyInternalApiKey(req: Request, res: Response, next: NextFunction) {
-  const keyFromHeader =
-    (req.headers['x-internal-api-key'] as string) ||
-    (req.headers['authorization']?.replace(/^Bearer\s+/i, '') as string);
-  const keyFromQuery = req.query.secret as string | undefined;
-
-  const providedKey = keyFromHeader || keyFromQuery;
-
-  if (providedKey && providedKey === INTERNAL_SECRET) {
-    return next();
-  }
-
-  // Reject unauthorized direct access
-  return res.status(401).json({
-    success: false,
-    error: 'Unauthorized: Missing or invalid internal API key',
-  });
-}
 
 // In-memory sync of appointments for server background runner
 interface ServerAppointment {
@@ -96,44 +35,13 @@ try {
   sentHistory = {};
 }
 
-async function recordSentReminder(key: string) {
+function recordSentReminder(key: string) {
   sentHistory[key] = true;
   try {
     fs.writeFileSync(SENT_CACHE_FILE, JSON.stringify(sentHistory, null, 2), 'utf-8');
   } catch (err) {
-    console.warn('[Server Cache] Could not write sent cache file:', err);
+    console.warn('[Server Cache] Could not write sent cache:', err);
   }
-  // Also sync to Firestore if available to prevent duplicates across serverless containers
-  if (db) {
-    try {
-      await setDoc(doc(db, 'settings', 'sent_history_cache'), sentHistory, { merge: true });
-    } catch (err) {
-      console.warn('[Server Cache] Could not sync sent history to Firestore:', err);
-    }
-  }
-}
-
-
-async function logMessageToFirestore(apptId: string, phone: string, type: string, success: boolean, message: string, errorMsg?: string) {
-  if (!db) return;
-  try {
-    const timestamp = new Date().toISOString();
-    await addDoc(collection(db, 'whatsapp_logs'), {
-      appointmentId: apptId,
-      phone,
-      type,
-      success,
-      message,
-      error: errorMsg || null,
-      timestamp
-    });
-  } catch (err) {
-    console.warn('[Server] Could not sync log to Firestore:', err);
-  }
-}
-
-function hasSentReminder(key: string) {
-  return !!sentHistory[key];
 }
 
 // Helper to format any phone number to E.164 (+972 for Israel)
@@ -161,28 +69,36 @@ function cleanPhoneForWhatsApp(phone: string): string {
   return e164.replace(/\D/g, '');
 }
 
-// Get current Israel Date & Time
-function getIsraelTime(): { dateIso: string; tomorrowIso: string; hour: number; minute: number; timeStr: string } {
+/**
+ * Calculates current or offset Israel Date & Time strictly in Asia/Jerusalem
+ * @param daysOffset 0 for today, 1 for tomorrow
+ */
+function getIsraelDateString(daysOffset: number = 0): string {
   const now = new Date();
-  const optionsDate: Intl.DateTimeFormatOptions = {
-    timeZone: 'Asia/Jerusalem',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  };
+  const israelDate = new Date(
+    now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' })
+  );
+  if (daysOffset !== 0) {
+    israelDate.setDate(israelDate.getDate() + daysOffset);
+  }
+  const year = israelDate.getFullYear();
+  const month = String(israelDate.getMonth() + 1).padStart(2, '0');
+  const day = String(israelDate.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// Get current Israel Date & Time info
+function getIsraelTime(): { dateIso: string; tomorrowIso: string; hour: number; minute: number; timeStr: string } {
+  const dateIso = getIsraelDateString(0);
+  const tomorrowIso = getIsraelDateString(1);
+
+  const now = new Date();
   const optionsTime: Intl.DateTimeFormatOptions = {
     timeZone: 'Asia/Jerusalem',
     hour: '2-digit',
     minute: '2-digit',
-    second: '2-digit',
     hour12: false,
   };
-
-  const formatterDate = new Intl.DateTimeFormat('en-CA', optionsDate); // YYYY-MM-DD
-  const dateIso = formatterDate.format(now);
-
-  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  const tomorrowIso = formatterDate.format(tomorrow);
 
   const formatterTime = new Intl.DateTimeFormat('en-GB', optionsTime);
   const timeStr = formatterTime.format(now);
@@ -207,20 +123,6 @@ async function sendWhatsAppViaProvider(params: {
   twilioType?: 'whatsapp' | 'sms';
 }): Promise<{ success: boolean; data?: any; error?: string }> {
   const { phone, message } = params;
-
-  // --- DEVELOPMENT / DRY-RUN MODE ---
-  // Prevent local development environment from sending real messages to customers
-  if (process.env.LIVE_PRODUCTION_MODE !== 'true') {
-    console.log('\n===========================================================');
-    console.log('🛑 [DEV MODE - DRY RUN] OUTGOING MESSAGE INTERCEPTED');
-    console.log(`📱 To: ${phone}`);
-    console.log(`💬 Message:\n${message}`);
-    console.log('⚠️  Bypassed real API call because LIVE_PRODUCTION_MODE is not "true"');
-    console.log('===========================================================\n');
-    
-    return { success: true, data: { status: 'dry-run-logged', simulated: true } };
-  }
-
   const formattedPhone = cleanPhoneForWhatsApp(phone);
 
   let provider =
@@ -436,278 +338,185 @@ function formatMessageTemplate(template: string, appt: any): string {
 }
 
 // ----------------------------------------------------------------------
-// Background Scheduler:
-// 1. Same-Day morning reminder (default 08:00 AM, customizable)
-// 2. 1-Day Before evening reminder (default 20:56 PM, customizable)
+// Automated Node-Cron Background Scheduler:
+// 1. Morning Reminder (Today's appointments): 08:00 AM (Asia/Jerusalem)
+// 2. Evening Reminder (Tomorrow's appointments): 20:00 PM (Asia/Jerusalem)
 // ----------------------------------------------------------------------
-async function runAutomatedRemindersCheck() {
+
+/**
+ * Unified logic to process and send automated reminders for a target date
+ */
+async function sendRemindersForDate(targetDate: string, reminderType: 'today' | '1day') {
+  const isMorning = reminderType === 'today';
+  const typeLabel = isMorning ? 'תזכורת בוקר (יום התור)' : 'תזכורת ערב (יום לפני התור)';
+  const currentIsraelTime = new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
+
+  console.log(`\n======================================================`);
+  console.log(`[CRON - ${isMorning ? '08:00' : '20:00'}] מתחיל ריצת ${typeLabel}`);
+  console.log(`[CRON] תאריך יעד לשליפה: ${targetDate} | שעת הרצה בישראל: ${currentIsraelTime}`);
+  console.log(`======================================================`);
+
   try {
-    // Attempt to pull latest state directly from Firebase in case this is a cold-start background run
-    if (db) {
-      try {
-        const settingsDoc = await getDoc(doc(db, 'settings', 'whatsapp_settings'));
-        if (settingsDoc.exists()) {
-          activeServerSettings = { ...activeServerSettings, ...settingsDoc.data() };
-        }
-        
-        const sentCacheDoc = await getDoc(doc(db, 'settings', 'sent_history_cache'));
-        if (sentCacheDoc.exists()) {
-          sentHistory = { ...sentHistory, ...sentCacheDoc.data() };
-        }
-        
-        const apptsSnap = await getDocs(collection(db, 'appointments'));
-        const freshAppts = apptsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-        if (freshAppts.length > 0) {
-          serverAppointments = freshAppts;
-        }
-      } catch (err) {
-        console.log('Background task failed to fetch from Firebase:', err);
+    // Filter active confirmed appointments for the target date
+    const appointments = serverAppointments.filter(
+      (a) =>
+        a.appointment_date === targetDate &&
+        a.status === 'confirmed' &&
+        !a.customer_name.includes('🔒') &&
+        !a.customer_name.includes('חופש') &&
+        !a.customer_name.includes('חסימה') &&
+        !a.customer_name.includes('הפסקה')
+    );
+
+    console.log(`[CRON] נמצאו ${appointments.length} תורים מתאימים לתאריך ${targetDate}`);
+
+    if (appointments.length === 0) {
+      console.log(`[CRON] אין תורים לשליחה לתאריך ${targetDate}. התהליך הסתיים.`);
+      console.log(`======================================================\n`);
+      return { success: true, count: 0, sentCount: 0, failedCount: 0 };
+    }
+
+    // Group appointments by customer phone to prevent multiple/spam messages
+    const customerGroups: Record<string, typeof appointments> = {};
+    for (const appt of appointments) {
+      const phoneKey = cleanPhoneForWhatsApp(appt.customer_phone || '');
+      if (!phoneKey) continue;
+      if (!customerGroups[phoneKey]) customerGroups[phoneKey] = [];
+      customerGroups[phoneKey].push(appt);
+    }
+
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (const [phoneKey, appts] of Object.entries(customerGroups)) {
+      const firstAppt = appts[0];
+      const unsentAppts = appts.filter((a) => {
+        const key = `${isMorning ? 'morning' : 'evening'}_${a.id}_${targetDate}`;
+        const legacyKey = `${a.id}_${isMorning ? 'morning' : 'evening'}`;
+        return !sentHistory[key] && !sentHistory[legacyKey];
+      });
+
+      if (unsentAppts.length === 0) {
+        console.log(`[CRON] דילוג: התזכורת ללקוח/ה ${firstAppt.customer_name} (${firstAppt.customer_phone}) כבר נשלחה בעבר.`);
+        continue;
+      }
+
+      // Mark all appointments in group as sent immediately
+      for (const a of appts) {
+        recordSentReminder(`${isMorning ? 'morning' : 'evening'}_${a.id}_${targetDate}`);
+        recordSentReminder(`${a.id}_${isMorning ? 'morning' : 'evening'}`);
+      }
+
+      let messageText = '';
+      if (appts.length === 1) {
+        // Single appointment: format with standard template
+        const defaultText = isMorning
+          ? `היי {customer_name} 🌸\nתזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלבירור או שינוי: {phone}\nנתראה! 💖`
+          : `היי {customer_name} 🌸\nתזכורת לתור שלך למחר ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלשינוי או בירור: {phone}\nמחכים לראותך! 💖`;
+        const rawTemplate = isMorning
+          ? (activeServerSettings?.customerTodayTemplate || defaultText)
+          : (activeServerSettings?.customer1DayTemplate || defaultText);
+        messageText = formatMessageTemplate(rawTemplate, firstAppt);
+      } else {
+        // Multiple appointments on the same day: list all slots clearly
+        const [y, m, d] = targetDate.split('-');
+        const israeliDate = `${d}/${m}/${y}`;
+        const appointmentsList = appts
+          .map((a) => `✨ בשעה ${a.start_time || 'הנקבעה'} - ${a.service_name || 'טיפול'}`)
+          .join('\n');
+
+        messageText = isMorning
+          ? `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך להיום (${israeliDate}):\n${appointmentsList}\nלבירור או שינוי: 054-6307114\nנתראה! 💖`
+          : `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך למחר (${israeliDate}):\n${appointmentsList}\nלשינוי או בירור: 054-6307114\nמחכים לראותך! 💖`;
+      }
+
+      console.log(`[CRON] שולח תזכורת ללקוח/ה: ${firstAppt.customer_name} (${firstAppt.customer_phone}) עבור ${appts.length} תורים...`);
+      const res = await sendWhatsAppViaProvider({
+        phone: firstAppt.customer_phone,
+        message: messageText,
+      });
+
+      if (res.success) {
+        console.log(`[CRON] ✅ נשלח בהצלחה ל-${firstAppt.customer_name} (${firstAppt.customer_phone})`);
+        successCount += appts.length;
+      } else {
+        console.error(`[CRON] ❌ שגיאה בשליחה ל-${firstAppt.customer_name} (${firstAppt.customer_phone}):`, res.error);
+        failedCount += appts.length;
       }
     }
 
-    if (activeServerSettings?.enabled === false || activeServerSettings?.autoSendEnabled === false) {
-      return;
-    }
+    console.log(`------------------------------------------------------`);
+    console.log(`[CRON - ${isMorning ? '08:00' : '20:00'}] סיכום ריצה: ${successCount}/${appointments.length} תזכורות נשלחו בהצלחה | נכשלו: ${failedCount}`);
+    console.log(`======================================================\n`);
 
-    const { dateIso, tomorrowIso, hour, minute, timeStr } = getIsraelTime();
-    const currentTotalMinutes = hour * 60 + minute;
-
-    // 1. Same-Day Morning Reminder (Trigger strictly within 45 minutes of scheduled morning time, e.g. 08:00 - 08:45)
-    if (activeServerSettings?.notifyCustomerToday !== false) {
-      const morningTime = activeServerSettings?.morningReminderTime || '08:00';
-      const [targetMornHour, targetMornMin] = morningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
-      const targetMornTotalMinutes = targetMornHour * 60 + targetMornMin;
-
-      // Only dispatch during the morning scheduled window (up to 7 hours late, in case the server was asleep)
-      if (
-        currentTotalMinutes >= targetMornTotalMinutes &&
-        currentTotalMinutes <= targetMornTotalMinutes + 420
-      ) {
-        const todayAppointments = serverAppointments.filter(
-          (a) =>
-            a.appointment_date === dateIso &&
-            a.status === 'confirmed' &&
-            a.customer_name && !a.customer_name.includes('🔒') &&
-            a.customer_name && !a.customer_name.includes('חופש') &&
-            a.customer_name && !a.customer_name.includes('חסימה')
-        );
-
-        // Group appointments by customer phone to prevent duplicate/spam messages when customer has multiple appointments
-        const customerGroups: Record<string, typeof todayAppointments> = {};
-        for (const appt of todayAppointments) {
-          const phoneKey = cleanPhoneForWhatsApp(appt.customer_phone || '');
-          if (!phoneKey) continue;
-          if (!customerGroups[phoneKey]) customerGroups[phoneKey] = [];
-          customerGroups[phoneKey].push(appt);
-        }
-
-        for (const [phoneKey, appts] of Object.entries(customerGroups)) {
-          // Check if any appointment in this group hasn't been sent yet
-          const unsentAppts = appts.filter((a) => {
-            const key = `morning_${a.id}_${dateIso}`;
-            const legacyKey = `${a.id}_morning`;
-            return !sentHistory[key] && !sentHistory[legacyKey];
-          });
-
-          if (unsentAppts.length === 0) continue;
-
-          // Mark all appointments in group as sent immediately
-          for (const a of appts) {
-            recordSentReminder(`morning_${a.id}_${dateIso}`);
-            recordSentReminder(`${a.id}_morning`);
-          }
-
-          const firstAppt = unsentAppts[0];
-          let morningMessage = '';
-
-          if (appts.length === 1) {
-            // Single appointment: format with standard template
-            const defaultMorningText = `היי {customer_name} 🌸
-תזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨
-לבירור או שינוי: {phone}
-נתראה! 💖`;
-            const rawTemplate = activeServerSettings?.customerTodayTemplate || defaultMorningText;
-            morningMessage = formatMessageTemplate(rawTemplate, firstAppt);
-          } else {
-            // Multiple appointments on the same day: list each with its specific start time
-            const [y, m, d] = dateIso.split('-');
-            const israeliDate = `${d}/${m}/${y}`;
-            const appointmentsList = appts
-              .map((a) => `✨ בשעה ${a.start_time || 'הנקבעה'} - ${a.service_name || 'טיפול'}`)
-              .join('\n');
-
-            morningMessage = `היי ${firstAppt.customer_name} 🌸
-תזכורת לתורים שלך להיום (${israeliDate}):
-${appointmentsList}
-לבירור או שינוי: 054-6307114
-נתראה! 💖`;
-          }
-
-          console.log(`[Auto Morning Runner (${morningTime})] Dispatching reminder to ${firstAppt.customer_name} (${firstAppt.customer_phone}) with ${appts.length} appointments [Israel time: ${timeStr}]`);
-          const res = await sendWhatsAppViaProvider({
-            phone: firstAppt.customer_phone,
-            message: morningMessage,
-          });
-          if (!res.success) {
-            console.warn(`[Auto Morning Runner] Note: dispatch status:`, res.error);
-            await logMessageToFirestore(firstAppt.id, firstAppt.customer_phone, 'morning_reminder', false, morningMessage, res.error);
-          } else {
-            await logMessageToFirestore(firstAppt.id, firstAppt.customer_phone, 'morning_reminder', true, morningMessage);
-          }
-        }
-      }
-    }
-
-    // 2. 1-Day Before Evening Reminder (Trigger strictly within 45 minutes of scheduled evening time, e.g. 20:56 - 21:41)
-    if (activeServerSettings?.notifyCustomer1DayBefore !== false) {
-      const eveningTime = activeServerSettings?.eveningReminderTime || '20:56';
-      const [targetEveHour, targetEveMin] = eveningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
-      const targetEveTotalMinutes = targetEveHour * 60 + targetEveMin;
-
-      // Only dispatch during the evening scheduled window (up to 3 hours late)
-      if (
-        currentTotalMinutes >= targetEveTotalMinutes &&
-        currentTotalMinutes <= targetEveTotalMinutes + 180
-      ) {
-        const tomorrowAppointments = serverAppointments.filter(
-          (a) =>
-            a.appointment_date === tomorrowIso &&
-            a.status === 'confirmed' &&
-            a.customer_name && !a.customer_name.includes('🔒') &&
-            a.customer_name && !a.customer_name.includes('חופש') &&
-            a.customer_name && !a.customer_name.includes('חסימה')
-        );
-
-        // Group appointments by customer phone
-        const customerGroups: Record<string, typeof tomorrowAppointments> = {};
-        for (const appt of tomorrowAppointments) {
-          const phoneKey = cleanPhoneForWhatsApp(appt.customer_phone || '');
-          if (!phoneKey) continue;
-          if (!customerGroups[phoneKey]) customerGroups[phoneKey] = [];
-          customerGroups[phoneKey].push(appt);
-        }
-
-        for (const [phoneKey, appts] of Object.entries(customerGroups)) {
-          const unsentAppts = appts.filter((a) => {
-            const key = `evening_${a.id}_${tomorrowIso}`;
-            const legacyKey = `${a.id}_evening`;
-            return !sentHistory[key] && !sentHistory[legacyKey];
-          });
-
-          if (unsentAppts.length === 0) continue;
-
-          // Mark all appointments in group as sent immediately
-          for (const a of appts) {
-            recordSentReminder(`evening_${a.id}_${tomorrowIso}`);
-            recordSentReminder(`${a.id}_evening`);
-          }
-
-          const firstAppt = unsentAppts[0];
-          let eveningMessage = '';
-
-          if (appts.length === 1) {
-            const defaultEveningText = `היי {customer_name} 🌸
-תזכורת לתור שלך למחר ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨
-לשינוי או בירור: {phone}
-מחכים לראותך! 💖`;
-            const rawTemplate = activeServerSettings?.customer1DayTemplate || defaultEveningText;
-            eveningMessage = formatMessageTemplate(rawTemplate, firstAppt);
-          } else {
-            const [y, m, d] = tomorrowIso.split('-');
-            const israeliDate = `${d}/${m}/${y}`;
-            const appointmentsList = appts
-              .map((a) => `✨ בשעה ${a.start_time || 'הנקבעה'} - ${a.service_name || 'טיפול'}`)
-              .join('\n');
-
-            eveningMessage = `היי ${firstAppt.customer_name} 🌸
-תזכורת לתורים שלך למחר (${israeliDate}):
-${appointmentsList}
-לשינוי או בירור: 054-6307114
-מחכים לראותך! 💖`;
-          }
-
-          console.log(`[Auto Evening Runner (${eveningTime})] Dispatching reminder to ${firstAppt.customer_name} (${firstAppt.customer_phone}) with ${appts.length} appointments [Israel time: ${timeStr}]`);
-          const res = await sendWhatsAppViaProvider({
-            phone: firstAppt.customer_phone,
-            message: eveningMessage,
-          });
-          if (!res.success) {
-            console.warn(`[Auto Evening Runner] Note: dispatch status:`, res.error);
-            await logMessageToFirestore(firstAppt.id, firstAppt.customer_phone, 'evening_reminder', false, eveningMessage, res.error);
-          } else {
-            await logMessageToFirestore(firstAppt.id, firstAppt.customer_phone, 'evening_reminder', true, eveningMessage);
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.error('[Auto Reminders Runner] Error in interval check:', err);
+    return { success: true, count: appointments.length, sentCount: successCount, failedCount };
+  } catch (error: any) {
+    console.error(`[CRON] ❌ שגיאה כללית בהרצת תזכורות לתאריך ${targetDate}:`, error);
+    return { success: false, error: error?.message };
   }
 }
 
-// ----------------------------------------------------
-// CRON SCHEDULER (100% Bulletproof background task)
-// ----------------------------------------------------
-// Runs every minute and checks if any scheduled messages need to be sent based on Israel Time.
-cron.schedule('* * * * *', async () => {
-  try {
-    await runAutomatedRemindersCheck();
-  } catch (error) {
-    console.error('❌ [Cron Error] Failed to execute automated reminders check:', error);
-  }
-}, {
-  scheduled: true,
-  timezone: "Asia/Jerusalem"
-});
+// ----------------------------------------------------------------------
+// Initialize Node-Cron Jobs
+// ----------------------------------------------------------------------
+function initCronSchedulers() {
+  console.log('[CRON Service] מאתחל משימות תזכורת אוטומטיות (Timezone: Asia/Jerusalem)...');
+
+  /**
+   * 1. קרון בוקר: רץ כל יום בדיוק בשעה 08:00 (שעון ישראל)
+   * שולף ושולח תזכורות לכל תורי *היום*
+   */
+  cron.schedule(
+    '0 8 * * *',
+    async () => {
+      const todayDate = getIsraelDateString(0);
+      console.log(`[CRON Task] הרצת קרון בוקר 08:00 מתוזמן לתאריך ${todayDate}`);
+      await sendRemindersForDate(todayDate, 'today');
+    },
+    {
+      timezone: 'Asia/Jerusalem',
+    }
+  );
+  console.log('[CRON Service] ✅ קרון בוקר (תורי היום) הוגדר בהצלחה לשעה 08:00 (Asia/Jerusalem).');
+
+  /**
+   * 2. קרון ערב: רץ כל יום בדיוק בשעה 20:00 (שעון ישראל)
+   * שולף ושולח תזכורות לכל תורי *מחר*
+   */
+  cron.schedule(
+    '0 20 * * *',
+    async () => {
+      const tomorrowDate = getIsraelDateString(1);
+      console.log(`[CRON Task] הרצת קרון ערב 20:00 מתוזמן לתאריך ${tomorrowDate}`);
+      await sendRemindersForDate(tomorrowDate, '1day');
+    },
+    {
+      timezone: 'Asia/Jerusalem',
+    }
+  );
+  console.log('[CRON Service] ✅ קרון ערב (תורי מחר) הוגדר בהצלחה לשעה 20:00 (Asia/Jerusalem).');
+}
+
+// הפעלת משימות הקרון
+initCronSchedulers();
 
 // ----------------------------------------------------
 // API Routes
 // ----------------------------------------------------
 
-// Endpoint for external cron jobs (e.g. cron-job.org) to ping the server and trigger the check
-app.get('/api/whatsapp/cron-trigger', async (req: Request, res: Response) => {
-  try {
-    await runAutomatedRemindersCheck();
-    res.json({ success: true, message: 'Automated reminders check executed via cron trigger.' });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// Get current server settings & env configuration (Sanitized - never leaks raw secrets)
+// Get current server settings & env configuration
 app.get('/api/whatsapp/settings', (req: Request, res: Response) => {
   try {
     const hasEnvTwilio = Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN);
-    const hasTwilioCredentials = Boolean(
-      (activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID) &&
-      (activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN)
-    );
-
     res.json({
       success: true,
       settings: {
-        provider: activeServerSettings?.provider || (hasTwilioCredentials ? 'twilio' : 'direct'),
+        ...activeServerSettings,
+        twilioAccountSid: activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '',
+        twilioAuthToken: activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '',
         twilioPhoneNumber: activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '',
-        twilioType: activeServerSettings?.twilioType || process.env.TWILIO_TYPE || 'sms',
-        eveningReminderTime: activeServerSettings?.eveningReminderTime || '20:56',
-        morningReminderTime: activeServerSettings?.morningReminderTime || '08:00',
-        enabled: activeServerSettings?.enabled ?? true,
-        autoSendEnabled: activeServerSettings?.autoSendEnabled ?? true,
-        notifyCustomerToday: activeServerSettings?.notifyCustomerToday ?? true,
-        notifyCustomer1DayBefore: activeServerSettings?.notifyCustomer1DayBefore ?? true,
-        customerTodayTemplate: activeServerSettings?.customerTodayTemplate,
-        customer1DayTemplate: activeServerSettings?.customer1DayTemplate,
-        // Safe boolean flags only - no sensitive credentials returned
-        hasTwilioCredentials,
-        hasTwilioSid: Boolean(activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID),
-        hasTwilioToken: Boolean(activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN),
-        hasGreenApi: Boolean(
-          (activeServerSettings?.instanceId || process.env.GREEN_API_INSTANCE_ID) &&
-          (activeServerSettings?.apiKey || process.env.GREEN_API_TOKEN)
-        ),
       },
       hasEnvTwilio,
-      hasTwilioCredentials,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message });
@@ -715,7 +524,7 @@ app.get('/api/whatsapp/settings', (req: Request, res: Response) => {
 });
 
 // Sync settings from client to server (Twilio, Green API, timing, etc.)
-app.post('/api/whatsapp/sync-settings', verifyInternalApiKey, (req: Request, res: Response) => {
+app.post('/api/whatsapp/sync-settings', (req: Request, res: Response) => {
   try {
     const { settings } = req.body;
     if (settings && typeof settings === 'object') {
@@ -736,7 +545,7 @@ app.post('/api/whatsapp/sync-settings', verifyInternalApiKey, (req: Request, res
 });
 
 // Sync appointments from client to server in-memory background worker
-app.post('/api/whatsapp/sync-appointments', verifyInternalApiKey, (req: Request, res: Response) => {
+app.post('/api/whatsapp/sync-appointments', (req: Request, res: Response) => {
   try {
     const { appointments, sentLog } = req.body;
     if (Array.isArray(appointments)) {
@@ -759,12 +568,20 @@ app.post('/api/whatsapp/sync-appointments', verifyInternalApiKey, (req: Request,
   }
 });
 
-// Immediate WhatsApp / Twilio Dispatch Route (Protected & Server-Authoritative Credentials)
-app.post('/api/whatsapp/send', verifyInternalApiKey, async (req: Request, res: Response) => {
+// Immediate WhatsApp / Twilio Dispatch Route
+app.post('/api/whatsapp/send', async (req: Request, res: Response) => {
   try {
     const {
       phone,
       message,
+      provider,
+      instanceId,
+      apiKey,
+      webhookUrl,
+      twilioAccountSid,
+      twilioAuthToken,
+      twilioPhoneNumber,
+      twilioType,
       reminderType,
       appointment,
     } = req.body;
@@ -773,10 +590,17 @@ app.post('/api/whatsapp/send', verifyInternalApiKey, async (req: Request, res: R
       return res.status(400).json({ success: false, error: 'Phone and message are required' });
     }
 
-    // Rely on server-side credentials and configuration only (prevent open relay abuse)
     const result = await sendWhatsAppViaProvider({
       phone,
       message,
+      provider,
+      instanceId,
+      apiKey,
+      webhookUrl,
+      twilioAccountSid,
+      twilioAuthToken,
+      twilioPhoneNumber,
+      twilioType,
     });
 
     if (appointment && reminderType) {
@@ -797,6 +621,8 @@ app.post('/api/whatsapp/send', verifyInternalApiKey, async (req: Request, res: R
 // ============================================================================
 // USER REGISTRATION WEBHOOK (Twilio SMS / WhatsApp / Make / Zapier Integration)
 // ============================================================================
+// Note for developer: Configure your specific external backend Webhook URL below
+// or set the REGISTRATION_WEBHOOK_URL environment variable.
 let customRegistrationWebhookUrl: string = process.env.REGISTRATION_WEBHOOK_URL || '';
 
 export function setCustomRegistrationWebhookUrl(url: string) {
@@ -804,7 +630,7 @@ export function setCustomRegistrationWebhookUrl(url: string) {
 }
 
 // User Registration Webhook Handler
-app.post('/api/register-webhook', verifyInternalApiKey, async (req: Request, res: Response) => {
+app.post('/api/register-webhook', async (req: Request, res: Response) => {
   try {
     const { name, phone, acceptedTerms, registeredAt, platform, userAgent } = req.body;
 
@@ -844,40 +670,27 @@ app.post('/api/register-webhook', verifyInternalApiKey, async (req: Request, res
     // 1. Forward to external backend Webhook URL if configured
     const targetWebhookUrl = customRegistrationWebhookUrl || activeServerSettings?.webhookUrl || process.env.REGISTRATION_WEBHOOK_URL;
     if (targetWebhookUrl) {
-      // --- DEVELOPMENT / DRY-RUN MODE ---
-      if (process.env.LIVE_PRODUCTION_MODE !== 'true') {
-        console.log('\n===========================================================');
-        console.log('🛑 [DEV MODE - DRY RUN] WEBHOOK FORWARDING INTERCEPTED');
-        console.log(`🔗 Target URL: ${targetWebhookUrl}`);
-        console.log(`📦 Payload:\n${JSON.stringify(registrationPayload, null, 2)}`);
-        console.log('⚠️  Bypassed real webhook call because LIVE_PRODUCTION_MODE is not "true"');
-        console.log('===========================================================\n');
-        
-        forwarded = true;
-        forwardResponse = { status: 'dry-run-logged', simulated: true };
-      } else {
-        try {
-          console.log(`[Registration Webhook] Forwarding payload to external backend: ${targetWebhookUrl}`);
-          const response = await fetch(targetWebhookUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Source': 'alex-beauty-registration',
-            },
-            body: JSON.stringify(registrationPayload),
-          });
+      try {
+        console.log(`[Registration Webhook] Forwarding payload to external backend: ${targetWebhookUrl}`);
+        const response = await fetch(targetWebhookUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Source': 'alex-beauty-registration',
+          },
+          body: JSON.stringify(registrationPayload),
+        });
 
-          forwarded = true;
-          const textResp = await response.text();
-          try {
-            forwardResponse = JSON.parse(textResp);
-          } catch {
-            forwardResponse = textResp;
-          }
-          console.log(`[Registration Webhook] Forward response status: ${response.status}`);
-        } catch (forwardErr: any) {
-          console.warn(`[Registration Webhook] Could not forward to ${targetWebhookUrl}:`, forwardErr?.message);
+        forwarded = true;
+        const textResp = await response.text();
+        try {
+          forwardResponse = JSON.parse(textResp);
+        } catch {
+          forwardResponse = textResp;
         }
+        console.log(`[Registration Webhook] Forward response status: ${response.status}`);
+      } catch (forwardErr: any) {
+        console.warn(`[Registration Webhook] Could not forward to ${targetWebhookUrl}:`, forwardErr?.message);
       }
     }
 
@@ -923,8 +736,8 @@ app.get('/api/whatsapp/status', (req: Request, res: Response) => {
     status: 'online',
     israelTime,
     schedules: {
-      morningSameDay: '08:00 (באותו יום של התור בבוקר)',
-      evening1DayBefore: '20:56 (יום לפני התור בשעה 20:56 בערב)',
+      morningSameDay: '08:00 (באותו יום של התור בבוקר - Asia/Jerusalem)',
+      evening1DayBefore: '20:00 (יום לפני התור בשעה 20:00 בערב - Asia/Jerusalem)',
     },
     syncedAppointmentsCount: serverAppointments.length,
     sentRemindersCount: Object.keys(sentHistory).length,
@@ -942,7 +755,7 @@ app.get('/api/whatsapp/status', (req: Request, res: Response) => {
 });
 
 // Comprehensive Twilio & WhatsApp Diagnostic Endpoint
-app.get('/api/whatsapp/diagnose', verifyInternalApiKey, async (req: Request, res: Response) => {
+app.get('/api/whatsapp/diagnose', async (req: Request, res: Response) => {
   const twilioSid = activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
   const twilioToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
   const twilioPhone = activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '';
@@ -1033,109 +846,15 @@ app.get('/api/whatsapp/diagnose', verifyInternalApiKey, async (req: Request, res
   }
 });
 
-// External Cron Trigger Endpoint
-// Can be called by any external cron service (Make, Zapier, cron-job.org)
-// URL: /api/whatsapp/cron-trigger?secret=YOUR_CRON_SECRET
-app.all('/api/whatsapp/cron-trigger', async (req: Request, res: Response) => {
-  const cronSecret = process.env.CRON_SECRET || 'alex_cron_default_secret_2024';
-  const providedSecret = req.query.secret || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
-
-  if (providedSecret !== cronSecret) {
-    return res.status(401).json({ success: false, error: 'Unauthorized: Invalid CRON_SECRET' });
-  }
-
-  // Get current Israeli time to determine which batch to run
-  const { dateIso, timeStr } = getIsraelTime();
-  const currentHourStr = timeStr.substring(0, 5); // "HH:MM"
-  
-  const morningTarget = activeServerSettings?.morningReminderTime || '08:00';
-  const eveningTarget = activeServerSettings?.eveningReminderTime || '20:00';
-  
-  const isMorningWindow = currentHourStr >= morningTarget && currentHourStr < '14:00';
-  const isEveningWindow = currentHourStr >= eveningTarget && currentHourStr <= '23:59';
-  
-  const results: any = {
-    executed: [],
-    timeStr,
-    dateIso,
-    morningTarget,
-    eveningTarget
-  };
-
-  try {
-    if (isMorningWindow) {
-      if (activeServerSettings?.notifyCustomerToday ?? true) {
-        // Morning Logic
-        const todayAppointments = serverAppointments.filter(
-          (a) =>
-            a.appointment_date === dateIso &&
-            a.status === 'confirmed' &&
-            a.customer_name && !a.customer_name.includes('🔒') &&
-            a.customer_name && !a.customer_name.includes('חופש')
-        );
-        const defaultMorningText = `היי {customer_name} 🌸\nתזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלבירור או שינוי: {phone}\nנתראה! 💖`;
-        let sentCount = 0;
-        for (const appt of todayAppointments) {
-          const key = `morning_${dateIso}_${appt.id}_cron`;
-          if (hasSentReminder(key)) continue;
-          
-          const rawTemplate = activeServerSettings?.customerTodayTemplate || defaultMorningText;
-          const message = formatMessageTemplate(rawTemplate, appt);
-          const resSend = await sendWhatsAppViaProvider({ phone: appt.customer_phone, message });
-          if (resSend.success) {
-            recordSentReminder(key);
-            sentCount++;
-          }
-        }
-        results.executed.push(`morning (sent ${sentCount})`);
-      }
-    } else if (isEveningWindow) {
-      if (activeServerSettings?.notifyCustomer1DayBefore ?? true) {
-        // Evening Logic
-        const { tomorrowIso } = getIsraelTime();
-        const tomorrowAppointments = serverAppointments.filter(
-          (a) =>
-            a.appointment_date === tomorrowIso &&
-            a.status === 'confirmed' &&
-            a.customer_name && !a.customer_name.includes('🔒') &&
-            a.customer_name && !a.customer_name.includes('חופש')
-        );
-        const defaultEveningText = `היי {customer_name} 🌸\nתזכורת לתור שלך למחר ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלשינוי או בירור: {phone}\nמחכים לראותך! 💖`;
-        let sentCount = 0;
-        for (const appt of tomorrowAppointments) {
-          const key = `evening_${tomorrowIso}_${appt.id}_cron`;
-          if (hasSentReminder(key)) continue;
-          
-          const rawTemplate = activeServerSettings?.customer1DayTemplate || defaultEveningText;
-          const message = formatMessageTemplate(rawTemplate, appt);
-          const resSend = await sendWhatsAppViaProvider({ phone: appt.customer_phone, message });
-          if (resSend.success) {
-            recordSentReminder(key);
-            sentCount++;
-          }
-        }
-        results.executed.push(`evening (sent ${sentCount})`);
-      }
-    } else {
-      return res.json({ success: true, message: `No scheduled tasks for this time window. Time is ${currentHourStr}.` });
-    }
-    
-    return res.json({ success: true, ...results });
-  } catch (err: any) {
-    console.error('Cron trigger error:', err);
-    return res.status(500).json({ success: false, error: err?.message });
-  }
-});
-
 // Manual trigger aliases for morning batch (today)
-app.post(['/api/whatsapp/trigger-morning', '/api/whatsapp/test-today-morning'], verifyInternalApiKey, async (req: Request, res: Response) => {
+app.post(['/api/whatsapp/trigger-morning', '/api/whatsapp/test-today-morning'], async (req: Request, res: Response) => {
   const { dateIso, timeStr } = getIsraelTime();
   const todayAppointments = serverAppointments.filter(
     (a) =>
       a.appointment_date === dateIso &&
       a.status === 'confirmed' &&
-      a.customer_name && !a.customer_name.includes('🔒') &&
-      a.customer_name && !a.customer_name.includes('חופש')
+      !a.customer_name.includes('🔒') &&
+      !a.customer_name.includes('חופש')
   );
 
   const defaultMorningText = `היי {customer_name} 🌸
@@ -1173,14 +892,14 @@ app.post(['/api/whatsapp/trigger-morning', '/api/whatsapp/test-today-morning'], 
 });
 
 // Manual trigger aliases for evening batch (tomorrow)
-app.post(['/api/whatsapp/trigger-evening', '/api/whatsapp/test-1day-evening'], verifyInternalApiKey, async (req: Request, res: Response) => {
+app.post(['/api/whatsapp/trigger-evening', '/api/whatsapp/test-1day-evening'], async (req: Request, res: Response) => {
   const { tomorrowIso, timeStr } = getIsraelTime();
   const tomorrowAppointments = serverAppointments.filter(
     (a) =>
       a.appointment_date === tomorrowIso &&
       a.status === 'confirmed' &&
-      a.customer_name && !a.customer_name.includes('🔒') &&
-      a.customer_name && !a.customer_name.includes('חופש')
+      !a.customer_name.includes('🔒') &&
+      !a.customer_name.includes('חופש')
   );
 
   const defaultEveningText = `היי {customer_name} 🌸

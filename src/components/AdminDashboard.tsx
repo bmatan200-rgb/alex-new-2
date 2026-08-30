@@ -518,14 +518,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <button
             type="button"
             onClick={() => {
-              setWhatsAppModalTab('how_it_works');
+              setWhatsAppModalTab('templates');
               setIsWhatsAppModalOpen(true);
             }}
             className="px-3.5 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
-            title="הגדרות תזכורות SMS ו-WhatsApp"
+            title="עריכת נוסח תזכורות ושליחה מיידית"
           >
             <MessageCircle className="w-4 h-4 text-emerald-600" />
-            <span>הגדרות SMS / וואטסאפ אוטומטי</span>
+            <span>הגדרות נוסח ושליחה אוטומטית</span>
           </button>
 
           <button
@@ -564,7 +564,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       <WhatsApp2HourAlertBanner
         appointments={appointments}
         onOpenSettings={() => {
-          setWhatsAppModalTab('how_it_works');
+          setWhatsAppModalTab('templates');
           setIsWhatsAppModalOpen(true);
         }}
       />
@@ -577,43 +577,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
           <div>
             <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-              מערכת שליחת SMS אוטומטית 
-              {reminderSettings.autoSendEnabled ? (
-                <span className="text-[10px] bg-emerald-500 text-white px-2 py-0.5 rounded-full font-bold shadow-xs">פעילה ברקע ✓</span>
-              ) : (
-                <span className="text-[10px] bg-slate-300 text-slate-700 px-2 py-0.5 rounded-full font-bold">כבויה ידנית</span>
-              )}
+              מערכת תזכורות אוטומטית (node-cron)
+              <span className="text-[10px] bg-emerald-500 text-white px-2 py-0.5 rounded-full font-bold shadow-xs">פעילה ברקע ✓</span>
             </h3>
             <div className="text-xs text-slate-600 mt-1 flex flex-wrap items-center gap-1.5">
-              <span>מוגדרת לשליחה בשעות:</span>
-              {reminderSettings.notifyCustomer1DayBefore && (
-                <span className="bg-white border border-emerald-200 px-2 py-0.5 rounded-md font-bold text-emerald-800 flex items-center gap-1">
-                  <Moon className="w-3 h-3" />
-                  ערב ({reminderSettings.eveningReminderTime || '20:56'})
-                </span>
-              )}
-              {reminderSettings.notifyCustomerToday && (
-                <span className="bg-white border border-emerald-200 px-2 py-0.5 rounded-md font-bold text-emerald-800 flex items-center gap-1">
-                  <Sun className="w-3 h-3" />
-                  בוקר ({reminderSettings.morningReminderTime || '08:00'})
-                </span>
-              )}
-              {(!reminderSettings.notifyCustomer1DayBefore && !reminderSettings.notifyCustomerToday) && (
-                <span className="text-slate-500">לא נבחרו שעות שליחה</span>
-              )}
+              <span>תזמון אוטומטי קבוע (שעון ישראל):</span>
+              <span className="bg-white border border-emerald-200 px-2 py-0.5 rounded-md font-bold text-emerald-800 flex items-center gap-1">
+                <Moon className="w-3 h-3" />
+                ערב (20:00) לתורי מחר
+              </span>
+              <span className="bg-white border border-emerald-200 px-2 py-0.5 rounded-md font-bold text-emerald-800 flex items-center gap-1">
+                <Sun className="w-3 h-3" />
+                בוקר (08:00) לתורי היום
+              </span>
             </div>
           </div>
         </div>
         <button
           type="button"
           onClick={() => {
-            setWhatsAppModalTab('how_it_works');
+            setWhatsAppModalTab('templates');
             setIsWhatsAppModalOpen(true);
           }}
           className="px-4 py-2 bg-white hover:bg-emerald-50 border border-emerald-300 text-emerald-700 font-bold text-xs rounded-xl transition shadow-xs flex-shrink-0 flex items-center justify-center gap-2"
         >
-          <Clock className="w-4 h-4" />
-          <span>הגדרת שעות שליחה</span>
+          <MessageCircle className="w-4 h-4" />
+          <span>עריכת נוסח ושליחה מיידית</span>
         </button>
       </div>
 

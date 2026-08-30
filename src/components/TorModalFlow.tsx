@@ -217,18 +217,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
       onClose();
     } catch (err: any) {
       console.error('Failed to book appointment:', err);
-      const msg = err?.message || 'אירעה שגיאה בקביעת התור. אנא נסי שנית.';
-      setErrorMessage(msg);
-      
-      // If it's a double booking error, bounce them back to the slot picker
-      if (msg === 'השעה הזו כבר נתפסה, בבקשה תבחרי שעה אחרת') {
-        setTimeout(() => {
-          setSelectedSlot('');
-          setStep('slot');
-          setErrorMessage('');
-        }, 3000); // Wait 3 seconds to let them read the message before refreshing slots
-      }
-      
+      setErrorMessage('אירעה שגיאה בקביעת התור. אנא נסי שנית.');
       setIsSubmitting(false);
     }
   };

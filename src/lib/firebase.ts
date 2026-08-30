@@ -1,4 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import {
   getFirestore,
   collection,
@@ -9,14 +10,23 @@ import {
   deleteDoc,
   onSnapshot,
   query,
+  where,
+  getDocs,
   orderBy,
+  runTransaction,
   Firestore,
 } from 'firebase/firestore';
 import { Appointment, Service } from '../types';
+import { timeToMinutes } from '../utils/dateUtils';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase App
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+
+// Initialize Auth
+export const auth = getAuth(app);
+export { signInWithEmailAndPassword, signOut, onAuthStateChanged };
+export type { FirebaseUser };
 
 // Initialize Firestore with specific database ID if present
 export const db: Firestore = getFirestore(
@@ -87,13 +97,19 @@ export function subscribeAppointments(
 }
 
 /**
- * Save new appointment to Firestore
+ * Save new appointment to Firestore with atomic availability check
  */
 export async function addAppointmentToFirestore(
   appointment: Omit<Appointment, 'id'> | Appointment
 ): Promise<string> {
-  const docId =
-    'id' in appointment && appointment.id ? String(appointment.id) : String(Date.now());
+  const apptDate = appointment.appointment_date;
+  const startTime = appointment.start_time;
+  
+  // Use a deterministic ID for new appointments based on date and time to allow atomic locking
+  const isNew = !('id' in appointment) || !appointment.id;
+  const docId = isNew 
+    ? `appt_${apptDate}_${startTime.replace(':', '')}` 
+    : String(appointment.id);
 
   const dataToSave = {
     customer_name: appointment.customer_name,
@@ -110,7 +126,25 @@ export async function addAppointmentToFirestore(
   };
 
   const docRef = doc(db, APPOINTMENTS_COLLECTION, docId);
-  await setDoc(docRef, dataToSave, { merge: true });
+
+  // Perform atomic transaction
+  await runTransaction(db, async (transaction) => {
+    // If it's a new appointment, check if the deterministic slot document already exists
+    if (isNew) {
+      const docSnap = await transaction.get(docRef);
+      if (docSnap.exists()) {
+        const existingData = docSnap.data();
+        if (existingData.status !== 'cancelled') {
+          // Another booking just grabbed this exact slot!
+          throw new Error('השעה הזו כבר נתפסה, בבקשה תבחרי שעה אחרת');
+        }
+      }
+    }
+    
+    // If it's clear or it's an update, set/merge the data
+    transaction.set(docRef, dataToSave, { merge: true });
+  });
+
   return docId;
 }
 

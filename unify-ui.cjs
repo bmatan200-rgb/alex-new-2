@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+const fs = require('fs');
+
+const code = `import React, { useState, useEffect } from 'react';
 import { Clock, Moon, Sun, Save, Zap, Settings, RefreshCw, XCircle, CheckCircle } from 'lucide-react';
 import { WhatsAppReminderSettings } from '../types';
 import { getStoredReminderSettings, saveReminderSettings, formatIsraeliPhoneToE164 } from '../utils/whatsappReminder';
@@ -203,3 +205,5 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
     </div>
   );
 };
+`
+fs.writeFileSync('src/components/WhatsAppReminderModal.tsx', code);

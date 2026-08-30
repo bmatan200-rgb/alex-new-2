@@ -42,6 +42,7 @@ import {
   saveReminderSettings,
   getSentRemindersLog,
 } from './utils/whatsappReminder';
+import { secureFetch } from './utils/apiClient';
 import {
   subscribeAppointments,
   addAppointmentToFirestore,
@@ -126,8 +127,11 @@ export default function App() {
 
   // Background settings, appointments synchronization, and keep-alive to server scheduler
   useEffect(() => {
+    const isUserAdmin = Boolean(currentUser && currentUser.isAdmin && isAdminPhone(currentUser.phone));
+    if (!isUserAdmin) return;
+
     // Initial fetch from server to get any backend env Twilio keys
-    fetch('/api/whatsapp/settings')
+    secureFetch('/api/whatsapp/settings')
       .then((res) => res.json())
       .then((data) => {
         if (data.success && data.settings) {
@@ -147,24 +151,26 @@ export default function App() {
 
     const doSyncAndCheck = () => {
       const liveSettings = getStoredReminderSettings();
-      fetch('/api/whatsapp/sync-settings', {
+      secureFetch('/api/whatsapp/sync-settings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ settings: liveSettings }),
       }).catch(() => {});
       
       // Force sync local settings to Firestore so background cron jobs can read them
       import('./lib/firebase').then(({ db }) => {
         import('firebase/firestore').then(({ doc, setDoc }) => {
-          setDoc(doc(db, 'settings', 'whatsapp_settings'), liveSettings, { merge: true }).catch(console.error);
+          setDoc(doc(db, 'settings', 'whatsapp_settings'), liveSettings, { merge: true }).catch((err) => {
+             // Silence permissions error if session expires to avoid polluting logs
+             if (err?.message?.includes('Missing or insufficient permissions')) return;
+             console.error(err);
+          });
         });
       });
 
       if (appointments && appointments.length > 0) {
         // Sync appointments to server background scheduler for hands-free 20:56 and 08:00 dispatch
-        fetch('/api/whatsapp/sync-appointments', {
+        secureFetch('/api/whatsapp/sync-appointments', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             appointments,
             sentLog: getSentRemindersLog()
@@ -194,7 +200,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleVisibilityChange);
     };
-  }, [appointments]);
+  }, [appointments, currentUser]);
 
   const isUserAdmin = Boolean(currentUser && currentUser.isAdmin && isAdminPhone(currentUser.phone));
 
@@ -258,13 +264,8 @@ export default function App() {
     saveAppointment(newAppointment);
     setAppointments((prev) => [newAppointment, ...prev.filter((a) => a.id !== newAppointment.id)]);
     setConfirmedAppointment(newAppointment);
-
-    // Save appointment to Firestore (no immediate messages sent on booking per user requirement)
-    try {
-      await addAppointmentToFirestore(newAppointment);
-    } catch (err) {
-      console.error('Error saving appointment to Firestore:', err);
-    }
+    
+    // (Appointment was already saved to Firestore inside TorModalFlow)
   };
 
   const handleCancelAppointment = async (id: number | string) => {

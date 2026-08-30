@@ -1,5 +1,6 @@
 import { Appointment, WhatsAppReminderSettings } from '../types';
 import { SALON_INFO } from './storage';
+import { secureFetch } from './apiClient';
 import { toIsraeliDateString, toISODateString } from './dateUtils';
 
 const STORAGE_KEY_SETTINGS = 'alex_whatsapp_reminder_settings_v1';
@@ -92,9 +93,8 @@ export function getStoredReminderSettings(): WhatsAppReminderSettings {
 export function saveReminderSettings(settings: WhatsAppReminderSettings): void {
   try {
     localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
-    fetch('/api/whatsapp/sync-settings', {
+    secureFetch('/api/whatsapp/sync-settings', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ settings }),
     }).catch(() => {});
     
@@ -571,6 +571,20 @@ export async function dispatchAutomatedWhatsAppApi({
   reminderType?: 'booking' | 'today' | '1day' | '2hours';
 }): Promise<{ success: boolean; message: string }> {
   try {
+    // --- DEVELOPMENT / DRY-RUN MODE ---
+    // Prevent the client app in development from firing real hooks
+    const isLive = (import.meta as any).env?.VITE_LIVE_PRODUCTION_MODE === 'true';
+    if (!isLive) {
+      console.log('\n===========================================================');
+      console.log('🛑 [DEV MODE - DRY RUN] CLIENT-SIDE OUTGOING MESSAGE INTERCEPTED');
+      console.log(`📱 To: ${phone}`);
+      console.log(`💬 Message:\n${message}`);
+      console.log(`🔌 Provider: ${settings.provider}`);
+      console.log('⚠️  Bypassed real client API call because VITE_LIVE_PRODUCTION_MODE is not "true"');
+      console.log('===========================================================\n');
+      return { success: true, message: `[Dry Run] Simulated sending to ${phone} via ${settings.provider}` };
+    }
+
     const formattedPhone = formatIsraeliPhoneToE164(phone);
     const cleanPhoneDigits = formattedPhone.replace(/\D/g, '');
 
@@ -651,17 +665,11 @@ export async function dispatchAutomatedWhatsAppApi({
     }
 
     // 4. Primary: Backend Twilio Gateway (/api/whatsapp/send)
-    const res = await fetch('/api/whatsapp/send', {
+    const res = await secureFetch('/api/whatsapp/send', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         phone: formattedPhone,
         message,
-        provider: 'twilio',
-        twilioAccountSid: settings.twilioAccountSid || undefined,
-        twilioAuthToken: settings.twilioAuthToken || undefined,
-        twilioPhoneNumber: settings.twilioPhoneNumber || undefined,
-        twilioType: settings.twilioType || 'sms',
         reminderType,
         appointment,
       }),
@@ -718,6 +726,7 @@ export function getIsraelTimeParts(): { dateIso: string; hour: number; minute: n
     timeZone: 'Asia/Jerusalem',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
     hour12: false,
   };
 

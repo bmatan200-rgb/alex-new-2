@@ -7,15 +7,23 @@
       "properties": {
         "customer_name": {
           "type": "string",
-          "description": "Full name of the client"
+          "description": "Full name of the client",
+          "minLength": 2,
+          "maxLength": 100
         },
         "customer_phone": {
           "type": "string",
-          "description": "Phone number of the client"
+          "description": "Phone number of the client",
+          "minLength": 8,
+          "maxLength": 20
         },
         "customer_email": {
           "type": "string",
           "description": "Email address of the client (optional)"
+        },
+        "service_id": {
+          "type": "number",
+          "description": "Numeric ID of the service"
         },
         "service_name": {
           "type": "string",
@@ -27,15 +35,18 @@
         },
         "appointment_date": {
           "type": "string",
-          "description": "Appointment date in YYYY-MM-DD format"
+          "description": "Appointment date in YYYY-MM-DD format",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
         },
         "start_time": {
           "type": "string",
-          "description": "Start time in HH:mm format"
+          "description": "Start time in HH:mm format",
+          "pattern": "^[0-9]{2}:[0-9]{2}$"
         },
         "end_time": {
           "type": "string",
-          "description": "End time in HH:mm format"
+          "description": "End time in HH:mm format",
+          "pattern": "^[0-9]{2}:[0-9]{2}$"
         },
         "status": {
           "type": "string",
@@ -52,12 +63,39 @@
         }
       },
       "required": ["customer_name", "customer_phone", "appointment_date", "start_time", "end_time", "status"]
+    },
+    "ServicesConfig": {
+      "title": "ServicesConfig",
+      "description": "Salon services configuration list",
+      "type": "object",
+      "properties": {
+        "services": {
+          "type": "array",
+          "description": "List of salon services"
+        }
+      }
+    },
+    "ScheduleSettings": {
+      "title": "ScheduleSettings",
+      "description": "Salon opening hours and duration settings",
+      "type": "object",
+      "properties": {
+        "businessOpen": { "type": "string" },
+        "businessClose": { "type": "string" },
+        "fridayOpen": { "type": "string" },
+        "fridayClose": { "type": "string" },
+        "durationMinutes": { "type": "number" }
+      }
     }
   },
   "firestore": {
     "/appointments/{appointmentId}": {
-      "entity": "Appointment",
+      "schema": "Appointment",
       "description": "Collection of all booked and cancelled appointments"
+    },
+    "/settings/{docId}": {
+      "schema": "ServicesConfig",
+      "description": "Salon settings and configurations"
     }
   }
 }

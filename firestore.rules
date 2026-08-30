@@ -1,29 +1,43 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
     match /appointments/{appointmentId} {
       // Allow reading booked slots so the app can display availability & let customers look up their bookings
       allow read: if true;
 
-      // Allow creating an appointment with valid fields
+      // Allow creating an appointment with strict field validation
       allow create: if request.resource.data.customer_name is string
-                    && request.resource.data.customer_name.size() > 0
+                    && request.resource.data.customer_name.size() >= 2
+                    && request.resource.data.customer_name.size() <= 100
                     && request.resource.data.customer_phone is string
-                    && request.resource.data.customer_phone.size() > 0
+                    && request.resource.data.customer_phone.size() >= 8
+                    && request.resource.data.customer_phone.size() <= 25
                     && request.resource.data.appointment_date is string
+                    && request.resource.data.appointment_date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
                     && request.resource.data.start_time is string
+                    && request.resource.data.start_time.matches('^[0-9]{2}:[0-9]{2}$')
                     && request.resource.data.end_time is string
+                    && request.resource.data.end_time.matches('^[0-9]{2}:[0-9]{2}$')
                     && request.resource.data.status in ['confirmed', 'cancelled'];
 
-      // Allow updating appointment status (cancellations)
-      allow update: if true;
+      // Allow updating appointment: signed in admins can update any field, or customers can cancel their booking
+      allow update: if isSignedIn() || (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+        request.resource.data.status == 'cancelled'
+      );
 
-      // Allow salon admin to remove appointments
-      allow delete: if true;
+      // Allow deleting appointments for signed in admin
+      allow delete: if isSignedIn();
     }
 
     match /settings/{docId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isSignedIn() || docId == 'sent_history_cache';
     }
   }
 }
+

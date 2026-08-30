@@ -279,15 +279,6 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
                   </>
                 )}
               </button>
-
-              <button
-                type="button"
-                onClick={onOpenSettings}
-                className="px-3 py-1.5 bg-white hover:bg-amber-100 text-amber-950 border border-amber-300 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
-              >
-                <Settings className="w-3.5 h-3.5 text-amber-700" />
-                <span>הגדרות ושעות</span>
-              </button>
             </div>
           </div>
 
@@ -376,14 +367,14 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
               <div>
                 <div className="flex items-center gap-2">
                   <h3 className="text-base font-bold text-slate-900 font-['Rubik',sans-serif]">
-                    תזכורות יום לפני ({settings.eveningReminderTime || '20:56'} בערב): יש {tomorrowAppts.length} תור/ים למחר ({toIsraeliDateString(tomorrowIso)})
+                    תזכורות יום לפני ({settings.eveningReminderTime || '20:00'} בערב): יש {tomorrowAppts.length} תור/ים למחר ({toIsraeliDateString(tomorrowIso)})
                   </h3>
                   <span className="text-[10px] bg-indigo-100 text-indigo-900 px-2 py-0.5 rounded-full font-bold border border-indigo-200">
-                    יום לפני ב-{settings.eveningReminderTime || '20:56'} 🌙
+                    יום לפני ב-{settings.eveningReminderTime || '20:00'} 🌙
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  נשלח אוטומטית בשעה {settings.eveningReminderTime || '20:56'}, או מיד בלחיצה על כפתור השליחה האוטומטית
+                  נשלח אוטומטית בשעה {settings.eveningReminderTime || '20:00'}, או מיד בלחיצה על כפתור השליחה האוטומטית
                 </p>
               </div>
             </div>
@@ -408,15 +399,6 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
                     <span>שלח אוטומטית עכשיו לכל תורי מחר ({tomorrowAppts.length})</span>
                   </>
                 )}
-              </button>
-
-              <button
-                type="button"
-                onClick={onOpenSettings}
-                className="px-3 py-1.5 bg-white hover:bg-indigo-100 text-indigo-950 border border-indigo-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
-              >
-                <Settings className="w-3.5 h-3.5 text-indigo-600" />
-                <span>הגדרות ושעות</span>
               </button>
             </div>
           </div>

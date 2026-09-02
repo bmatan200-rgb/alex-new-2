@@ -6,6 +6,7 @@ import {
   Clock,
   MapPin,
   MessageCircle,
+  Smartphone,
   Phone,
   Download,
   X,
@@ -99,15 +100,15 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           </p>
         </div>
 
-        {/* 2-Hour WhatsApp Reminder Reassurance Banner */}
-        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center gap-2.5 text-xs text-emerald-900">
-          <div className="w-7 h-7 rounded-xl bg-emerald-500 text-white flex items-center justify-center flex-shrink-0">
-            <MessageCircle className="w-4 h-4" />
+        {/* SMS Reminder Notification Banner */}
+        <div className="p-3 bg-purple-50 border border-purple-200 rounded-2xl flex items-center gap-2.5 text-xs text-purple-950">
+          <div className="w-7 h-7 rounded-xl bg-purple-600 text-white flex items-center justify-center flex-shrink-0">
+            <Smartphone className="w-4 h-4" />
           </div>
           <div>
-            <span className="font-bold block">תזכורת WhatsApp אוטומטית:</span>
-            <span className="text-[11px] text-emerald-800">
-              שעתיים לפני התור תקבלי הודעת תזכורת מסודרת עם כל הפרטים.
+            <span className="font-bold block">תזכורת SMS אוטומטית:</span>
+            <span className="text-[11px] text-purple-900 font-medium">
+              תשלח תזכורת SMS אוטומטית בהמשך 😊
             </span>
           </div>
         </div>

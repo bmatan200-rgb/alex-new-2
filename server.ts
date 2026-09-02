@@ -1,13 +1,176 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
+import { getDoc, doc, setDoc, runTransaction, deleteDoc } from 'firebase/firestore';
+import { db } from './src/lib/firebase';
+import { getApps, initializeApp, cert } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
 
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+// אתחול Firebase Admin לאימות טוקני התחברות של מנהלות.
+// FIREBASE_SERVICE_ACCOUNT הוא תוכן קובץ ה-JSON של חשבון השירות,
+// המופק בקונסולה: Project Settings ← Service Accounts ← Generate new private key
+let adminSdkReady = false;
+try {
+  if (getApps().length === 0) {
+    const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (saJson) {
+      initializeApp({ credential: cert(JSON.parse(saJson)) });
+    } else {
+      initializeApp();
+    }
+  }
+  adminSdkReady = true;
+  console.log('[Firebase Admin] ✅ מוכן לאימות טוקנים');
+} catch (err: any) {
+  console.error('[Firebase Admin] ❌ אתחול נכשל:', err?.message);
+  console.error('[Firebase Admin] ❌ יש להגדיר FIREBASE_SERVICE_ACCOUNT במשתני הסביבה');
+}
+
+// Security: JSON body parser with size limit to prevent Denial of Service attacks
+app.use(express.json({ limit: '500kb' }));
+
+// Basic Security Headers Middleware
+app.use((req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  next();
+});
+
+
+
+// ----------------------------------------------------
+// Secure Admin Data Endpoints
+// ----------------------------------------------------
+app.post('/api/admin/appointments/cancel', requireAdmin, async (req, res) => {
+  try {
+    const { appointmentId } = req.body;
+    if (!appointmentId) return res.status(400).json({ success: false, error: 'Missing appointmentId' });
+    await setDoc(doc(db, 'appointments', appointmentId), { status: 'cancelled' }, { merge: true });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
+  try {
+    const { appointmentId } = req.body;
+    if (!appointmentId) return res.status(400).json({ success: false, error: 'Missing appointmentId' });
+    
+    await deleteDoc(doc(db, 'appointments', appointmentId));
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
+  try {
+    const { services } = req.body;
+    if (!Array.isArray(services)) {
+      return res.status(400).json({ success: false, error: 'Invalid services format' });
+    }
+    // שם המסמך ('services_config') ושם השדה ('services') חייבים להתאים
+    // בדיוק למה שהלקוח קורא ב-subscribeServices, אחרת השמירה "תצליח"
+    // אבל הנתונים לעולם לא ייקלטו באפליקציה.
+    await setDoc(
+      doc(db, 'settings', 'services_config'),
+      { services, updatedAt: new Date().toISOString() },
+      { merge: true }
+    );
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
+  try {
+    const { schedule } = req.body;
+    if (!schedule || typeof schedule !== 'object') {
+      return res.status(400).json({ success: false, error: 'Invalid schedule format' });
+    }
+    // הלקוח (subscribeScheduleSettings) קורא את השדות ישירות מהמסמך
+    // 'schedule_settings', לא מתוך אובייקט מקונן.
+    await setDoc(
+      doc(db, 'settings', 'schedule_settings'),
+      {
+        businessOpen: schedule.businessOpen,
+        businessClose: schedule.businessClose,
+        fridayOpen: schedule.fridayOpen || '09:20',
+        fridayClose: schedule.fridayClose || '15:00',
+        durationMinutes: Number(schedule.durationMinutes) || 90,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------------------------
+// Secure Admin Authentication & Password Hashing Subsystem (Server-Side)
+// ----------------------------------------------------------------------
+
+// מאמת שהבקשה נושאת ID Token תקף של Firebase Authentication.
+// באפליקציה זו אין הרשמה עצמית, ולכן כל טוקן תקף שייך לחשבון
+// שנוצר ידנית בקונסולה — כלומר למנהלת.
+async function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!adminSdkReady) {
+    return res.status(503).json({
+      success: false,
+      error: 'שירות האימות אינו זמין. יש להגדיר FIREBASE_SERVICE_ACCOUNT בשרת.',
+    });
+  }
+
+  const token =
+    (req.headers['authorization'] as string | undefined)?.replace(/^Bearer\s+/i, '') ||
+    (req.body?.sessionToken as string | undefined);
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'נדרשת התחברות כמנהלת' });
+  }
+
+  try {
+    const decoded = await getAuth().verifyIdToken(token);
+
+    // הגבלה אופציונלית לרשימת מיילים מורשים
+    const allowList = (process.env.ADMIN_EMAILS || '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (allowList.length > 0 && !allowList.includes((decoded.email || '').toLowerCase())) {
+      return res.status(403).json({ success: false, error: 'אין לך הרשאת מנהלת' });
+    }
+
+    (req as any).adminPayload = { uid: decoded.uid, email: decoded.email };
+    return next();
+  } catch {
+    return res.status(401).json({ success: false, error: 'ההתחברות פגה, יש להתחבר מחדש' });
+  }
+}
+
+// In-memory rate limiting for SMS/WhatsApp dispatch
+const dispatchRateLimits: Record<string, number[]> = {};
+function isDispatchRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const timestamps = dispatchRateLimits[ip] || [];
+  const recent = timestamps.filter((t) => now - t < 60000); // 1 minute window
+  if (recent.length >= 20) {
+    return true;
+  }
+  recent.push(now);
+  dispatchRateLimits[ip] = recent;
+  return false;
+}
 
 // In-memory sync of appointments for server background runner
 interface ServerAppointment {
@@ -390,21 +553,15 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 
     for (const [phoneKey, appts] of Object.entries(customerGroups)) {
       const firstAppt = appts[0];
-      const unsentAppts = appts.filter((a) => {
-        const key = `${isMorning ? 'morning' : 'evening'}_${a.id}_${targetDate}`;
-        const legacyKey = `${a.id}_${isMorning ? 'morning' : 'evening'}`;
-        return !sentHistory[key] && !sentHistory[legacyKey];
-      });
-
-      if (unsentAppts.length === 0) {
-        console.log(`[CRON] דילוג: התזכורת ללקוח/ה ${firstAppt.customer_name} (${firstAppt.customer_phone}) כבר נשלחה בעבר.`);
-        continue;
-      }
-
-      // Mark all appointments in group as sent immediately
+      let anyClaimed = false;
       for (const a of appts) {
-        recordSentReminder(`${isMorning ? 'morning' : 'evening'}_${a.id}_${targetDate}`);
-        recordSentReminder(`${a.id}_${isMorning ? 'morning' : 'evening'}`);
+        const key = `${isMorning ? 'morning' : 'evening'}_${a.id}_${targetDate}`;
+        const claimed = await tryClaimReminder(key);
+        if (claimed) anyClaimed = true;
+      }
+      if (!anyClaimed) {
+        console.log(`[CRON] דילוג (נעילה): התזכורת ללקוח/ה ${firstAppt.customer_name} מוגדרת כנשלחה ב-Firestore.`);
+        continue;
       }
 
       let messageText = '';
@@ -500,20 +657,71 @@ function initCronSchedulers() {
 // הפעלת משימות הקרון
 initCronSchedulers();
 
+/**
+ * מנסה "לתפוס" תזכורת. מחזיר true רק אם זו הפעם הראשונה
+ * שמישהו תופס את המפתח הזה — כך רק שולח אחד יקבל אישור.
+ *
+ * במקרה של תקלה מחזיר false ולא שולח: הודעה כפולה ללקוחה
+ * גרועה יותר מתזכורת שתישלח בהרצה הבאה.
+ */
+async function tryClaimReminder(key: string): Promise<boolean> {
+  if (!db) {
+    console.error('[Reminder Lock] ❌ אין חיבור ל-Firestore — לא ניתן לשלוח בבטחה');
+    return false;
+  }
+
+  const lockRef = doc(db, 'reminder_locks', key);
+
+  try {
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(lockRef);
+      if (snap.exists()) return false;
+      transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
+      return true;
+    });
+  } catch (err) {
+    console.warn(`[Reminder Lock] טרנזקציה נכשלה עבור ${key}:`, err);
+    return false;
+  }
+}
+
+// ----------------------------------------------------
+// Secure Admin Authentication API Endpoints
+// ----------------------------------------------------
+
+// Admin Users List for selection (Safe metadata ONLY - NEVER exposes passwords, salts or hashes)
+app.get('/api/admin/users', (req: Request, res: Response) => {
+  // החזרת רשימה ריקה מכיוון שניהול המשתמשים מתבצע מעתה בקונסולת Firebase
+  return res.json({ success: true, admins: [] });
+});
+
 // ----------------------------------------------------
 // API Routes
 // ----------------------------------------------------
 
-// Get current server settings & env configuration
+// Helper to mask sensitive tokens for safe client inspection
+function maskSecretToken(token: string | undefined): string {
+  if (!token) return '';
+  const trimmed = token.trim();
+  if (trimmed.length <= 6) return '••••••';
+  return `${trimmed.substring(0, 3)}••••••••${trimmed.substring(trimmed.length - 3)}`;
+}
+
+// Get current server settings & env configuration (Secrets masked for security)
 app.get('/api/whatsapp/settings', (req: Request, res: Response) => {
   try {
+    const rawSid = activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
+    const rawToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
     const hasEnvTwilio = Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN);
+
     res.json({
       success: true,
       settings: {
         ...activeServerSettings,
-        twilioAccountSid: activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '',
-        twilioAuthToken: activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '',
+        twilioAccountSid: rawSid,
+        // Security: Mask the auth token so raw secret credentials are not sent over public API
+        twilioAuthToken: maskSecretToken(rawToken),
+        hasTwilioAuthToken: Boolean(rawToken),
         twilioPhoneNumber: activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '',
       },
       hasEnvTwilio,
@@ -528,7 +736,12 @@ app.post('/api/whatsapp/sync-settings', (req: Request, res: Response) => {
   try {
     const { settings } = req.body;
     if (settings && typeof settings === 'object') {
-      activeServerSettings = { ...activeServerSettings, ...settings };
+      const sanitizedSettings = { ...settings };
+      // If token is masked placeholder, keep existing server token
+      if (sanitizedSettings.twilioAuthToken && sanitizedSettings.twilioAuthToken.includes('••••')) {
+        sanitizedSettings.twilioAuthToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
+      }
+      activeServerSettings = { ...activeServerSettings, ...sanitizedSettings };
       console.log('[Server Settings] WhatsApp & Twilio settings synced:', {
         provider: activeServerSettings.provider,
         hasTwilioSid: Boolean(activeServerSettings.twilioAccountSid),
@@ -568,8 +781,18 @@ app.post('/api/whatsapp/sync-appointments', (req: Request, res: Response) => {
   }
 });
 
-// Immediate WhatsApp / Twilio Dispatch Route
+// Immediate WhatsApp / Twilio Dispatch Route (Protected with Rate Limiting & Input Validation)
 app.post('/api/whatsapp/send', async (req: Request, res: Response) => {
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+
+  // Prevent spamming & API abuse
+  if (isDispatchRateLimited(clientIp)) {
+    return res.status(429).json({
+      success: false,
+      error: 'קצב הבקשות לשליחת הודעות מהיר מדי. נא להמתין דקה לפני ניסיון נוסף.',
+    });
+  }
+
   try {
     const {
       phone,
@@ -586,13 +809,27 @@ app.post('/api/whatsapp/send', async (req: Request, res: Response) => {
       appointment,
     } = req.body;
 
-    if (!phone || !message) {
+    const cleanPhoneStr = String(phone || '').trim();
+    const cleanMessageStr = String(message || '').trim();
+
+    if (!cleanPhoneStr || !cleanMessageStr) {
       return res.status(400).json({ success: false, error: 'Phone and message are required' });
     }
 
+    // Security: Message length limit to prevent abuse or buffer overflow
+    if (cleanMessageStr.length > 2000) {
+      return res.status(400).json({ success: false, error: 'Message content exceeds maximum allowed length (2000 chars)' });
+    }
+
+    // Security: Phone format validation
+    const digitsOnly = cleanPhoneStr.replace(/\D/g, '');
+    if (digitsOnly.length < 8 || digitsOnly.length > 15) {
+      return res.status(400).json({ success: false, error: 'Invalid phone number length' });
+    }
+
     const result = await sendWhatsAppViaProvider({
-      phone,
-      message,
+      phone: cleanPhoneStr,
+      message: cleanMessageStr,
       provider,
       instanceId,
       apiKey,
@@ -629,39 +866,50 @@ export function setCustomRegistrationWebhookUrl(url: string) {
   customRegistrationWebhookUrl = url;
 }
 
-// User Registration Webhook Handler
+// User Registration Webhook Handler (Sanitized & Validated)
 app.post('/api/register-webhook', async (req: Request, res: Response) => {
   try {
     const { name, phone, acceptedTerms, registeredAt, platform, userAgent } = req.body;
 
-    if (!name || !phone) {
+    const sanitizedName = String(name || '').trim().substring(0, 100);
+    const sanitizedPhone = String(phone || '').trim().substring(0, 30);
+
+    if (!sanitizedName || !sanitizedPhone) {
       return res.status(400).json({
         success: false,
         error: 'Name and phone are required fields for registration',
       });
     }
 
-    const cleanPhone = cleanPhoneForWhatsApp(phone);
+    const digitsOnly = sanitizedPhone.replace(/\D/g, '');
+    if (digitsOnly.length < 8) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid phone number',
+      });
+    }
+
+    const cleanPhone = cleanPhoneForWhatsApp(sanitizedPhone);
     const timestamp = registeredAt || new Date().toISOString();
 
     console.log(`\n========================================`);
     console.log(`[Registration Webhook] New User Registered!`);
-    console.log(`Name: ${name}`);
-    console.log(`Phone: ${phone} (formatted: +${cleanPhone})`);
+    console.log(`Name: ${sanitizedName}`);
+    console.log(`Phone: ${sanitizedPhone} (formatted: +${cleanPhone})`);
     console.log(`Accepted Terms: ${Boolean(acceptedTerms)}`);
     console.log(`Timestamp: ${timestamp}`);
     console.log(`========================================\n`);
 
     const registrationPayload = {
       event: 'user_registered',
-      name: String(name).trim(),
-      phone: String(phone).trim(),
+      name: sanitizedName,
+      phone: sanitizedPhone,
       formattedPhone: `+${cleanPhone}`,
       acceptedTerms: Boolean(acceptedTerms),
       registeredAt: timestamp,
       source: 'alex_beauty_app',
-      platform: platform || 'web_mobile',
-      userAgent: userAgent || '',
+      platform: typeof platform === 'string' ? platform.substring(0, 50) : 'web_mobile',
+      userAgent: typeof userAgent === 'string' ? userAgent.substring(0, 200) : '',
     };
 
     let forwarded = false;

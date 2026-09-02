@@ -52,12 +52,54 @@
         }
       },
       "required": ["customer_name", "customer_phone", "appointment_date", "start_time", "end_time", "status"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Manager and administrator credentials synced via Firebase",
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Admin username or full name"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Admin phone number"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Admin email address"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password or authentication secret"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "owner", "staff"],
+          "description": "Administrative role"
+        },
+        "created_at": {
+          "type": "string",
+          "description": "Account creation timestamp"
+        },
+        "last_login_at": {
+          "type": "string",
+          "description": "Last successful login timestamp"
+        }
+      },
+      "required": ["username", "phone", "email", "password"]
     }
   },
   "firestore": {
     "/appointments/{appointmentId}": {
       "entity": "Appointment",
       "description": "Collection of all booked and cancelled appointments"
+    },
+    "/admin_users/{adminId}": {
+      "entity": "AdminUser",
+      "description": "Collection of synced admin users with username, phone, email, and password"
     }
   }
 }

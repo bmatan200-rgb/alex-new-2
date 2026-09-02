@@ -11,7 +11,7 @@ import {
   LogOut,
   SlidersHorizontal,
 } from 'lucide-react';
-import { SALON_INFO, isAdminPhone } from '../utils/storage';
+import { SALON_INFO } from '../utils/storage';
 import { UserSession } from '../types';
 
 interface HeaderProps {
@@ -33,7 +33,7 @@ export const Header: React.FC<HeaderProps> = ({
   onQuickSwitchRole,
   onLogout,
 }) => {
-  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin && isAdminPhone(currentUser.phone));
+  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin);
 
   const handleAdminTabClick = () => {
     if (isUserAdmin) {
@@ -196,7 +196,18 @@ export const Header: React.FC<HeaderProps> = ({
                   <span>ממשק מנהל</span>
                 </button>
               </div>
-            ) : null}
+            ) : (
+              <button
+                id="admin-login-header-btn"
+                type="button"
+                onClick={() => onOpenAuthModal('admin')}
+                className="px-3 py-2 text-xs font-black text-purple-900 bg-purple-50 hover:bg-purple-100 hover:border-purple-300 rounded-xl transition cursor-pointer border border-purple-200 shadow-xs flex items-center gap-1.5"
+                title="כניסת מנהל/ת למערכת (Firebase)"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-purple-600" />
+                <span>כניסת מנהל</span>
+              </button>
+            )}
 
             <button
               id="my-booking-search-btn"

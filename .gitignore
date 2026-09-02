@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+.secure_admin_store.json
+.sent_reminders_cache.json
+*serviceAccount*.json
+*firebase-adminsdk*.json

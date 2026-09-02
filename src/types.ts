@@ -80,11 +80,24 @@ export interface WhatsAppReminderSettings {
 export interface UserSession {
   name: string;
   phone: string;
+  email?: string;
+  username?: string;
   isAdmin: boolean;
   loggedInAt: string;
   acceptedTerms?: boolean;
   acceptedTermsAt?: string;
   signatureDataUrl?: string;
+}
+
+export interface AdminUser {
+  id?: string;
+  username: string;
+  phone: string;
+  email: string;
+  password?: string;
+  role?: 'admin' | 'owner' | 'staff';
+  createdAt?: string;
+  lastLoginAt?: string;
 }
 
 export interface ScheduleSettings {

@@ -189,10 +189,10 @@ export default function App() {
     };
   }, [appointments]);
 
-  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin && isAdminPhone(currentUser.phone));
+  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin);
 
   const handleLogin = (session: UserSession) => {
-    const verifiedAdmin = Boolean(session.isAdmin && isAdminPhone(session.phone));
+    const verifiedAdmin = Boolean(session.isAdmin);
     const cleanSession: UserSession = {
       ...session,
       isAdmin: verifiedAdmin,

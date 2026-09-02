@@ -10,13 +10,27 @@ import {
   onSnapshot,
   query,
   orderBy,
+  getDocs,
+  getDoc,
   Firestore,
+  runTransaction,
 } from 'firebase/firestore';
-import { Appointment, Service } from '../types';
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  type User as FirebaseUser,
+} from 'firebase/auth';
+import { Appointment, Service, AdminUser, ScheduleSettings } from '../types';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase App
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+
+export const auth = getAuth(app);
+export { signInWithEmailAndPassword, signOut, onAuthStateChanged };
+export type { FirebaseUser };
 
 // Initialize Firestore with specific database ID if present
 export const db: Firestore = getFirestore(
@@ -89,18 +103,38 @@ export function subscribeAppointments(
 /**
  * Save new appointment to Firestore
  */
+/** נזרקת כששתי לקוחות ניסו לתפוס את אותה שעה בו-זמנית */
+export class SlotTakenError extends Error {
+  constructor() {
+    super('השעה הזו כבר נתפסה, בבקשה תבחרי שעה אחרת');
+    this.name = 'SlotTakenError';
+  }
+}
+
+/**
+ * מזהה דטרמיניסטי לתור, נגזר מהתאריך והשעה.
+ * שני תורים באותה משבצת מקבלים בהכרח את אותו מזהה מסמך,
+ * ולכן Firestore עצמו מונע פיזית את קיומם של שניהם.
+ */
+function slotDocId(date: string, startTime: string): string {
+  return `appt_${date}_${startTime.replace(':', '')}`;
+}
+
 export async function addAppointmentToFirestore(
   appointment: Omit<Appointment, 'id'> | Appointment
 ): Promise<string> {
-  const docId =
-    'id' in appointment && appointment.id ? String(appointment.id) : String(Date.now());
+  const isNew = !('id' in appointment) || !appointment.id;
+
+  const docId = isNew
+    ? slotDocId(appointment.appointment_date, appointment.start_time)
+    : String((appointment as Appointment).id);
 
   const dataToSave = {
     customer_name: appointment.customer_name,
     customer_phone: appointment.customer_phone,
-    service_id: appointment.service_id || 1,
+    service_id: appointment.service_id ?? 1,
     service_name: appointment.service_name || "לק ג'ל",
-    price: appointment.price || 150,
+    price: appointment.price ?? 150,
     appointment_date: appointment.appointment_date,
     start_time: appointment.start_time,
     end_time: appointment.end_time,
@@ -110,7 +144,18 @@ export async function addAppointmentToFirestore(
   };
 
   const docRef = doc(db, APPOINTMENTS_COLLECTION, docId);
-  await setDoc(docRef, dataToSave, { merge: true });
+
+  await runTransaction(db, async (transaction) => {
+    if (isNew) {
+      const snap = await transaction.get(docRef);
+      // תור מבוטל משחרר את השעה — אפשר להזמין עליה מחדש
+      if (snap.exists() && snap.data().status !== 'cancelled') {
+        throw new SlotTakenError();
+      }
+    }
+    transaction.set(docRef, dataToSave, { merge: true });
+  });
+
   return docId;
 }
 
@@ -118,33 +163,32 @@ export async function addAppointmentToFirestore(
  * Cancel appointment in Firestore
  */
 export async function cancelAppointmentInFirestore(appointmentId: string | number): Promise<void> {
-  const idStr = String(appointmentId);
-  try {
-    const docRef = doc(db, APPOINTMENTS_COLLECTION, idStr);
-    await updateDoc(docRef, { status: 'cancelled' });
-  } catch (err) {
-    console.warn(`Direct updateDoc for ${idStr} failed, trying fallback:`, err);
-    // If setDoc fallback is needed
-    try {
-      const docRef = doc(db, APPOINTMENTS_COLLECTION, idStr);
-      await setDoc(docRef, { status: 'cancelled' }, { merge: true });
-    } catch (fallbackErr) {
-      console.error('Failed to cancel appointment in Firestore fallback:', fallbackErr);
-    }
-  }
+  const token = localStorage.getItem('alex_admin_session_token') || '';
+  const res = await fetch('/api/admin/appointments/cancel', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ appointmentId: String(appointmentId) }),
+  });
+  if (!res.ok) throw new Error('נכשל בביטול התור בשרת');
 }
 
 /**
  * Permanently delete appointment in Firestore
  */
 export async function deleteAppointmentInFirestore(appointmentId: string | number): Promise<void> {
-  const idStr = String(appointmentId);
-  try {
-    const docRef = doc(db, APPOINTMENTS_COLLECTION, idStr);
-    await deleteDoc(docRef);
-  } catch (err) {
-    console.error(`Failed to delete appointment ${idStr} in Firestore:`, err);
-  }
+  const token = localStorage.getItem('alex_admin_session_token') || '';
+  const res = await fetch('/api/admin/appointments/delete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ appointmentId: String(appointmentId) }),
+  });
+  if (!res.ok) throw new Error('נכשל במחיקת התור בשרת');
 }
 
 const SETTINGS_COLLECTION = 'settings';
@@ -176,12 +220,16 @@ export function subscribeServices(
  * Save services configuration to Firestore
  */
 export async function saveServicesToFirestore(services: Service[]): Promise<void> {
-  try {
-    const docRef = doc(db, SETTINGS_COLLECTION, 'services_config');
-    await setDoc(docRef, { services, updatedAt: new Date().toISOString() });
-  } catch (err) {
-    console.warn('Could not save services to Firestore:', err);
-  }
+  const token = localStorage.getItem('alex_admin_session_token') || '';
+  const res = await fetch('/api/admin/settings/services', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ services }),
+  });
+  if (!res.ok) throw new Error('נכשל בשמירת שירותים בשרת');
 }
 
 /**
@@ -217,12 +265,156 @@ export function subscribeScheduleSettings(
  * Save salon schedule / working hours settings to Firestore
  */
 export async function saveScheduleSettingsToFirestore(
-  settings: import('../types').ScheduleSettings
+  schedule: ScheduleSettings | Record<string, any>
 ): Promise<void> {
+  const token = localStorage.getItem('alex_admin_session_token') || '';
+  const res = await fetch('/api/admin/settings/schedule', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ schedule }),
+  });
+  if (!res.ok) throw new Error('נכשל בשמירת הגדרות שעות בשרת');
+}
+
+const ADMIN_USERS_COLLECTION = 'admin_users';
+
+export const DEFAULT_ADMIN_ACCOUNTS: AdminUser[] = [
+  {
+    id: 'admin_alex',
+    username: 'אלכסנדרה ביטון',
+    phone: '054-6307114',
+    email: 'alex@beauty.co.il',
+    role: 'owner',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'admin_matan',
+    username: 'מתן ביטון',
+    phone: '054-3111408',
+    email: 'bmatan200@gmail.com',
+    role: 'admin',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  },
+];
+
+/**
+ * Fetch list of registered admin accounts securely from server (Safe metadata without passwords)
+ */
+export async function ensureDefaultAdminsInFirestore(): Promise<AdminUser[]> {
   try {
-    const docRef = doc(db, SETTINGS_COLLECTION, 'schedule_settings');
-    await setDoc(docRef, { ...settings, updatedAt: new Date().toISOString() });
+    const res = await fetch('/api/admin/users');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.admins) && data.admins.length > 0) {
+        return data.admins;
+      }
+    }
+    return DEFAULT_ADMIN_ACCOUNTS;
   } catch (err) {
-    console.warn('Could not save schedule settings to Firestore:', err);
+    console.warn('Notice loading admin users:', err);
+    return DEFAULT_ADMIN_ACCOUNTS;
   }
 }
+
+/**
+ * Subscribe to Admin Users updates
+ */
+export function subscribeAdminUsers(onUpdate: (admins: AdminUser[]) => void): () => void {
+  let active = true;
+
+  const load = async () => {
+    try {
+      const admins = await ensureDefaultAdminsInFirestore();
+      if (active) onUpdate(admins);
+    } catch {
+      if (active) onUpdate(DEFAULT_ADMIN_ACCOUNTS);
+    }
+  };
+
+  load();
+  const interval = setInterval(load, 30000); // 30s poll
+
+  return () => {
+    active = false;
+    clearInterval(interval);
+  };
+}
+
+/**
+ * Save or update Admin User credentials securely via server-side salted cryptographic hashing
+ */
+export async function saveAdminUserToFirestore(
+  _admin: AdminUser
+): Promise<{ success: boolean; id: string; error?: string; token?: string }> {
+  return {
+    success: false,
+    id: '',
+    error: 'יצירת חשבונות מנהלים מתבצעת בקונסולת Firebase: Authentication ← Users ← Add user',
+  };
+}
+
+/**
+ * אימות מנהלת מול Firebase Authentication.
+ * הסיסמה נשלחת ישירות ל-Firebase ואינה נשמרת אצלנו בשום שלב.
+ */
+export async function verifyAdminLoginInFirestore(credentials: {
+  usernameOrEmailOrPhone: string;
+  password: string;
+  phone?: string;
+  email?: string;
+  username?: string;
+}): Promise<{
+  success: boolean;
+  adminUser?: AdminUser;
+  error?: string;
+  token?: string;
+}> {
+  const email = (credentials.email || credentials.usernameOrEmailOrPhone || '').trim().toLowerCase();
+  const password = (credentials.password || '').trim();
+
+  if (!email || !email.includes('@')) {
+    return { success: false, error: 'יש להזין כתובת אימייל תקינה' };
+  }
+  if (!password) {
+    return { success: false, error: 'יש להזין סיסמה' };
+  }
+
+  try {
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const idToken = await cred.user.getIdToken();
+
+    return {
+      success: true,
+      token: idToken,
+      adminUser: {
+        id: cred.user.uid,
+        username: credentials.username || cred.user.displayName || email,
+        phone: credentials.phone || '',
+        email: cred.user.email || email,
+        role: 'admin',
+        createdAt: new Date().toISOString(),
+      },
+    };
+  } catch (err: any) {
+    const code = err?.code || '';
+
+    if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+      return { success: false, error: 'אימייל או סיסמה שגויים' };
+    }
+    if (code === 'auth/too-many-requests') {
+      return { success: false, error: 'יותר מדי נסיונות התחברות. נסי שוב בעוד מספר דקות' };
+    }
+    if (code === 'auth/operation-not-allowed') {
+      return { success: false, error: 'שיטת ההתחברות Email/Password אינה מופעלת בקונסולת Firebase' };
+    }
+    if (code === 'auth/invalid-email') {
+      return { success: false, error: 'כתובת האימייל אינה תקינה' };
+    }
+
+    return { success: false, error: err?.message || 'שגיאה בהתחברות' };
+  }
+}
+

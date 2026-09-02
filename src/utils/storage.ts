@@ -143,7 +143,7 @@ export function getStoredUserSession(): UserSession | null {
     const parsed = JSON.parse(raw);
     if (parsed && parsed.phone) {
       // Strictly enforce admin verification solely based on authorized numbers
-      parsed.isAdmin = isAdminPhone(parsed.phone);
+      parsed.isAdmin = false;
       return parsed;
     }
     return null;
@@ -154,7 +154,7 @@ export function getStoredUserSession(): UserSession | null {
 
 export function saveUserSession(session: UserSession): void {
   try {
-    const isAdmin = isAdminPhone(session.phone);
+    const isAdmin = false;
     const sessionToSave: UserSession = {
       ...session,
       isAdmin,

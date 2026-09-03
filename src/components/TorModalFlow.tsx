@@ -31,6 +31,7 @@ import {
 } from '../utils/dateUtils';
 import { SALON_INFO, saveUserSession, isAdminPhone } from '../utils/storage';
 import { addAppointmentToFirestore } from '../lib/firebase';
+import { ExistingBookingChoiceModal } from './ExistingBookingChoiceModal';
 
 interface TorModalFlowProps {
   isOpen: boolean;
@@ -40,6 +41,7 @@ interface TorModalFlowProps {
   currentUser?: UserSession | null;
   onBookSuccess: (newAppointment: Appointment) => void;
   scheduleSettings?: ScheduleSettings;
+  onCancelAppointment?: (id: string | number) => Promise<void> | void;
 }
 
 type Step = 'treatment' | 'day' | 'slot' | 'details';
@@ -52,6 +54,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
   currentUser,
   onBookSuccess,
   scheduleSettings,
+  onCancelAppointment,
 }) => {
   const [step, setStep] = useState<Step>('treatment');
   const [selectedService, setSelectedService] = useState<Service>(services[0] || {
@@ -70,24 +73,45 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
   const [notes, setNotes] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [showExistingChoiceModal, setShowExistingChoiceModal] = useState(false);
+  const [existingBookingsForUser, setExistingBookingsForUser] = useState<Appointment[]>([]);
+  const [confirmedAdditionalBooking, setConfirmedAdditionalBooking] = useState(false);
 
-  // Sync user info from session whenever currentUser or modal opens
+  // Sync user info from session whenever currentUser or modal opens, and reset selection on open
   React.useEffect(() => {
-    if (currentUser) {
-      if (currentUser.name) setCustomerName(currentUser.name);
-      if (currentUser.phone) setCustomerPhone(currentUser.phone);
-    }
-  }, [currentUser, isOpen]);
-
-  React.useEffect(() => {
-    if (!isOpen) {
+    if (isOpen) {
+      // Always reset selection to step 1 so the client can pick a treatment, date, and slot fresh
+      setStep('treatment');
+      setSelectedDate('');
+      setSelectedSlot('');
+      setNotes('');
       setIsEditingDetails(false);
       setErrorMessage('');
+      setIsSubmitting(false);
+      setShowExistingChoiceModal(false);
+      setConfirmedAdditionalBooking(false);
+      if (currentUser?.name) setCustomerName(currentUser.name);
+      if (currentUser?.phone) setCustomerPhone(currentUser.phone);
+    } else {
+      setIsEditingDetails(false);
+      setErrorMessage('');
+      setIsSubmitting(false);
+      setShowExistingChoiceModal(false);
+      setConfirmedAdditionalBooking(false);
     }
-  }, [isOpen]);
+  }, [isOpen, currentUser]);
 
   // 21 days for the booking calendar
   const days: DayInfo[] = useMemo(() => buildNextDays(21), []);
+
+  const userActiveBookingsCount = useMemo(() => {
+    const rawPhone = customerPhone || currentUser?.phone || '';
+    const cleanPhone = rawPhone.replace(/\D/g, '');
+    if (!cleanPhone || cleanPhone.length < 7) return 0;
+    return appointments.filter(
+      (a) => a.status === 'confirmed' && a.customer_phone.replace(/\D/g, '') === cleanPhone
+    ).length;
+  }, [customerPhone, currentUser, appointments]);
 
   if (!isOpen) return null;
 
@@ -152,6 +176,57 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     else if (step === 'day') setStep('treatment');
   };
 
+  const executeBookingSubmission = async (nameToUse: string, phoneToUse: string, adminFlag: boolean) => {
+    setIsSubmitting(true);
+
+    try {
+      const startMin = timeToMinutes(selectedSlot);
+      const endMin = startMin + durationMinutes;
+      const endTimeStr = minutesToTime(endMin);
+
+      const newAppt: Omit<Appointment, 'id'> = {
+        customer_name: nameToUse,
+        customer_phone: phoneToUse,
+        service_id: selectedService.id,
+        service_name: selectedService.name,
+        appointment_date: selectedDate,
+        start_time: selectedSlot,
+        end_time: endTimeStr,
+        price: selectedService.price,
+        status: 'confirmed',
+        created_at: new Date().toISOString(),
+        notes: notes.trim() || undefined,
+      };
+
+      // Save user session in localStorage
+      saveUserSession({
+        name: nameToUse,
+        phone: phoneToUse,
+        isAdmin: adminFlag,
+        loggedInAt: new Date().toISOString(),
+        acceptedTerms: currentUser?.acceptedTerms ?? true,
+        acceptedTermsAt: currentUser?.acceptedTermsAt || new Date().toISOString(),
+        signatureDataUrl: currentUser?.signatureDataUrl,
+      });
+
+      // Save to Firestore & local storage
+      const savedId = await addAppointmentToFirestore(newAppt as any);
+
+      setIsSubmitting(false);
+      onBookSuccess({ ...newAppt, id: savedId } as Appointment);
+      onClose();
+    } catch (err: any) {
+      console.error('Failed to book appointment:', err);
+      if (err?.name === 'SlotTakenError' || err?.message?.includes('השעה הזו כבר נתפסה')) {
+        setErrorMessage('השעה הזו כבר נתפסה, בבקשה תבחרי שעה אחרת');
+        setStep('slot'); // חזרה לבחירת שעה
+      } else {
+        setErrorMessage('אירעה שגיאה בקביעת התור. אנא נסי שנית.');
+      }
+      setIsSubmitting(false);
+    }
+  };
+
   const handleSubmitBooking = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
@@ -176,55 +251,17 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
 
     const isAdmin = isAdminPhone(cleanPhone);
 
-    setIsSubmitting(true);
+    const existingActive = appointments.filter(
+      (a) => a.status === 'confirmed' && a.customer_phone.replace(/\D/g, '') === cleanPhone
+    );
 
-    try {
-      const startMin = timeToMinutes(selectedSlot);
-      const endMin = startMin + durationMinutes;
-      const endTimeStr = minutesToTime(endMin);
-
-      const newAppt: Appointment = {
-        id: `appt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-        customer_name: cleanName,
-        customer_phone: cleanPhone,
-        service_id: selectedService.id,
-        service_name: selectedService.name,
-        appointment_date: selectedDate,
-        start_time: selectedSlot,
-        end_time: endTimeStr,
-        price: selectedService.price,
-        status: 'confirmed',
-        created_at: new Date().toISOString(),
-        notes: notes.trim() || undefined,
-      };
-
-      // Save user session in localStorage
-      saveUserSession({
-        name: cleanName,
-        phone: cleanPhone,
-        isAdmin,
-        loggedInAt: new Date().toISOString(),
-        acceptedTerms: currentUser?.acceptedTerms ?? true,
-        acceptedTermsAt: currentUser?.acceptedTermsAt || new Date().toISOString(),
-        signatureDataUrl: currentUser?.signatureDataUrl,
-      });
-
-      // Save to Firestore & local storage
-      await addAppointmentToFirestore(newAppt);
-
-      setIsSubmitting(false);
-      onBookSuccess(newAppt);
-      onClose();
-    } catch (err: any) {
-      console.error('Failed to book appointment:', err);
-      if (err?.name === 'SlotTakenError' || err?.message?.includes('השעה הזו כבר נתפסה')) {
-        setErrorMessage('השעה הזו כבר נתפסה, בבקשה תבחרי שעה אחרת');
-        setStep(2); // חזרה לבחירת שעה
-      } else {
-        setErrorMessage('אירעה שגיאה בקביעת התור. אנא נסי שנית.');
-      }
-      setIsSubmitting(false);
+    if (existingActive.length > 0 && !confirmedAdditionalBooking) {
+      setExistingBookingsForUser(existingActive);
+      setShowExistingChoiceModal(true);
+      return;
     }
+
+    await executeBookingSubmission(cleanName, cleanPhone, isAdmin);
   };
 
   const selectedDayInfo = days.find((d) => d.iso === selectedDate);
@@ -251,12 +288,21 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
               </div>
             )}
             
-            <h2 className="text-xl font-black text-slate-950 font-['Rubik',sans-serif]">
-              {step === 'treatment' && 'בחירת טיפול'}
-              {step === 'day' && 'בחירת יום'}
-              {step === 'slot' && 'בחירת שעה'}
-              {step === 'details' && 'פרטי הלקוח/ה ואישור'}
-            </h2>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-black text-slate-950 font-['Rubik',sans-serif]">
+                  {step === 'treatment' && 'בחירת טיפול'}
+                  {step === 'day' && 'בחירת יום'}
+                  {step === 'slot' && 'בחירת שעה'}
+                  {step === 'details' && 'פרטי הלקוח/ה ואישור'}
+                </h2>
+                {userActiveBookingsCount > 0 && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">
+                    תור נוסף
+                  </span>
+                )}
+              </div>
+            </div>
           </div>
 
           <button
@@ -275,6 +321,14 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
           {/* STEP 1: בחירת טיפול */}
           {step === 'treatment' && (
             <div className="space-y-4 py-2">
+              {userActiveBookingsCount > 0 && (
+                <div className="p-3 bg-purple-50 rounded-2xl border border-purple-200 text-xs text-purple-900 flex items-center gap-2 shadow-xs">
+                  <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
+                  <span className="font-medium">
+                    יש לך כבר {userActiveBookingsCount === 1 ? 'תור משוריין' : `${userActiveBookingsCount} תורים משוריינים`}. התור שייקבע כעת יתווסף במערכת בנוסף לתור הקיים ✨
+                  </span>
+                </div>
+              )}
               <div className="text-center space-y-1 pb-2">
                 <p className="text-xs text-slate-500 font-medium">
                   בחרו את סוג הטיפול המבוקש להמשך
@@ -647,7 +701,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                 ) : (
                   <>
                     <CheckCircle2 className="w-5 h-5" />
-                    <span>אישור וקביעת תור</span>
+                    <span>{userActiveBookingsCount > 0 ? 'אישור וקביעת תור נוסף' : 'אישור וקביעת תור'}</span>
                   </>
                 )}
               </button>
@@ -657,6 +711,28 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         </div>
 
       </div>
+
+      {/* Choice Modal: Book another or cancel existing */}
+      <ExistingBookingChoiceModal
+        isOpen={showExistingChoiceModal}
+        onClose={() => setShowExistingChoiceModal(false)}
+        existingAppointments={existingBookingsForUser}
+        onBookAnother={() => {
+          setShowExistingChoiceModal(false);
+          setConfirmedAdditionalBooking(true);
+          const cleanName = customerName.trim();
+          const cleanPhone = customerPhone.replace(/\D/g, '');
+          const isAdmin = isAdminPhone(cleanPhone);
+          executeBookingSubmission(cleanName, cleanPhone, isAdmin);
+        }}
+        onCancelExisting={async (appt) => {
+          setShowExistingChoiceModal(false);
+          if (onCancelAppointment) {
+            await onCancelAppointment(appt.id);
+          }
+          alert(`התור לתאריך ${appt.appointment_date} בשעה ${appt.start_time} בוטל בהצלחה.`);
+        }}
+      />
     </div>
   );
 };

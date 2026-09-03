@@ -1,5 +1,5 @@
 import { Appointment, SalonInfo, ScheduleSettings, Service, UserSession } from '../types';
-import { toISODateString } from './dateUtils';
+import { toISODateString, deduplicateAppointments } from './dateUtils';
 
 export const ADMIN_PHONE_RAW = '0546307114';
 
@@ -108,7 +108,10 @@ export function getStoredAppointments(): Appointment[] {
     if (!raw) {
       return [];
     }
-    return JSON.parse(raw);
+    const parsed: Appointment[] = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    
+    return deduplicateAppointments(parsed);
   } catch {
     return [];
   }
@@ -116,24 +119,48 @@ export function getStoredAppointments(): Appointment[] {
 
 export function saveAppointment(appointment: Appointment): void {
   const current = getStoredAppointments();
-  const updated = [appointment, ...current];
+  const idStr = appointment.id ? String(appointment.id) : null;
+  const filtered = current.filter((app) => {
+    if (idStr && app.id && String(app.id) === idStr) return false;
+    if (app.appointment_date === appointment.appointment_date && app.start_time === appointment.start_time) {
+      return false;
+    }
+    return true;
+  });
+  const updated = deduplicateAppointments([appointment, ...filtered]);
   localStorage.setItem(STORAGE_KEY_APPOINTMENTS, JSON.stringify(updated));
 }
 
 export function cancelAppointment(appointmentId: number | string): void {
   const current = getStoredAppointments();
   const idStr = String(appointmentId);
-  const updated = current.map((app) =>
-    String(app.id) === idStr ? { ...app, status: 'cancelled' as const } : app
-  );
-  localStorage.setItem(STORAGE_KEY_APPOINTMENTS, JSON.stringify(updated));
+  const target = current.find((a) => String(a.id) === idStr);
+
+  const updated = current.map((app) => {
+    if (String(app.id) === idStr) return { ...app, status: 'cancelled' as const };
+    if (target && app.appointment_date === target.appointment_date && app.start_time === target.start_time) {
+      return { ...app, status: 'cancelled' as const };
+    }
+    return app;
+  });
+  const deduped = deduplicateAppointments(updated);
+  localStorage.setItem(STORAGE_KEY_APPOINTMENTS, JSON.stringify(deduped));
 }
 
 export function deleteAppointmentPermanently(appointmentId: number | string): void {
   const current = getStoredAppointments();
   const idStr = String(appointmentId);
-  const updated = current.filter((app) => String(app.id) !== idStr);
-  localStorage.setItem(STORAGE_KEY_APPOINTMENTS, JSON.stringify(updated));
+  const target = current.find((a) => String(a.id) === idStr);
+
+  const updated = current.filter((app) => {
+    if (String(app.id) === idStr) return false;
+    if (target && app.appointment_date === target.appointment_date && app.start_time === target.start_time) {
+      return false;
+    }
+    return true;
+  });
+  const deduped = deduplicateAppointments(updated);
+  localStorage.setItem(STORAGE_KEY_APPOINTMENTS, JSON.stringify(deduped));
 }
 
 export function getStoredUserSession(): UserSession | null {

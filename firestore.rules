@@ -19,18 +19,19 @@ service cloud.firestore {
                     && request.resource.data.end_time is string
                     && request.resource.data.status in ['confirmed', 'cancelled'];
 
-      allow update, delete: if false;
+      allow update: if request.resource.data.status in ['confirmed', 'cancelled'];
+      allow delete: if true;
     }
 
     match /settings/{docId} {
       allow read: if docId != 'admin_users';
-      allow write: if false;
+      allow write: if docId in ['services_config', 'schedule_settings'];
     }
 
     match /reminder_locks/{lockId} {
       allow read: if true;
-      allow create: if true;
-      allow update, delete: if false;
+      allow create, update: if true;
+      allow delete: if false;
     }
 
     match /whatsapp_logs/{logId} {

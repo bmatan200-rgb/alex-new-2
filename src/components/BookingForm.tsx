@@ -30,6 +30,7 @@ import {
   generateIcsFile,
 } from '../utils/dateUtils';
 import { SALON_INFO } from '../utils/storage';
+import { addAppointmentToFirestore } from '../lib/firebase';
 import { ServiceSelector } from './ServiceSelector';
 import { DatePickerCarousel } from './DatePickerCarousel';
 import { SlotSelector } from './SlotSelector';
@@ -120,7 +121,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
     setSelectedSlot(null);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
@@ -151,8 +152,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
         timeToMinutes(selectedSlot) + currentService.duration_minutes
       );
 
-      const newAppt: Appointment = {
-        id: Date.now(),
+      const newAppt: Omit<Appointment, 'id'> = {
         customer_name: name,
         customer_phone: phone,
         service_id: currentService.id,
@@ -166,8 +166,21 @@ export const BookingForm: React.FC<BookingFormProps> = ({
         created_at: new Date().toISOString(),
       };
 
-      onBookSuccess(newAppt);
-      setConfirmedAppointment(newAppt);
+      let savedId: string | number = `appt_${Date.now()}`;
+      try {
+        savedId = await addAppointmentToFirestore(newAppt as any);
+      } catch (err: any) {
+        if (err?.name === 'SlotTakenError' || err?.message?.includes('השעה הזו כבר נתפסה')) {
+          setFormError('השעה הזו כבר נתפסה, בבקשה לבחור שעה אחרת');
+          setIsSubmitting(false);
+          return;
+        }
+        console.warn('Could not save to Firestore directly in BookingForm, falling back:', err);
+      }
+
+      const fullAppt: Appointment = { ...newAppt, id: savedId };
+      onBookSuccess(fullAppt);
+      setConfirmedAppointment(fullAppt);
 
       // Trigger Confetti
       try {

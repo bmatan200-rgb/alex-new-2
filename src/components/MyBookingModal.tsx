@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Calendar, Clock, X, AlertCircle, Trash2, MessageCircle, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Search, Calendar, Clock, X, AlertCircle, Trash2, MessageCircle, CheckCircle2, AlertTriangle, CalendarPlus } from 'lucide-react';
 import { Appointment, UserSession } from '../types';
 import { formatHebrewFullDate, formatILS, toIsraeliDateString } from '../utils/dateUtils';
 import { SALON_INFO } from '../utils/storage';
@@ -10,6 +10,7 @@ interface MyBookingModalProps {
   appointments: Appointment[];
   onCancelAppointment: (id: number | string) => void;
   currentUser?: UserSession | null;
+  onOpenBookingModal?: () => void;
 }
 
 export const MyBookingModal: React.FC<MyBookingModalProps> = ({
@@ -18,6 +19,7 @@ export const MyBookingModal: React.FC<MyBookingModalProps> = ({
   appointments,
   onCancelAppointment,
   currentUser,
+  onOpenBookingModal,
 }) => {
   const [searchPhone, setSearchPhone] = useState(currentUser?.phone || '');
   const [hasSearched, setHasSearched] = useState(Boolean(currentUser?.phone));
@@ -121,12 +123,42 @@ export const MyBookingModal: React.FC<MyBookingModalProps> = ({
           </button>
         </form>
 
+        {onOpenBookingModal && (
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenBookingModal();
+              }}
+              className="w-full py-3 px-4 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 rounded-2xl text-xs sm:text-sm font-black transition flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+            >
+              <CalendarPlus className="w-4 h-4 text-purple-700" />
+              <span>קביעת תור נוסף במערכת ✨</span>
+            </button>
+          </div>
+        )}
+
         {/* Search Results */}
         {hasSearched && (
           <div className="space-y-3 pt-2">
-            <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider">
-              תוצאות חיפוש ({matchedAppointments.length})
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider">
+                תוצאות חיפוש ({matchedAppointments.length})
+              </h3>
+              {onOpenBookingModal && matchedAppointments.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenBookingModal();
+                  }}
+                  className="text-xs text-purple-700 hover:text-purple-900 font-bold underline cursor-pointer"
+                >
+                  + הוספת תור נוסף
+                </button>
+              )}
+            </div>
 
             {matchedAppointments.length === 0 ? (
               <div className="text-center py-6 px-4 bg-slate-50 rounded-2xl border border-slate-200 text-slate-500 text-xs space-y-1">

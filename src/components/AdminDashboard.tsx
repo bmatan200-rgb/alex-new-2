@@ -69,7 +69,7 @@ import {
 interface AdminDashboardProps {
   appointments: Appointment[];
   services: Service[];
-  onAddAppointment: (appointment: Appointment) => void;
+  onAddAppointment: (appointment: Omit<Appointment, 'id'>) => void;
   onCancelAppointment: (id: number | string) => void;
   onDeleteAppointment: (id: number | string) => void;
   onSwitchToClientView?: () => void;
@@ -281,8 +281,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       end = minutesToTime(timeToMinutes(blockStartTime) + (currentService.duration_minutes || 110));
     }
 
-    const newBlock: Appointment = {
-      id: Date.now(),
+    const newBlock: Omit<Appointment, 'id'> = {
       customer_name: `🔒 חסום: ${blockReason || 'חופש'}`,
       customer_phone: 'חסימת יומן',
       service_id: 1,
@@ -314,8 +313,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
 
     const endTime = minutesToTime(timeToMinutes(slotTime) + 110);
-    const newBlock: Appointment = {
-      id: Date.now(),
+    const newBlock: Omit<Appointment, 'id'> = {
       customer_name: '🔒 חסום: חופש / הפסקה',
       customer_phone: 'חסימת יומן',
       service_id: 1,
@@ -349,8 +347,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       return;
     }
 
-    const newApp: Appointment = {
-      id: Date.now(),
+    const newApp: Omit<Appointment, 'id'> = {
       customer_name: manualName.trim(),
       customer_phone: manualPhone.trim() || 'שריון יזום',
       service_id: srv?.id || 1,

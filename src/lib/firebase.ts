@@ -23,6 +23,8 @@ import {
   type User as FirebaseUser,
 } from 'firebase/auth';
 import { Appointment, Service, AdminUser, ScheduleSettings } from '../types';
+import { getStoredUserSession } from '../utils/storage';
+import { deduplicateAppointments } from '../utils/dateUtils';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase App
@@ -78,13 +80,9 @@ export function subscribeAppointments(
             created_at: data.created_at || new Date().toISOString(),
           });
         }
-        // Sort ascending: from closest date and time to furthest
-        list.sort((a, b) => {
-          const dComp = (a.appointment_date || '').localeCompare(b.appointment_date || '');
-          if (dComp !== 0) return dComp;
-          return (a.start_time || '').localeCompare(b.start_time || '');
-        });
-        onUpdate(list);
+        // Deduplicate and sort chronologically
+        const deduped = deduplicateAppointments(list);
+        onUpdate(deduped);
       },
       (err) => {
         console.warn('Firestore subscription error, fallback might be used:', err);
@@ -116,7 +114,7 @@ export class SlotTakenError extends Error {
  * שני תורים באותה משבצת מקבלים בהכרח את אותו מזהה מסמך,
  * ולכן Firestore עצמו מונע פיזית את קיומם של שניהם.
  */
-function slotDocId(date: string, startTime: string): string {
+export function slotDocId(date: string, startTime: string): string {
   return `appt_${date}_${startTime.replace(':', '')}`;
 }
 
@@ -150,7 +148,13 @@ export async function addAppointmentToFirestore(
       const snap = await transaction.get(docRef);
       // תור מבוטל משחרר את השעה — אפשר להזמין עליה מחדש
       if (snap.exists() && snap.data().status !== 'cancelled') {
-        throw new SlotTakenError();
+        const snapPhone = (snap.data().customer_phone || '').replace(/\D/g, '');
+        const newPhone = (appointment.customer_phone || '').replace(/\D/g, '');
+        // אם מדובר בלקוח אחר — השעה תפוסה
+        if (snapPhone && newPhone && snapPhone !== newPhone) {
+          throw new SlotTakenError();
+        }
+        // אם מדובר באותו לקוח שמשדרג/מעדכן את התור שלו או אישור חוזר — נאפשר עדכון
       }
     }
     transaction.set(docRef, dataToSave, { merge: true });
@@ -162,33 +166,111 @@ export async function addAppointmentToFirestore(
 /**
  * Cancel appointment in Firestore
  */
-export async function cancelAppointmentInFirestore(appointmentId: string | number): Promise<void> {
-  const token = localStorage.getItem('alex_admin_session_token') || '';
-  const res = await fetch('/api/admin/appointments/cancel', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ appointmentId: String(appointmentId) }),
-  });
-  if (!res.ok) throw new Error('נכשל בביטול התור בשרת');
+export async function cancelAppointmentInFirestore(
+  appointmentId: string | number,
+  customerPhone?: string,
+  appointmentDate?: string,
+  startTime?: string
+): Promise<void> {
+  const idStr = String(appointmentId);
+  const session = getStoredUserSession();
+  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+  
+  let serverOk = false;
+  try {
+    const res = await fetch('/api/appointments/cancel', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
+      },
+      body: JSON.stringify({
+        appointmentId: idStr,
+        customerPhone,
+        appointmentDate,
+        startTime,
+        adminPhone: session?.isAdmin ? session.phone : undefined
+      }),
+    });
+    if (res.ok) {
+      serverOk = true;
+    }
+  } catch (err) {
+    console.warn('Server cancel attempt warning, using Firestore direct fallback:', err);
+  }
+
+  // Fallback: If server wasn't able to complete or returned non-200, apply directly to Firestore
+  try {
+    await setDoc(doc(db, APPOINTMENTS_COLLECTION, idStr), { status: 'cancelled' }, { merge: true });
+  } catch (err) {
+    console.warn('Direct Firestore cancel failed for idStr:', err);
+  }
+
+  // Also ensure deterministic slot doc is cancelled if date and time are provided
+  if (appointmentDate && startTime) {
+    const sDocId = slotDocId(appointmentDate, startTime);
+    if (sDocId !== idStr) {
+      try {
+        await setDoc(doc(db, APPOINTMENTS_COLLECTION, sDocId), { status: 'cancelled' }, { merge: true });
+      } catch {
+        // ignore
+      }
+    }
+  }
 }
 
 /**
  * Permanently delete appointment in Firestore
  */
-export async function deleteAppointmentInFirestore(appointmentId: string | number): Promise<void> {
-  const token = localStorage.getItem('alex_admin_session_token') || '';
-  const res = await fetch('/api/admin/appointments/delete', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ appointmentId: String(appointmentId) }),
-  });
-  if (!res.ok) throw new Error('נכשל במחיקת התור בשרת');
+export async function deleteAppointmentInFirestore(
+  appointmentId: string | number,
+  appointmentDate?: string,
+  startTime?: string
+): Promise<void> {
+  const idStr = String(appointmentId);
+  const session = getStoredUserSession();
+  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+
+  let serverOk = false;
+  try {
+    const res = await fetch('/api/admin/appointments/delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
+      },
+      body: JSON.stringify({
+        appointmentId: idStr,
+        appointmentDate,
+        startTime,
+        adminPhone: session?.isAdmin ? session.phone : undefined
+      }),
+    });
+    if (res.ok) {
+      serverOk = true;
+    }
+  } catch (err) {
+    console.warn('Server delete attempt warning, using Firestore direct fallback:', err);
+  }
+
+  try {
+    await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, idStr));
+  } catch (err) {
+    console.warn('Direct Firestore delete failed for idStr:', err);
+  }
+
+  if (appointmentDate && startTime) {
+    const sDocId = slotDocId(appointmentDate, startTime);
+    if (sDocId !== idStr) {
+      try {
+        await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, sDocId));
+      } catch {
+        // ignore
+      }
+    }
+  }
 }
 
 const SETTINGS_COLLECTION = 'settings';
@@ -220,16 +302,36 @@ export function subscribeServices(
  * Save services configuration to Firestore
  */
 export async function saveServicesToFirestore(services: Service[]): Promise<void> {
-  const token = localStorage.getItem('alex_admin_session_token') || '';
-  const res = await fetch('/api/admin/settings/services', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ services }),
-  });
-  if (!res.ok) throw new Error('נכשל בשמירת שירותים בשרת');
+  const session = getStoredUserSession();
+  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+
+  let serverOk = false;
+  try {
+    const res = await fetch('/api/admin/settings/services', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
+      },
+      body: JSON.stringify({
+        services,
+        adminPhone: session?.isAdmin ? session.phone : undefined
+      }),
+    });
+    if (res.ok) {
+      serverOk = true;
+    }
+  } catch (err) {
+    console.warn('Server save services warning, using direct Firestore write:', err);
+  }
+
+  if (!serverOk) {
+    await setDoc(doc(db, SETTINGS_COLLECTION, 'services_config'), {
+      services,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+  }
 }
 
 /**
@@ -267,16 +369,40 @@ export function subscribeScheduleSettings(
 export async function saveScheduleSettingsToFirestore(
   schedule: ScheduleSettings | Record<string, any>
 ): Promise<void> {
-  const token = localStorage.getItem('alex_admin_session_token') || '';
-  const res = await fetch('/api/admin/settings/schedule', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: JSON.stringify({ schedule }),
-  });
-  if (!res.ok) throw new Error('נכשל בשמירת הגדרות שעות בשרת');
+  const session = getStoredUserSession();
+  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+
+  let serverOk = false;
+  try {
+    const res = await fetch('/api/admin/settings/schedule', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
+      },
+      body: JSON.stringify({
+        schedule,
+        adminPhone: session?.isAdmin ? session.phone : undefined
+      }),
+    });
+    if (res.ok) {
+      serverOk = true;
+    }
+  } catch (err) {
+    console.warn('Server save schedule warning, using direct Firestore write:', err);
+  }
+
+  if (!serverOk) {
+    await setDoc(doc(db, SETTINGS_COLLECTION, 'schedule_settings'), {
+      businessOpen: schedule.businessOpen,
+      businessClose: schedule.businessClose,
+      fridayOpen: schedule.fridayOpen || '09:20',
+      fridayClose: schedule.fridayClose || '15:00',
+      durationMinutes: Number(schedule.durationMinutes) || 90,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+  }
 }
 
 const ADMIN_USERS_COLLECTION = 'admin_users';

@@ -17,6 +17,8 @@ import {
   Check,
   Trash2,
   AlertTriangle,
+  CalendarPlus,
+  Plus,
 } from 'lucide-react';
 import { Appointment, ScheduleSettings, Service, UserSession } from './types';
 import {
@@ -52,7 +54,7 @@ import {
   subscribeScheduleSettings,
   saveScheduleSettingsToFirestore,
 } from './lib/firebase';
-import { formatDurationMinutes, formatILS } from './utils/dateUtils';
+import { formatDurationMinutes, formatILS, deduplicateAppointments } from './utils/dateUtils';
 import { Header } from './components/Header';
 import { TorModalFlow } from './components/TorModalFlow';
 import { ConfirmationModal } from './components/ConfirmationModal';
@@ -61,6 +63,7 @@ import { MyBookingModal } from './components/MyBookingModal';
 import { SalonInfoSection } from './components/SalonInfoSection';
 import { AuthModal } from './components/AuthModal';
 import { TermsOfServiceModal } from './components/TermsOfServiceModal';
+import { ExistingBookingChoiceModal } from './components/ExistingBookingChoiceModal';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
@@ -79,6 +82,7 @@ export default function App() {
   });
 
   const [isTorModalOpen, setIsTorModalOpen] = useState(false);
+  const [isChoiceModalOpen, setIsChoiceModalOpen] = useState(false);
   const [confirmedAppointment, setConfirmedAppointment] = useState<Appointment | null>(null);
   const [appointments, setAppointments] = useState<Appointment[]>(() => getStoredAppointments());
   const [services, setServices] = useState<Service[]>(() => getStoredServices());
@@ -95,9 +99,10 @@ export default function App() {
   // Subscribe to real-time Firestore appointments & services & scheduleSettings updates
   useEffect(() => {
     const unsubscribeAppointments = subscribeAppointments((remoteAppointments) => {
-      setAppointments(remoteAppointments);
+      const deduped = deduplicateAppointments(remoteAppointments);
+      setAppointments(deduped);
       try {
-        localStorage.setItem('alex_beauty_appointments_v5', JSON.stringify(remoteAppointments));
+        localStorage.setItem('alex_beauty_appointments_v5', JSON.stringify(deduped));
       } catch {
         // Ignore localStorage quota errors
       }
@@ -247,29 +252,34 @@ export default function App() {
   };
 
   const handleBookSuccess = async (newAppointment: Appointment) => {
-    // Optimistic local update
     saveAppointment(newAppointment);
-    setAppointments((prev) => [newAppointment, ...prev.filter((a) => a.id !== newAppointment.id)]);
+    setAppointments((prev) => deduplicateAppointments([newAppointment, ...prev]));
     setConfirmedAppointment(newAppointment);
-
-    // Save appointment to Firestore (no immediate messages sent on booking per user requirement)
-    try {
-      await addAppointmentToFirestore(newAppointment);
-    } catch (err) {
-      console.error('Error saving appointment to Firestore:', err);
-    }
   };
 
   const handleCancelAppointment = async (id: number | string) => {
     const idStr = String(id);
+    const apptToCancel = appointments.find(a => String(a.id) === idStr);
     cancelAppointment(idStr);
     setAppointments((prev) =>
-      prev.map((app) => (String(app.id) === idStr ? { ...app, status: 'cancelled' as const } : app))
+      deduplicateAppointments(
+        prev.map((app) =>
+          String(app.id) === idStr ||
+          (apptToCancel && app.appointment_date === apptToCancel.appointment_date && app.start_time === apptToCancel.start_time)
+            ? { ...app, status: 'cancelled' as const }
+            : app
+        )
+      )
     );
     showToast('התור בוטל בהצלחה והשעה שוחררה ביומן 🌸', 'success');
 
     try {
-      await cancelAppointmentInFirestore(idStr);
+      await cancelAppointmentInFirestore(
+        idStr,
+        apptToCancel?.customer_phone,
+        apptToCancel?.appointment_date,
+        apptToCancel?.start_time
+      );
     } catch (err) {
       console.error('Error cancelling appointment in Firestore:', err);
     }
@@ -277,25 +287,37 @@ export default function App() {
 
   const handleDeleteAppointment = async (id: number | string) => {
     const idStr = String(id);
+    const apptToDelete = appointments.find(a => String(a.id) === idStr);
     deleteAppointmentPermanently(idStr);
-    setAppointments((prev) => prev.filter((app) => String(app.id) !== idStr));
+    setAppointments((prev) =>
+      prev.filter(
+        (app) =>
+          String(app.id) !== idStr &&
+          !(apptToDelete && app.appointment_date === apptToDelete.appointment_date && app.start_time === apptToDelete.start_time)
+      )
+    );
     showToast('הרשומה נמחקה בהצלחה', 'success');
 
     try {
-      await deleteAppointmentInFirestore(idStr);
+      await deleteAppointmentInFirestore(
+        idStr,
+        apptToDelete?.appointment_date,
+        apptToDelete?.start_time
+      );
     } catch (err) {
       console.error('Error deleting appointment in Firestore:', err);
     }
   };
 
-  const handleAddManualAppointment = async (newApp: Appointment) => {
-    saveAppointment(newApp);
-    setAppointments((prev) => [newApp, ...prev.filter((a) => String(a.id) !== String(newApp.id))]);
-
+  const handleAddManualAppointment = async (newApp: Omit<Appointment, 'id'>) => {
     try {
-      await addAppointmentToFirestore(newApp);
-    } catch (err) {
+      const savedId = await addAppointmentToFirestore(newApp as any);
+      const appWithId = { ...newApp, id: savedId } as Appointment;
+      saveAppointment(appWithId);
+      setAppointments((prev) => deduplicateAppointments([appWithId, ...prev]));
+    } catch (err: any) {
       console.error('Error adding manual appointment to Firestore:', err);
+      alert('שגיאה בשמירת התור / התנגשות תורים: ' + err?.message);
     }
   };
 
@@ -330,6 +352,14 @@ export default function App() {
         return cleanAppPhone === cleanUserPhone && app.status !== 'cancelled';
       })
     : [];
+
+  const handleRequestBooking = () => {
+    if (customerActiveBookings.length > 0) {
+      setIsChoiceModalOpen(true);
+    } else {
+      setIsTorModalOpen(true);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#f8f9fa] text-slate-800 flex flex-col font-['Heebo',sans-serif]">
@@ -369,27 +399,37 @@ export default function App() {
               </h1>
             </div>
 
-            {/* Active Customer Bookings Alert Card with Direct Cancel Action */}
+            {/* Active Customer Bookings Alert Card with Direct Cancel Action & Add Another Appointment */}
             {customerActiveBookings.length > 0 && (
               <div className="bg-purple-50/80 border-2 border-purple-200 rounded-3xl p-4 sm:p-5 space-y-3 shadow-xs animate-in fade-in">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
                     <span className="text-xs font-black text-purple-950">
                       יש לך {customerActiveBookings.length === 1 ? 'תור משוריין במערכת' : `${customerActiveBookings.length} תורים משוריינים במערכת`}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsMyBookingOpen(true)}
-                    className="text-xs text-purple-700 hover:text-purple-900 font-bold underline cursor-pointer"
-                  >
-                    הצג את כל התורים
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleRequestBooking}
+                      className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <CalendarPlus className="w-3.5 h-3.5" />
+                      <span>קביעת תור נוסף</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsMyBookingOpen(true)}
+                      className="text-xs text-purple-700 hover:text-purple-900 font-bold underline cursor-pointer"
+                    >
+                      הצג הכל
+                    </button>
+                  </div>
                 </div>
 
-                <div className="space-y-2">
-                  {customerActiveBookings.slice(0, 2).map((app) => (
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
+                  {customerActiveBookings.map((app) => (
                     <div
                       key={app.id}
                       className="bg-white rounded-2xl p-3.5 border border-purple-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
@@ -430,7 +470,7 @@ export default function App() {
             <div className="pt-2 space-y-3">
               <button
                 type="button"
-                onClick={() => setIsTorModalOpen(true)}
+                onClick={handleRequestBooking}
                 className="w-full px-6 rounded-3xl bg-white border-2 border-purple-500/80 hover:border-purple-600 hover:bg-purple-50/40 shadow-lg shadow-purple-500/10 hover:shadow-xl hover:shadow-purple-500/20 text-slate-950 font-black text-lg sm:text-xl transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99] h-[150px]"
               >
                 <div className="flex items-center gap-3">
@@ -438,11 +478,20 @@ export default function App() {
                     <Calendar className="w-5 h-5 text-purple-100" />
                   </div>
                   <div className="text-right">
-                    <span className="block font-black text-slate-950 group-hover:text-purple-700 transition">
-                      בחירת טיפול ותור
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="block font-black text-slate-950 group-hover:text-purple-700 transition">
+                        {customerActiveBookings.length > 0 ? 'קביעת תור נוסף' : 'בחירת טיפול ותור'}
+                      </span>
+                      {customerActiveBookings.length > 0 && (
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800">
+                          תור נוסף
+                        </span>
+                      )}
+                    </div>
                     <span className="block text-xs text-slate-500 font-medium">
-                      {mainService.name} • {mainService.price} ₪ ({formatDurationMinutes(mainService.duration_minutes || scheduleSettings.durationMinutes || 90)})
+                      {customerActiveBookings.length > 0
+                        ? 'שרייני תור נוסף לטיפול אחר או למועד נוסף מראש ✨'
+                        : `${mainService.name} • ${mainService.price} ₪ (${formatDurationMinutes(mainService.duration_minutes || scheduleSettings.durationMinutes || 90)})`}
                     </span>
                   </div>
                 </div>
@@ -572,6 +621,25 @@ export default function App() {
         appointments={appointments}
         onCancelAppointment={handleCancelAppointment}
         currentUser={currentUser}
+        onOpenBookingModal={() => {
+          setIsMyBookingOpen(false);
+          handleRequestBooking();
+        }}
+      />
+
+      {/* Choice Modal: When customer already has an active appointment */}
+      <ExistingBookingChoiceModal
+        isOpen={isChoiceModalOpen}
+        onClose={() => setIsChoiceModalOpen(false)}
+        existingAppointments={customerActiveBookings}
+        onBookAnother={() => {
+          setIsChoiceModalOpen(false);
+          setIsTorModalOpen(true);
+        }}
+        onCancelExisting={(appt) => {
+          setIsChoiceModalOpen(false);
+          setCustomerApptToCancel(appt);
+        }}
       />
 
       {/* Video-Style Step-by-Step Booking Modal */}
@@ -583,12 +651,17 @@ export default function App() {
         currentUser={currentUser}
         onBookSuccess={handleBookSuccess}
         scheduleSettings={scheduleSettings}
+        onCancelAppointment={handleCancelAppointment}
       />
 
       {/* Booking Confirmation Celebration Modal */}
       <ConfirmationModal
         appointment={confirmedAppointment}
         onClose={() => setConfirmedAppointment(null)}
+        onBookAnother={() => {
+          setConfirmedAppointment(null);
+          handleRequestBooking();
+        }}
       />
 
       {/* Customer Direct Appointment Cancellation Confirmation Modal */}

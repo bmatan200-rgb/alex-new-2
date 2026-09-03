@@ -65,7 +65,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
     initialTab === ('how_it_works' as any) ? 'templates' : initialTab
   );
   const [templateSubTab, setTemplateSubTab] = useState<'1day_evening' | 'today_morning' | 'booking' | '2hours' | 'alex'>(
-    '1day_evening'
+    'today_morning'
   );
   const [testPhoneNumber, setTestPhoneNumber] = useState<string>(SALON_INFO.phone);
   const [showTwilioToken, setShowTwilioToken] = useState(false);
@@ -405,6 +405,19 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
               <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-2xl text-xs font-bold overflow-x-auto">
                 <button
                   type="button"
+                  onClick={() => setTemplateSubTab('today_morning')}
+                  className={`flex-1 py-2 px-2.5 rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                    templateSubTab === 'today_morning'
+                      ? 'bg-white text-amber-700 shadow-xs font-black'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Sun className="w-3.5 h-3.5 text-amber-500" />
+                  <span>1. בוקר התור (08:00 בדיוק) ☀️</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => setTemplateSubTab('1day_evening')}
                   className={`flex-1 py-2 px-2.5 rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap ${
                     templateSubTab === '1day_evening'
@@ -413,20 +426,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                   }`}
                 >
                   <Moon className="w-3.5 h-3.5" />
-                  <span>1. ערב יום לפני (20:00)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setTemplateSubTab('today_morning')}
-                  className={`flex-1 py-2 px-2.5 rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap ${
-                    templateSubTab === 'today_morning'
-                      ? 'bg-white text-amber-700 shadow-xs font-black'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <Sun className="w-3.5 h-3.5" />
-                  <span>2. בוקר התור (08:00)</span>
+                  <span>2. ערב יום לפני (20:00)</span>
                 </button>
 
                 <button
@@ -939,8 +939,83 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                   <span>הגדרות ספק לשליחה אוטומטית (Twilio / Green API / Webhook)</span>
                 </span>
                 <p className="text-slate-600 leading-relaxed">
-                  השרת מפעיל משימות node-cron ברקע לשליחה אוטומטית ב-08:00 וב-20:00.
+                  השרת מפעיל משימות node-cron ברקע לשליחה אוטומטית לפי שעון ישראל (08:00 בבוקר ו-20:00 בערב).
                 </p>
+              </div>
+
+              {/* Automated Schedule Settings */}
+              <div className="p-4 bg-gradient-to-r from-amber-50/70 to-orange-50/70 rounded-2xl border border-amber-200/80 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-amber-200/60">
+                  <span className="font-bold text-amber-950 flex items-center gap-1.5 text-sm">
+                    <Clock className="w-4 h-4 text-amber-600" />
+                    <span>תזמון שליחה אוטומטי ללקוחות (node-cron)</span>
+                  </span>
+                  <span className="text-[11px] bg-amber-200/80 text-amber-900 font-bold px-2 py-0.5 rounded-full">
+                    שעון ישראל 🇮🇱
+                  </span>
+                </div>
+
+                {/* Option 1: Same day at 08:00 AM */}
+                <div className="p-3 bg-white/90 rounded-xl border border-amber-100 flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <Sun className="w-4 h-4 text-amber-500" />
+                      <span className="font-bold text-slate-900 text-xs">
+                        תזכורת בוקר באותו יום של התור בדיוק ב-08:00
+                      </span>
+                      <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded-md">
+                        מופעל כברירת מחדל
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      נשלחת אוטומטית בדיוק בשעה <strong>{settings.morningReminderTime || '08:00'} בבוקר</strong> ביום התור לכל הלקוחות עם תור להיום.
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-1">
+                    <input
+                      type="checkbox"
+                      checked={settings.notifyCustomerToday !== false}
+                      onChange={(e) => {
+                        const updated = { ...settings, notifyCustomerToday: e.target.checked };
+                        setSettings(updated);
+                        saveReminderSettings(updated);
+                      }}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                  </label>
+                </div>
+
+                {/* Option 2: Evening 1 day before */}
+                <div className="p-3 bg-white/90 rounded-xl border border-amber-100 flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <Moon className="w-4 h-4 text-indigo-500" />
+                      <span className="font-bold text-slate-900 text-xs">
+                        תזכורת ערב יום לפני התור (20:00)
+                      </span>
+                      <span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-1.5 py-0.5 rounded-md">
+                        אופציונלי
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      שליחת תזכורת מוקדמת נוספת בערב שלפני יום התור בשעה <strong>{settings.eveningReminderTime || '20:00'}</strong>.
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-1">
+                    <input
+                      type="checkbox"
+                      checked={settings.notifyCustomer1DayBefore === true}
+                      onChange={(e) => {
+                        const updated = { ...settings, notifyCustomer1DayBefore: e.target.checked };
+                        setSettings(updated);
+                        saveReminderSettings(updated);
+                      }}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600"></div>
+                  </label>
+                </div>
               </div>
 
               {/* Provider Selection */}

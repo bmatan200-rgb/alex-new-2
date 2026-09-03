@@ -10,6 +10,7 @@ import {
   Phone,
   Download,
   X,
+  CalendarPlus,
 } from 'lucide-react';
 import { Appointment } from '../types';
 import {
@@ -24,11 +25,13 @@ import { SALON_INFO } from '../utils/storage';
 interface ConfirmationModalProps {
   appointment: Appointment | null;
   onClose: () => void;
+  onBookAnother?: () => void;
 }
 
 export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   appointment,
   onClose,
+  onBookAnother,
 }) => {
   useEffect(() => {
     if (appointment) {
@@ -236,15 +239,29 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           </div>
         </div>
 
-        {/* Done / Close Button */}
-        <button
-          id="close-confirmation-modal-btn"
-          type="button"
-          onClick={onClose}
-          className="w-full py-4 bg-slate-900 hover:bg-slate-800 text-white font-black rounded-2xl text-base shadow-lg shadow-slate-900/10 active:scale-[0.99] transition cursor-pointer"
-        >
-          סגירה וסיום
-        </button>
+        {/* Action Buttons: Book Another Appointment + Close */}
+        <div className="space-y-2.5 pt-1">
+          {onBookAnother && (
+            <button
+              id="book-another-appointment-btn"
+              type="button"
+              onClick={onBookAnother}
+              className="w-full py-3.5 px-4 bg-purple-600 hover:bg-purple-700 text-white font-black rounded-2xl text-sm sm:text-base shadow-lg shadow-purple-600/25 active:scale-[0.99] transition flex items-center justify-center gap-2 cursor-pointer border border-purple-500"
+            >
+              <CalendarPlus className="w-5 h-5 text-purple-200" />
+              <span>קביעת תור נוסף (לטיפול או יום נוסף)</span>
+            </button>
+          )}
+
+          <button
+            id="close-confirmation-modal-btn"
+            type="button"
+            onClick={onClose}
+            className="w-full py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl text-sm active:scale-[0.99] transition cursor-pointer"
+          >
+            סגירה וסיום
+          </button>
+        </div>
       </div>
     </div>
   );

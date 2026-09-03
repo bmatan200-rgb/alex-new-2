@@ -8,8 +8,8 @@ const STORAGE_KEY_SENT_LOG = 'alex_whatsapp_sent_reminders_log_v1';
 export const DEFAULT_REMINDER_SETTINGS: WhatsAppReminderSettings = {
   enabled: true,
   notifyCustomerOnBookingDay: false,
-  notifyCustomerToday: true, // Same-day morning at 08:00 AM
-  notifyCustomer1DayBefore: true, // 1 day before in evening at 20:56 (8:56 PM)
+  notifyCustomerToday: true, // Same-day morning reminder at 08:00 AM sharp
+  notifyCustomer1DayBefore: false, // Turned off - reminder is scheduled specifically for appointment day at 08:00 AM
   notifyCustomer2HoursBefore: false,
   notifyAlexOnBooking: false,
   notifyAlex1DayBefore: false,
@@ -25,7 +25,7 @@ export const DEFAULT_REMINDER_SETTINGS: WhatsAppReminderSettings = {
   twilioAuthToken: '',
   twilioPhoneNumber: '',
   twilioType: 'sms',
-  eveningReminderTime: '20:56',
+  eveningReminderTime: '20:00',
   morningReminderTime: '08:00',
   customerTodayTemplate: `היי {customer_name} 🌸
 תזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨
@@ -81,6 +81,14 @@ export function getStoredReminderSettings(): WhatsAppReminderSettings {
     }
     if (!parsed.twilioType) {
       parsed.twilioType = 'sms';
+    }
+
+    // Default morning reminder time to exactly 08:00
+    if (!parsed.morningReminderTime) {
+      parsed.morningReminderTime = '08:00';
+    }
+    if (parsed.notifyCustomerToday === undefined) {
+      parsed.notifyCustomerToday = true;
     }
 
     return { ...DEFAULT_REMINDER_SETTINGS, ...parsed };

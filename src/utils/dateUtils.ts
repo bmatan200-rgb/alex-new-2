@@ -343,3 +343,52 @@ END:VEVENT
 END:VCALENDAR`;
 }
 
+/**
+ * Deduplicates appointments so that:
+ * 1. Confirmed appointments always take precedence over cancelled appointments for the same date and slot.
+ * 2. If multiple confirmed exist for the same slot, the newest created_at is retained.
+ * 3. If multiple cancelled exist for the same slot, only the newest is kept.
+ * 4. Deduplicates by unique ID as well.
+ */
+export function deduplicateAppointments(list: Appointment[]): Appointment[] {
+  if (!Array.isArray(list) || list.length === 0) return [];
+
+  // Sort priority:
+  // First: confirmed before non-confirmed (cancelled)
+  // Second: newest created_at first
+  const sorted = [...list].sort((a, b) => {
+    if (a.status === 'confirmed' && b.status !== 'confirmed') return -1;
+    if (a.status !== 'confirmed' && b.status === 'confirmed') return 1;
+    const timeA = new Date(a.created_at || 0).getTime();
+    const timeB = new Date(b.created_at || 0).getTime();
+    return timeB - timeA;
+  });
+
+  const seenIds = new Set<string>();
+  const seenSlots = new Set<string>();
+  const result: Appointment[] = [];
+
+  for (const app of sorted) {
+    const idKey = app.id ? String(app.id) : null;
+    const slotKey = `${app.appointment_date}_${app.start_time}`;
+
+    if (idKey && seenIds.has(idKey)) {
+      continue;
+    }
+    if (seenSlots.has(slotKey)) {
+      continue;
+    }
+
+    if (idKey) seenIds.add(idKey);
+    seenSlots.add(slotKey);
+    result.push(app);
+  }
+
+  // Sort chronologically ascending for UI presentation
+  return result.sort((a, b) => {
+    const dComp = (a.appointment_date || '').localeCompare(b.appointment_date || '');
+    if (dComp !== 0) return dComp;
+    return (a.start_time || '').localeCompare(b.start_time || '');
+  });
+}
+

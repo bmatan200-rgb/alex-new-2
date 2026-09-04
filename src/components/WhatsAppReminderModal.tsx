@@ -348,7 +348,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
           <div className="flex items-center gap-2.5">
             <Clock className="w-4 h-4 text-indigo-700 shrink-0" />
             <div className="text-indigo-950 font-medium">
-              <span className="font-bold">שעות שליחה אוטומטיות קבועות (node-cron): </span>
+              <span className="font-bold">שעות שליחה אוטומטיות: </span>
               <span>☀️ 08:00 בבוקר (לתורי היום) | 🌙 20:00 בערב (לתורי מחר) לפי שעון ישראל.</span>
             </div>
           </div>
@@ -939,7 +939,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                   <span>הגדרות ספק לשליחה אוטומטית (Twilio / Green API / Webhook)</span>
                 </span>
                 <p className="text-slate-600 leading-relaxed">
-                  השרת מפעיל משימות node-cron ברקע לשליחה אוטומטית לפי שעון ישראל (08:00 בבוקר ו-20:00 בערב).
+                  השרת מפעיל משימת רקע לשליחה אוטומטית לפי שעון ישראל, בשעות שהוגדרו למעלה.
                 </p>
               </div>
 

@@ -377,7 +377,7 @@ const DEFAULT_SERVER_SETTINGS = {
   enabled: true,
   notifyCustomerToday: true, // Same-day morning reminder at 08:00 AM
   morningReminderTime: '08:00', // 08:00 AM sharp (Asia/Jerusalem)
-  notifyCustomer1DayBefore: false, // Default off: reminder sent specifically on appointment day at 08:00
+  notifyCustomer1DayBefore: true, // תזכורת ערב ליום למחרת - ניתנת לכיבוי מהממשק
   eveningReminderTime: '20:00',
   autoSendEnabled: true,
   provider: process.env.WHATSAPP_PROVIDER || 'twilio',
@@ -895,42 +895,72 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 // ----------------------------------------------------------------------
 // Initialize Node-Cron Jobs
 // ----------------------------------------------------------------------
+/**
+ * טוען את הגדרות התזכורות מ-Firestore בעליית השרת.
+ * בלי זה, כל הפעלה מחדש של Render מאפסת את השעות לברירת המחדל.
+ */
+async function loadSettingsFromFirestore() {
+  try {
+    if (!adminDb) return;
+    const snap = await adminDb.collection('settings').doc('whatsapp_settings').get();
+    if (snap.exists) {
+      const saved = snap.data();
+      activeServerSettings = { ...activeServerSettings, ...saved };
+      console.log('[Settings] ✅ הגדרות נטענו מ-Firestore:', {
+        morning: activeServerSettings.morningReminderTime,
+        evening: activeServerSettings.eveningReminderTime,
+        notifyToday: activeServerSettings.notifyCustomerToday,
+        notify1Day: activeServerSettings.notifyCustomer1DayBefore,
+      });
+    }
+  } catch (err: any) {
+    console.warn('[Settings] לא ניתן לטעון הגדרות מ-Firestore:', err?.message);
+  }
+}
+
+loadSettingsFromFirestore();
+
+/**
+ * מתזמן דינמי: רץ כל דקה ובודק אם הגיעה שעת התזכורת שהוגדרה בממשק.
+ *
+ * למה כל דקה ולא בשעה קבועה: כך שינוי שעה מהדשבורד נכנס לתוקף מיד,
+ * בלי צורך להפעיל מחדש את השרת או לשנות קוד.
+ *
+ * הגנה מפני כפילויות: כל תזכורת "נועלת" את עצמה ב-Firestore לפני
+ * השליחה, ולכן גם אם הבדיקה תרוץ פעמיים באותה דקה, תישלח הודעה אחת.
+ */
 function initCronSchedulers() {
-  console.log('[CRON Service] מאתחל משימות תזכורת אוטומטיות (Timezone: Asia/Jerusalem)...');
+  console.log('[CRON Service] מאתחל מתזמן דינמי (Timezone: Asia/Jerusalem)...');
 
-  /**
-   * 1. קרון בוקר: רץ כל יום בדיוק בשעה 08:00 (שעון ישראל)
-   * שולף ושולח תזכורות לכל תורי *היום*
-   */
   cron.schedule(
-    '0 8 * * *',
+    '* * * * *',
     async () => {
-      const todayDate = getIsraelDateString(0);
-      console.log(`[CRON Task] הרצת קרון בוקר 08:00 מתוזמן לתאריך ${todayDate}`);
-      await sendRemindersForDate(todayDate, 'today');
+      try {
+        const { dateIso, tomorrowIso, timeStr } = getIsraelTime();
+        const currentHHMM = timeStr.substring(0, 5);
+
+        const morningTime = (activeServerSettings?.morningReminderTime || '08:00').substring(0, 5);
+        const eveningTime = (activeServerSettings?.eveningReminderTime || '20:00').substring(0, 5);
+
+        if (currentHHMM === morningTime) {
+          console.log(`[CRON Task] הגיעה שעת תזכורת הבוקר (${morningTime}) - מריץ עבור ${dateIso}`);
+          await sendRemindersForDate(dateIso, 'today');
+        }
+
+        if (currentHHMM === eveningTime) {
+          console.log(`[CRON Task] הגיעה שעת תזכורת הערב (${eveningTime}) - מריץ עבור ${tomorrowIso}`);
+          await sendRemindersForDate(tomorrowIso, '1day');
+        }
+      } catch (err: any) {
+        console.error('[CRON Task] שגיאה בבדיקת התזכורות:', err?.message);
+      }
     },
     {
       timezone: 'Asia/Jerusalem',
     }
   );
-  console.log('[CRON Service] ✅ קרון בוקר (תורי היום) הוגדר בהצלחה לשעה 08:00 (Asia/Jerusalem).');
 
-  /**
-   * 2. קרון ערב: רץ כל יום בדיוק בשעה 20:00 (שעון ישראל)
-   * שולף ושולח תזכורות לכל תורי *מחר*
-   */
-  cron.schedule(
-    '0 20 * * *',
-    async () => {
-      const tomorrowDate = getIsraelDateString(1);
-      console.log(`[CRON Task] הרצת קרון ערב 20:00 מתוזמן לתאריך ${tomorrowDate}`);
-      await sendRemindersForDate(tomorrowDate, '1day');
-    },
-    {
-      timezone: 'Asia/Jerusalem',
-    }
-  );
-  console.log('[CRON Service] ✅ קרון ערב (תורי מחר) הוגדר בהצלחה לשעה 20:00 (Asia/Jerusalem).');
+  console.log('[CRON Service] ✅ מתזמן דינמי פעיל - שעות התזכורות נקראות מההגדרות בכל בדיקה.');
 }
 
 // הפעלת משימות הקרון
@@ -1034,6 +1064,26 @@ app.post('/api/whatsapp/sync-settings', requireAdmin, (req: Request, res: Respon
         sanitizedSettings.twilioAuthToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
       }
       activeServerSettings = { ...activeServerSettings, ...sanitizedSettings };
+
+      // שמירה קבועה ב-Firestore כדי שההגדרות ישרדו הפעלה מחדש של השרת
+      if (adminDb) {
+        adminDb
+          .collection('settings')
+          .doc('whatsapp_settings')
+          .set(
+            {
+              morningReminderTime: activeServerSettings.morningReminderTime,
+              eveningReminderTime: activeServerSettings.eveningReminderTime,
+              notifyCustomerToday: activeServerSettings.notifyCustomerToday,
+              notifyCustomer1DayBefore: activeServerSettings.notifyCustomer1DayBefore,
+              customerTodayTemplate: activeServerSettings.customerTodayTemplate,
+              customer1DayTemplate: activeServerSettings.customer1DayTemplate,
+              updatedAt: new Date().toISOString(),
+            },
+            { merge: true }
+          )
+          .catch((err: any) => console.warn('[Settings] שמירה ל-Firestore נכשלה:', err?.message));
+      }
       console.log('[Server Settings] WhatsApp & Twilio settings synced:', {
         provider: activeServerSettings.provider,
         hasTwilioSid: Boolean(activeServerSettings.twilioAccountSid),

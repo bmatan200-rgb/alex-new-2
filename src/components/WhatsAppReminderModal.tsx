@@ -961,15 +961,29 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                     <div className="flex items-center gap-1.5">
                       <Sun className="w-4 h-4 text-amber-500" />
                       <span className="font-bold text-slate-900 text-xs">
-                        תזכורת בוקר באותו יום של התור בדיוק ב-08:00
+                        תזכורת בוקר ביום התור
                       </span>
                       <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded-md">
                         מופעל כברירת מחדל
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500 leading-relaxed">
-                      נשלחת אוטומטית בדיוק בשעה <strong>{settings.morningReminderTime || '08:00'} בבוקר</strong> ביום התור לכל הלקוחות עם תור להיום.
+                      נשלחת אוטומטית ביום התור לכל הלקוחות עם תור להיום.
                     </p>
+                    <div className="flex items-center gap-2 pt-1">
+                      <label className="text-[11px] font-bold text-slate-700">שעת שליחה:</label>
+                      <input
+                        type="time"
+                        value={settings.morningReminderTime || '08:00'}
+                        onChange={(e) => {
+                          const updated = { ...settings, morningReminderTime: e.target.value };
+                          setSettings(updated);
+                          saveReminderSettings(updated);
+                        }}
+                        className="px-2 py-1 rounded-lg border border-amber-200 bg-white text-xs font-bold text-slate-900 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 outline-none cursor-pointer"
+                        dir="ltr"
+                      />
+                    </div>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-1">
                     <input
@@ -992,15 +1006,29 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                     <div className="flex items-center gap-1.5">
                       <Moon className="w-4 h-4 text-indigo-500" />
                       <span className="font-bold text-slate-900 text-xs">
-                        תזכורת ערב יום לפני התור (20:00)
+                        תזכורת ערב יום לפני התור
                       </span>
                       <span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-1.5 py-0.5 rounded-md">
                         אופציונלי
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500 leading-relaxed">
-                      שליחת תזכורת מוקדמת נוספת בערב שלפני יום התור בשעה <strong>{settings.eveningReminderTime || '20:00'}</strong>.
+                      שליחת תזכורת מוקדמת נוספת בערב שלפני יום התור.
                     </p>
+                    <div className="flex items-center gap-2 pt-1">
+                      <label className="text-[11px] font-bold text-slate-700">שעת שליחה:</label>
+                      <input
+                        type="time"
+                        value={settings.eveningReminderTime || '20:00'}
+                        onChange={(e) => {
+                          const updated = { ...settings, eveningReminderTime: e.target.value };
+                          setSettings(updated);
+                          saveReminderSettings(updated);
+                        }}
+                        className="px-2 py-1 rounded-lg border border-indigo-200 bg-white text-xs font-bold text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none cursor-pointer"
+                        dir="ltr"
+                      />
+                    </div>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-1">
                     <input

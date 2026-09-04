@@ -53,6 +53,9 @@ import {
   saveServicesToFirestore,
   subscribeScheduleSettings,
   saveScheduleSettingsToFirestore,
+  auth,
+  onAuthStateChanged,
+  FirebaseUser,
 } from './lib/firebase';
 import { formatDurationMinutes, formatILS, deduplicateAppointments } from './utils/dateUtils';
 import { Header } from './components/Header';
@@ -66,6 +69,15 @@ import { TermsOfServiceModal } from './components/TermsOfServiceModal';
 import { ExistingBookingChoiceModal } from './components/ExistingBookingChoiceModal';
 
 export default function App() {
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+    });
+    return () => unsubscribe();
+  }, []);
+
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => {
     const session = getStoredUserSession();
@@ -76,10 +88,9 @@ export default function App() {
   const [authPromptRole, setAuthPromptRole] = useState<'admin' | 'customer'>('customer');
   const [isTermsOpen, setIsTermsOpen] = useState<boolean>(false);
 
-  const [activeTab, setActiveTab] = useState<'booking' | 'admin'>(() => {
-    const session = getStoredUserSession();
-    return session?.isAdmin ? 'admin' : 'booking';
-  });
+  // תמיד מתחילים בתצוגת לקוח. מעבר לממשק הניהול קורה רק אחרי
+  // ש-onAuthStateChanged מאשר שיש משתמשת מחוברת ב-Firebase.
+  const [activeTab, setActiveTab] = useState<'booking' | 'admin'>('booking');
 
   const [isTorModalOpen, setIsTorModalOpen] = useState(false);
   const [isChoiceModalOpen, setIsChoiceModalOpen] = useState(false);
@@ -131,10 +142,18 @@ export default function App() {
 
   // Background settings, appointments synchronization, and keep-alive to server scheduler
   useEffect(() => {
-    // Initial fetch from server to get any backend env Twilio keys
-    fetch('/api/whatsapp/settings')
-      .then((res) => res.json())
-      .then((data) => {
+    if (!firebaseUser) return;
+
+    const authHeaders = async (): Promise<Record<string, string>> => ({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${await firebaseUser.getIdToken()}`,
+    });
+
+    const initFetch = async () => {
+      try {
+        const h = await authHeaders();
+        const res = await fetch('/api/whatsapp/settings', { headers: h });
+        const data = await res.json();
         if (data.success && data.settings) {
           const current = getStoredReminderSettings();
           if (!current.twilioAccountSid && data.settings.twilioAccountSid) {
@@ -147,28 +166,32 @@ export default function App() {
             });
           }
         }
-      })
-      .catch(() => {});
+      } catch (err) {}
+    };
+    initFetch();
 
-    const doSyncAndCheck = () => {
-      const liveSettings = getStoredReminderSettings();
-      fetch('/api/whatsapp/sync-settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ settings: liveSettings }),
-      }).catch(() => {});
-
-      if (appointments && appointments.length > 0) {
-        // Sync appointments to server background scheduler for hands-free 20:56 and 08:00 dispatch
-        fetch('/api/whatsapp/sync-appointments', {
+    const doSyncAndCheck = async () => {
+      try {
+        const h = await authHeaders();
+        const liveSettings = getStoredReminderSettings();
+        fetch('/api/whatsapp/sync-settings', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            appointments,
-            sentLog: getSentRemindersLog()
-          }),
+          headers: h,
+          body: JSON.stringify({ settings: liveSettings }),
         }).catch(() => {});
-      }
+
+        if (appointments && appointments.length > 0) {
+          // Sync appointments to server background scheduler for hands-free 20:56 and 08:00 dispatch
+          fetch('/api/whatsapp/sync-appointments', {
+            method: 'POST',
+            headers: h,
+            body: JSON.stringify({ 
+              appointments,
+              sentLog: getSentRemindersLog()
+            }),
+          }).catch(() => {});
+        }
+      } catch (err) {}
     };
 
     // Immediate run on load/changes
@@ -192,25 +215,19 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleVisibilityChange);
     };
-  }, [appointments]);
+  }, [appointments, firebaseUser]);
 
-  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin);
+  const isUserAdmin = Boolean(firebaseUser);
 
   const handleLogin = (session: UserSession) => {
-    const verifiedAdmin = Boolean(session.isAdmin);
-    const cleanSession: UserSession = {
-      ...session,
-      isAdmin: verifiedAdmin,
-    };
+    // הסשן המקומי משמש לנוחות בלבד (שם וטלפון של הלקוחה).
+    // הרשאת הניהול נקבעת ע"י onAuthStateChanged, לא כאן.
+    const cleanSession: UserSession = { ...session, isAdmin: false };
+
     saveUserSession(cleanSession);
     setCurrentUser(cleanSession);
     setIsAuthModalOpen(false);
-
-    if (verifiedAdmin) {
-      setActiveTab('admin');
-    } else {
-      setActiveTab('booking');
-    }
+    setActiveTab(session.isAdmin ? 'admin' : 'booking');
   };
 
   const handleLogout = () => {
@@ -228,17 +245,20 @@ export default function App() {
 
   const handleQuickSwitchRole = (role: 'admin' | 'customer') => {
     const current = currentUser || getStoredUserSession();
-    if (role === 'admin' && current && isAdminPhone(current.phone)) {
-      const adminSession: UserSession = {
-        name: current.name || 'מנהלת',
-        phone: current.phone,
-        isAdmin: true,
-        loggedInAt: new Date().toISOString(),
-      };
-      saveUserSession(adminSession);
-      setCurrentUser(adminSession);
-      setActiveTab('admin');
-    } else {
+
+    // מעבר לממשק הניהול מותנה בהתחברות אמיתית ב-Firebase בלבד.
+    // מספר טלפון אינו הוכחת זהות — הוא מוצג באתר עצמו.
+    if (role === 'admin') {
+      if (firebaseUser) {
+        setActiveTab('admin');
+      } else {
+        setAuthPromptRole('admin');
+        setIsAuthModalOpen(true);
+      }
+      return;
+    }
+
+    {
       const clientSession: UserSession = {
         name: current?.name || 'לקוח/ה',
         phone: current?.phone || '',
@@ -365,6 +385,7 @@ export default function App() {
     <div className="min-h-screen bg-[#f8f9fa] text-slate-800 flex flex-col font-['Heebo',sans-serif]">
       {/* Top Navigation Header */}
       <Header
+        isAdmin={isUserAdmin}
         activeTab={activeTab}
         onSelectTab={(tab) => {
           if (tab === 'admin') {

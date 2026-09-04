@@ -3,15 +3,9 @@ import {
   getFirestore,
   collection,
   doc,
-  addDoc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
   onSnapshot,
   query,
   orderBy,
-  getDocs,
-  getDoc,
   Firestore,
   runTransaction,
 } from 'firebase/firestore';
@@ -41,6 +35,23 @@ export const db: Firestore = getFirestore(
 );
 
 const APPOINTMENTS_COLLECTION = 'appointments';
+
+/**
+ * מחזיר את ה-ID Token של המנהלת המחוברת כרגע.
+ *
+ * הטוקן נוצר ע"י Firebase עצמו, תקף לשעה ומתחדש אוטומטית.
+ * הוא אינו כתוב בשום מקום בקוד ואינו ניתן לזיוף מהדפדפן.
+ *
+ * אין כאן ערך גיבוי בכוונה: אם אין משתמשת מחוברת, עדיף להיכשל
+ * עם הודעה ברורה מאשר לשלוח טוקן חסר משמעות ולקבל שגיאה סתומה.
+ */
+async function getAdminIdToken(): Promise<string> {
+  const user = auth.currentUser;
+  if (!user) {
+    throw new Error('ההתחברות פגה. יש להתחבר מחדש כמנהלת.');
+  }
+  return await user.getIdToken();
+}
 
 /**
  * Real-time listener for all appointments
@@ -173,50 +184,30 @@ export async function cancelAppointmentInFirestore(
   startTime?: string
 ): Promise<void> {
   const idStr = String(appointmentId);
-  const session = getStoredUserSession();
-  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
-  
-  let serverOk = false;
+
+  // ביטול תור פתוח גם ללקוחות, לא רק למנהלת — ולכן הטוקן אופציונלי.
+  // כשאין מנהלת מחוברת, השרת מאמת שמספר הטלפון בבקשה תואם לתור.
+  let token = '';
   try {
-    const res = await fetch('/api/appointments/cancel', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
-      },
-      body: JSON.stringify({
-        appointmentId: idStr,
-        customerPhone,
-        appointmentDate,
-        startTime,
-        adminPhone: session?.isAdmin ? session.phone : undefined
-      }),
-    });
-    if (res.ok) {
-      serverOk = true;
-    }
-  } catch (err) {
-    console.warn('Server cancel attempt warning, using Firestore direct fallback:', err);
+    token = await getAdminIdToken();
+  } catch {
+    // לקוחה רגילה — ממשיכים ללא טוקן
   }
 
-  // Fallback: If server wasn't able to complete or returned non-200, apply directly to Firestore
-  try {
-    await setDoc(doc(db, APPOINTMENTS_COLLECTION, idStr), { status: 'cancelled' }, { merge: true });
-  } catch (err) {
-    console.warn('Direct Firestore cancel failed for idStr:', err);
-  }
+  // הכתיבה מתבצעת אך ורק בשרת. אין נפילה חזרה לכתיבה ישירה מהדפדפן,
+  // כי חוקי Firestore חוסמים זאת בכוונה.
+  const res = await fetch('/api/appointments/cancel', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ appointmentId: idStr, customerPhone, appointmentDate, startTime }),
+  });
 
-  // Also ensure deterministic slot doc is cancelled if date and time are provided
-  if (appointmentDate && startTime) {
-    const sDocId = slotDocId(appointmentDate, startTime);
-    if (sDocId !== idStr) {
-      try {
-        await setDoc(doc(db, APPOINTMENTS_COLLECTION, sDocId), { status: 'cancelled' }, { merge: true });
-      } catch {
-        // ignore
-      }
-    }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'ביטול התור נכשל בשרת');
   }
 }
 
@@ -230,46 +221,18 @@ export async function deleteAppointmentInFirestore(
 ): Promise<void> {
   const idStr = String(appointmentId);
   const session = getStoredUserSession();
-  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+  const token = await getAdminIdToken();
 
-  let serverOk = false;
-  try {
-    const res = await fetch('/api/admin/appointments/delete', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
-      },
-      body: JSON.stringify({
-        appointmentId: idStr,
-        appointmentDate,
-        startTime,
-        adminPhone: session?.isAdmin ? session.phone : undefined
-      }),
-    });
-    if (res.ok) {
-      serverOk = true;
-    }
-  } catch (err) {
-    console.warn('Server delete attempt warning, using Firestore direct fallback:', err);
-  }
+  const res = await fetch('/api/admin/appointments/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ appointmentId: idStr, appointmentDate, startTime }),
+  });
 
-  try {
-    await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, idStr));
-  } catch (err) {
-    console.warn('Direct Firestore delete failed for idStr:', err);
-  }
-
-  if (appointmentDate && startTime) {
-    const sDocId = slotDocId(appointmentDate, startTime);
-    if (sDocId !== idStr) {
-      try {
-        await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, sDocId));
-      } catch {
-        // ignore
-      }
-    }
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('ההתחברות פגה. יש להתחבר מחדש כמנהלת.');
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'מחיקת התור נכשלה בשרת');
   }
 }
 
@@ -303,34 +266,18 @@ export function subscribeServices(
  */
 export async function saveServicesToFirestore(services: Service[]): Promise<void> {
   const session = getStoredUserSession();
-  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+  const token = await getAdminIdToken();
 
-  let serverOk = false;
-  try {
-    const res = await fetch('/api/admin/settings/services', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
-      },
-      body: JSON.stringify({
-        services,
-        adminPhone: session?.isAdmin ? session.phone : undefined
-      }),
-    });
-    if (res.ok) {
-      serverOk = true;
-    }
-  } catch (err) {
-    console.warn('Server save services warning, using direct Firestore write:', err);
-  }
+  const res = await fetch('/api/admin/settings/services', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ services }),
+  });
 
-  if (!serverOk) {
-    await setDoc(doc(db, SETTINGS_COLLECTION, 'services_config'), {
-      services,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('ההתחברות פגה. יש להתחבר מחדש כמנהלת.');
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'שמירת השירותים נכשלה בשרת');
   }
 }
 
@@ -370,38 +317,18 @@ export async function saveScheduleSettingsToFirestore(
   schedule: ScheduleSettings | Record<string, any>
 ): Promise<void> {
   const session = getStoredUserSession();
-  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+  const token = await getAdminIdToken();
 
-  let serverOk = false;
-  try {
-    const res = await fetch('/api/admin/settings/schedule', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
-      },
-      body: JSON.stringify({
-        schedule,
-        adminPhone: session?.isAdmin ? session.phone : undefined
-      }),
-    });
-    if (res.ok) {
-      serverOk = true;
-    }
-  } catch (err) {
-    console.warn('Server save schedule warning, using direct Firestore write:', err);
-  }
+  const res = await fetch('/api/admin/settings/schedule', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ schedule }),
+  });
 
-  if (!serverOk) {
-    await setDoc(doc(db, SETTINGS_COLLECTION, 'schedule_settings'), {
-      businessOpen: schedule.businessOpen,
-      businessClose: schedule.businessClose,
-      fridayOpen: schedule.fridayOpen || '09:20',
-      fridayClose: schedule.fridayClose || '15:00',
-      durationMinutes: Number(schedule.durationMinutes) || 90,
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('ההתחברות פגה. יש להתחבר מחדש כמנהלת.');
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'שמירת שעות הפעילות נכשלה בשרת');
   }
 }
 
@@ -543,4 +470,3 @@ export async function verifyAdminLoginInFirestore(credentials: {
     return { success: false, error: err?.message || 'שגיאה בהתחברות' };
   }
 }
-

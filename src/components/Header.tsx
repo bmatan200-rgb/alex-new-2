@@ -15,6 +15,7 @@ import { SALON_INFO } from '../utils/storage';
 import { UserSession } from '../types';
 
 interface HeaderProps {
+  isAdmin?: boolean;
   activeTab: 'booking' | 'admin';
   onSelectTab: (tab: 'booking' | 'admin') => void;
   onOpenMyBooking: () => void;
@@ -32,8 +33,11 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAuthModal,
   onQuickSwitchRole,
   onLogout,
+  isAdmin,
 }) => {
-  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin);
+  // הרשאת הניהול מגיעה מ-App, שם היא נגזרת מ-Firebase Auth.
+  // אין להסיק אותה כאן מ-currentUser, שמקורו ב-localStorage.
+  const isUserAdmin = Boolean(isAdmin);
 
   const handleAdminTabClick = () => {
     if (isUserAdmin) {

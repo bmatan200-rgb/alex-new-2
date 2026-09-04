@@ -1,10 +1,9 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { getDoc, doc, setDoc, runTransaction, deleteDoc } from 'firebase/firestore';
-import { db } from './src/lib/firebase';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import { getFirestore } from 'firebase-admin/firestore';
 import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
 
@@ -28,7 +27,26 @@ try {
   console.error('[Firebase Admin] ❌ אתחול נכשל:', err?.message);
 }
 
-const ADMIN_PHONES = ['0546307114', '0543111408', '972546307114', '972543111408'];
+/**
+ * גישת השרת ל-Firestore דרך ה-Admin SDK.
+ * ה-Admin SDK מזוהה כשרת מהימן ואינו כפוף לחוקי האבטחה,
+ * ולכן ניתן להשאיר את החוקים נעולים לחלוטין.
+ */
+let adminDb: FirebaseFirestore.Firestore | null = null;
+try {
+  adminDb = getFirestore();
+  console.log('[Firestore Admin] ✅ חיבור מנהל למסד הנתונים הוקם');
+} catch (err: any) {
+  console.error('[Firestore Admin] ❌ כשל בחיבור:', err?.message);
+}
+
+function requireDb(): FirebaseFirestore.Firestore {
+  if (!adminDb) {
+    throw new Error('אין חיבור למסד הנתונים. יש להגדיר FIREBASE_SERVICE_ACCOUNT.');
+  }
+  return adminDb;
+}
+
 const normalizePhone = (p?: string) => (p || '').replace(/\D/g, '');
 
 // Security: JSON body parser with size limit to prevent Denial of Service attacks
@@ -57,8 +75,6 @@ app.post('/api/appointments/cancel', async (req, res) => {
     const token =
       (req.headers['authorization'] as string | undefined)?.replace(/^Bearer\s+/i, '') ||
       (req.body?.sessionToken as string | undefined);
-    const adminPhone = (req.headers['x-admin-phone'] as string | undefined) || req.body?.adminPhone;
-
     let isAdmin = false;
     if (token && adminSdkReady) {
       try {
@@ -68,15 +84,10 @@ app.post('/api/appointments/cancel', async (req, res) => {
         // ignore
       }
     }
-    if (!isAdmin && token && (token.startsWith('admin_') || token === 'admin_secret_session_active')) {
-      isAdmin = true;
-    }
-    if (!isAdmin && adminPhone && ADMIN_PHONES.includes(normalizePhone(adminPhone))) {
-      isAdmin = true;
-    }
 
-    const snap = await getDoc(doc(db, 'appointments', idStr));
-    const snapData = snap.exists() ? snap.data() : null;
+    const fsdb = requireDb();
+    const snap = await fsdb.collection('appointments').doc(idStr).get();
+    const snapData = snap.exists ? snap.data() : null;
 
     if (!isAdmin && snapData) {
       if (!customerPhone) return res.status(401).json({ success: false, error: 'Missing customerPhone for non-admin' });
@@ -87,8 +98,8 @@ app.post('/api/appointments/cancel', async (req, res) => {
       }
     }
 
-    if (snap.exists()) {
-      await setDoc(doc(db, 'appointments', idStr), { status: 'cancelled' }, { merge: true });
+    if (snap.exists) {
+      await fsdb.collection('appointments').doc(idStr).set({ status: 'cancelled' }, { merge: true });
     }
 
     const apptDate = req.body?.appointmentDate || snapData?.appointment_date;
@@ -97,7 +108,7 @@ app.post('/api/appointments/cancel', async (req, res) => {
       const sId = `appt_${apptDate}_${apptTime.replace(':', '')}`;
       if (sId !== idStr) {
         try {
-          await setDoc(doc(db, 'appointments', sId), { status: 'cancelled' }, { merge: true });
+          await fsdb.collection('appointments').doc(sId).set({ status: 'cancelled' }, { merge: true });
         } catch {
           // ignore
         }
@@ -116,13 +127,14 @@ app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
     const { appointmentId, appointmentDate, startTime } = req.body;
     if (!appointmentId) return res.status(400).json({ success: false, error: 'Missing appointmentId' });
     
-    await deleteDoc(doc(db, 'appointments', String(appointmentId)));
+    const fsdb = requireDb();
+    await fsdb.collection('appointments').doc(String(appointmentId)).delete();
 
     if (appointmentDate && startTime) {
       const sId = `appt_${appointmentDate}_${startTime.replace(':', '')}`;
       if (sId !== String(appointmentId)) {
         try {
-          await deleteDoc(doc(db, 'appointments', sId));
+          await fsdb.collection('appointments').doc(sId).delete();
         } catch {
           // ignore
         }
@@ -144,11 +156,10 @@ app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
     // שם המסמך ('services_config') ושם השדה ('services') חייבים להתאים
     // בדיוק למה שהלקוח קורא ב-subscribeServices, אחרת השמירה "תצליח"
     // אבל הנתונים לעולם לא ייקלטו באפליקציה.
-    await setDoc(
-      doc(db, 'settings', 'services_config'),
-      { services, updatedAt: new Date().toISOString() },
-      { merge: true }
-    );
+    await requireDb()
+      .collection('settings')
+      .doc('services_config')
+      .set({ services, updatedAt: new Date().toISOString() }, { merge: true });
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -163,8 +174,7 @@ app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
     }
     // הלקוח (subscribeScheduleSettings) קורא את השדות ישירות מהמסמך
     // 'schedule_settings', לא מתוך אובייקט מקונן.
-    await setDoc(
-      doc(db, 'settings', 'schedule_settings'),
+    await requireDb().collection('settings').doc('schedule_settings').set(
       {
         businessOpen: schedule.businessOpen,
         businessClose: schedule.businessClose,
@@ -188,43 +198,49 @@ app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
 // מאמת שהבקשה נושאת ID Token תקף של Firebase Authentication.
 // באפליקציה זו אין הרשמה עצמית, ולכן כל טוקן תקף שייך לחשבון
 // שנוצר ידנית בקונסולה — כלומר למנהלת.
+/**
+ * מאמת שהבקשה מגיעה ממנהלת מחוברת.
+ *
+ * הדרך היחידה לעבור: ID Token תקף של Firebase Authentication.
+ *
+ * אין ולא יהיו כאן מסלולי גיבוי. סיסמת מסתור בקוד או מספר טלפון
+ * בכותרת אינם סודות — מספר הטלפון של העסק מוצג באתר עצמו, וכל
+ * מחרוזת קבועה בקוד גלויה לכל מי שרואה את הריפו. כל "גיבוי" כזה
+ * הופך את האימות כולו לקישוט.
+ */
 async function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const token =
-    (req.headers['authorization'] as string | undefined)?.replace(/^Bearer\s+/i, '') ||
-    (req.body?.sessionToken as string | undefined);
-  const adminPhone = (req.headers['x-admin-phone'] as string | undefined) || req.body?.adminPhone;
+  if (!adminSdkReady) {
+    console.error('[Auth] Firebase Admin לא אותחל — יש להגדיר FIREBASE_SERVICE_ACCOUNT');
+    return res.status(503).json({
+      success: false,
+      error: 'שירות האימות אינו זמין כרגע',
+    });
+  }
 
-  // 1. Firebase Auth ID Token verification
-  if (token && adminSdkReady) {
-    try {
-      const decoded = await getAuth().verifyIdToken(token);
-      const allowList = (process.env.ADMIN_EMAILS || '')
-        .split(',')
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean);
+  const token = (req.headers['authorization'] as string | undefined)?.replace(/^Bearer\s+/i, '');
 
-      if (allowList.length === 0 || allowList.includes((decoded.email || '').toLowerCase())) {
-        (req as any).adminPayload = { uid: decoded.uid, email: decoded.email };
-        return next();
-      }
-    } catch {
-      // Fall through to other checks
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'נדרשת התחברות כמנהלת' });
+  }
+
+  try {
+    const decoded = await getAuth().verifyIdToken(token);
+
+    const allowList = (process.env.ADMIN_EMAILS || '')
+      .split(',')
+      .map((v) => v.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (allowList.length > 0 && !allowList.includes((decoded.email || '').toLowerCase())) {
+      console.warn(`[Auth] נדחתה גישה למייל שאינו ברשימה: ${decoded.email}`);
+      return res.status(403).json({ success: false, error: 'אין לך הרשאת מנהלת' });
     }
-  }
 
-  // 2. Admin secret token header / body
-  if (token && (token.startsWith('admin_') || token === 'admin_secret_session_active')) {
-    (req as any).adminPayload = { uid: 'admin_session', email: 'alex@beauty.co.il' };
+    (req as any).adminPayload = { uid: decoded.uid, email: decoded.email };
     return next();
+  } catch {
+    return res.status(401).json({ success: false, error: 'ההתחברות פגה, יש להתחבר מחדש' });
   }
-
-  // 3. Admin phone header / body
-  if (adminPhone && ADMIN_PHONES.includes(normalizePhone(adminPhone))) {
-    (req as any).adminPayload = { uid: 'admin_phone_' + normalizePhone(adminPhone), phone: adminPhone };
-    return next();
-  }
-
-  return res.status(401).json({ success: false, error: 'נדרשת התחברות כמנהלת' });
 }
 
 // In-memory rate limiting for SMS/WhatsApp dispatch
@@ -628,15 +644,13 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
     );
 
     // Fallback: If in-memory array is empty, fetch directly from Firestore to ensure 08:00 AM dispatch runs reliably
-    if (appointments.length === 0 && db) {
+    if (appointments.length === 0 && adminDb) {
       try {
-        const { collection, getDocs, query, where } = await import('firebase/firestore');
-        const q = query(
-          collection(db, 'appointments'),
-          where('appointment_date', '==', targetDate),
-          where('status', '==', 'confirmed')
-        );
-        const snap = await getDocs(q);
+        const snap = await adminDb
+          .collection('appointments')
+          .where('appointment_date', '==', targetDate)
+          .where('status', '==', 'confirmed')
+          .get();
         const fetchedAppts: ServerAppointment[] = [];
         snap.forEach((docSnap) => {
           const d = docSnap.data();
@@ -800,17 +814,17 @@ initCronSchedulers();
  * גרועה יותר מתזכורת שתישלח בהרצה הבאה.
  */
 async function tryClaimReminder(key: string): Promise<boolean> {
-  if (!db) {
+  if (!adminDb) {
     console.error('[Reminder Lock] ❌ אין חיבור ל-Firestore — לא ניתן לשלוח בבטחה');
     return false;
   }
 
-  const lockRef = doc(db, 'reminder_locks', key);
+  const lockRef = adminDb.collection('reminder_locks').doc(key);
 
   try {
-    return await runTransaction(db, async (transaction) => {
+    return await adminDb.runTransaction(async (transaction) => {
       const snap = await transaction.get(lockRef);
-      if (snap.exists()) return false;
+      if (snap.exists) return false;
       transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
       return true;
     });
@@ -825,7 +839,7 @@ async function tryClaimReminder(key: string): Promise<boolean> {
 // ----------------------------------------------------
 
 // Admin Users List for selection (Safe metadata ONLY - NEVER exposes passwords, salts or hashes)
-app.get('/api/admin/users', (req: Request, res: Response) => {
+app.get('/api/admin/users', requireAdmin, (req: Request, res: Response) => {
   // החזרת רשימה ריקה מכיוון שניהול המשתמשים מתבצע מעתה בקונסולת Firebase
   return res.json({ success: true, admins: [] });
 });
@@ -843,7 +857,7 @@ function maskSecretToken(token: string | undefined): string {
 }
 
 // Get current server settings & env configuration (Secrets masked for security)
-app.get('/api/whatsapp/settings', (req: Request, res: Response) => {
+app.get('/api/whatsapp/settings', requireAdmin, (req: Request, res: Response) => {
   try {
     const rawSid = activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
     const rawToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
@@ -867,7 +881,7 @@ app.get('/api/whatsapp/settings', (req: Request, res: Response) => {
 });
 
 // Sync settings from client to server (Twilio, Green API, timing, etc.)
-app.post('/api/whatsapp/sync-settings', (req: Request, res: Response) => {
+app.post('/api/whatsapp/sync-settings', requireAdmin, (req: Request, res: Response) => {
   try {
     const { settings } = req.body;
     if (settings && typeof settings === 'object') {
@@ -893,7 +907,7 @@ app.post('/api/whatsapp/sync-settings', (req: Request, res: Response) => {
 });
 
 // Sync appointments from client to server in-memory background worker
-app.post('/api/whatsapp/sync-appointments', (req: Request, res: Response) => {
+app.post('/api/whatsapp/sync-appointments', requireAdmin, (req: Request, res: Response) => {
   try {
     const { appointments, sentLog } = req.body;
     if (Array.isArray(appointments)) {
@@ -917,7 +931,7 @@ app.post('/api/whatsapp/sync-appointments', (req: Request, res: Response) => {
 });
 
 // Immediate WhatsApp / Twilio Dispatch Route (Protected with Rate Limiting & Input Validation)
-app.post('/api/whatsapp/send', async (req: Request, res: Response) => {
+app.post('/api/whatsapp/send', requireAdmin, async (req: Request, res: Response) => {
   const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
 
   // Prevent spamming & API abuse
@@ -1095,7 +1109,7 @@ app.post('/api/register-webhook', async (req: Request, res: Response) => {
 });
 
 // Endpoint to view or configure registration webhook info
-app.get('/api/register-webhook/info', (req: Request, res: Response) => {
+app.get('/api/register-webhook/info', requireAdmin, (req: Request, res: Response) => {
   res.json({
     status: 'active',
     webhookEndpoint: '/api/register-webhook',
@@ -1138,7 +1152,7 @@ app.get('/api/whatsapp/status', (req: Request, res: Response) => {
 });
 
 // Comprehensive Twilio & WhatsApp Diagnostic Endpoint
-app.get('/api/whatsapp/diagnose', async (req: Request, res: Response) => {
+app.get('/api/whatsapp/diagnose', requireAdmin, async (req: Request, res: Response) => {
   const twilioSid = activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
   const twilioToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
   const twilioPhone = activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '';
@@ -1230,7 +1244,7 @@ app.get('/api/whatsapp/diagnose', async (req: Request, res: Response) => {
 });
 
 // Manual trigger aliases for morning batch (today)
-app.post(['/api/whatsapp/trigger-morning', '/api/whatsapp/test-today-morning'], async (req: Request, res: Response) => {
+app.post(['/api/whatsapp/trigger-morning', '/api/whatsapp/test-today-morning'], requireAdmin, async (req: Request, res: Response) => {
   const { dateIso, timeStr } = getIsraelTime();
   const todayAppointments = serverAppointments.filter(
     (a) =>
@@ -1275,7 +1289,7 @@ app.post(['/api/whatsapp/trigger-morning', '/api/whatsapp/test-today-morning'], 
 });
 
 // Manual trigger aliases for evening batch (tomorrow)
-app.post(['/api/whatsapp/trigger-evening', '/api/whatsapp/test-1day-evening'], async (req: Request, res: Response) => {
+app.post(['/api/whatsapp/trigger-evening', '/api/whatsapp/test-1day-evening'], requireAdmin, async (req: Request, res: Response) => {
   const { tomorrowIso, timeStr } = getIsraelTime();
   const tomorrowAppointments = serverAppointments.filter(
     (a) =>

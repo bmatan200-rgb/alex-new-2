@@ -498,15 +498,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </button>
           )}
 
-          {/* Treatment Duration & Price Settings Button */}
+          {/* Business Hours & Treatment Duration Settings Button */}
           <button
             type="button"
             onClick={() => setIsDurationModalOpen(true)}
             className="px-3.5 py-2.5 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
-            title="שינוי משך הטיפול ומחיר"
+            title="שינוי שעות פעילות, משך טיפול ומחיר"
           >
             <Clock className="w-4 h-4 text-purple-600" />
-            <span>משך טיפול: {formatDurationMinutes(currentService.duration_minutes || 110)}</span>
+            <span>שעות פעילות וטיפולים</span>
           </button>
 
           {/* SMS / WhatsApp Alert Center Button */}

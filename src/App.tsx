@@ -552,7 +552,7 @@ export default function App() {
 
             {/* Highlights info */}
             <div className="pt-2">
-              <SalonInfoSection />
+              <SalonInfoSection scheduleSettings={scheduleSettings} />
             </div>
           </div>
         ) : (

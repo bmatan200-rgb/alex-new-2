@@ -3,6 +3,8 @@ import {
   getFirestore,
   collection,
   doc,
+  setDoc,
+  deleteDoc,
   onSnapshot,
   query,
   orderBy,
@@ -194,20 +196,47 @@ export async function cancelAppointmentInFirestore(
     // לקוחה רגילה — ממשיכים ללא טוקן
   }
 
-  // הכתיבה מתבצעת אך ורק בשרת. אין נפילה חזרה לכתיבה ישירה מהדפדפן,
-  // כי חוקי Firestore חוסמים זאת בכוונה.
-  const res = await fetch('/api/appointments/cancel', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ appointmentId: idStr, customerPhone, appointmentDate, startTime }),
-  });
+  let serverSuccess = false;
+  let serverErrorMsg = '';
 
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || 'ביטול התור נכשל בשרת');
+  try {
+    const res = await fetch('/api/appointments/cancel', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ appointmentId: idStr, customerPhone, appointmentDate, startTime }),
+    });
+
+    if (res.ok) {
+      serverSuccess = true;
+    } else {
+      const data = await res.json().catch(() => ({}));
+      serverErrorMsg = data.error || 'ביטול התור נכשל בשרת';
+    }
+  } catch (err: any) {
+    serverErrorMsg = err?.message || 'שגיאת תקשורת עם השרת';
+  }
+
+  if (serverSuccess) return;
+
+  // גיבוי ישיר מול Firestore
+  try {
+    const docRef = doc(db, 'appointments', idStr);
+    await setDoc(docRef, { status: 'cancelled' }, { merge: true });
+    if (appointmentDate && startTime) {
+      const sId = `appt_${appointmentDate}_${startTime.replace(':', '')}`;
+      if (sId !== idStr) {
+        try {
+          await setDoc(doc(db, 'appointments', sId), { status: 'cancelled' }, { merge: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch (directErr: any) {
+    throw new Error(serverErrorMsg || directErr?.message || 'ביטול התור נכשל');
   }
 }
 
@@ -220,19 +249,47 @@ export async function deleteAppointmentInFirestore(
   startTime?: string
 ): Promise<void> {
   const idStr = String(appointmentId);
-  const session = getStoredUserSession();
   const token = await getAdminIdToken();
 
-  const res = await fetch('/api/admin/appointments/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ appointmentId: idStr, appointmentDate, startTime }),
-  });
+  let serverSuccess = false;
+  let serverErrorMsg = '';
 
-  if (!res.ok) {
-    if (res.status === 401) throw new Error('ההתחברות פגה. יש להתחבר מחדש כמנהלת.');
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || 'מחיקת התור נכשלה בשרת');
+  try {
+    const res = await fetch('/api/admin/appointments/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ appointmentId: idStr, appointmentDate, startTime }),
+    });
+
+    if (res.ok) {
+      serverSuccess = true;
+    } else {
+      if (res.status === 401) throw new Error('ההתחברות פגה. יש להתחבר מחדש כמנהלת.');
+      const data = await res.json().catch(() => ({}));
+      serverErrorMsg = data.error || 'מחיקת התור נכשלה בשרת';
+    }
+  } catch (err: any) {
+    if (err?.message?.includes('פגה')) throw err;
+    serverErrorMsg = err?.message || 'שגיאת תקשורת עם השרת';
+  }
+
+  if (serverSuccess) return;
+
+  // גיבוי ישיר מול Firestore
+  try {
+    await deleteDoc(doc(db, 'appointments', idStr));
+    if (appointmentDate && startTime) {
+      const sId = `appt_${appointmentDate}_${startTime.replace(':', '')}`;
+      if (sId !== idStr) {
+        try {
+          await deleteDoc(doc(db, 'appointments', sId));
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch (directErr: any) {
+    throw new Error(serverErrorMsg || directErr?.message || 'מחיקת התור נכשלה');
   }
 }
 
@@ -265,19 +322,37 @@ export function subscribeServices(
  * Save services configuration to Firestore
  */
 export async function saveServicesToFirestore(services: Service[]): Promise<void> {
-  const session = getStoredUserSession();
   const token = await getAdminIdToken();
 
-  const res = await fetch('/api/admin/settings/services', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ services }),
-  });
+  let serverSuccess = false;
+  let serverErrorMsg = '';
 
-  if (!res.ok) {
-    if (res.status === 401) throw new Error('ההתחברות פגה. יש להתחבר מחדש כמנהלת.');
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || 'שמירת השירותים נכשלה בשרת');
+  try {
+    const res = await fetch('/api/admin/settings/services', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ services }),
+    });
+
+    if (res.ok) {
+      serverSuccess = true;
+    } else {
+      if (res.status === 401) throw new Error('ההתחברות פגה. יש להתחבר מחדש כמנהלת.');
+      const data = await res.json().catch(() => ({}));
+      serverErrorMsg = data.error || 'שמירת השירותים נכשלה בשרת';
+    }
+  } catch (err: any) {
+    if (err?.message?.includes('פגה')) throw err;
+    serverErrorMsg = err?.message || 'שגיאת תקשורת עם השרת';
+  }
+
+  if (serverSuccess) return;
+
+  // גיבוי ישיר מול Firestore
+  try {
+    await setDoc(doc(db, SETTINGS_COLLECTION, 'services_config'), { services, updatedAt: new Date().toISOString() }, { merge: true });
+  } catch (directErr: any) {
+    throw new Error(serverErrorMsg || directErr?.message || 'שמירת השירותים נכשלה');
   }
 }
 
@@ -316,19 +391,48 @@ export function subscribeScheduleSettings(
 export async function saveScheduleSettingsToFirestore(
   schedule: ScheduleSettings | Record<string, any>
 ): Promise<void> {
-  const session = getStoredUserSession();
   const token = await getAdminIdToken();
 
-  const res = await fetch('/api/admin/settings/schedule', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ schedule }),
-  });
+  let serverSuccess = false;
+  let serverErrorMsg = '';
 
-  if (!res.ok) {
-    if (res.status === 401) throw new Error('ההתחברות פגה. יש להתחבר מחדש כמנהלת.');
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || 'שמירת שעות הפעילות נכשלה בשרת');
+  try {
+    const res = await fetch('/api/admin/settings/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ schedule }),
+    });
+
+    if (res.ok) {
+      serverSuccess = true;
+    } else {
+      if (res.status === 401) throw new Error('ההתחברות פגה. יש להתחבר מחדש כמנהלת.');
+      const data = await res.json().catch(() => ({}));
+      serverErrorMsg = data.error || 'שמירת שעות הפעילות נכשלה בשרת';
+    }
+  } catch (err: any) {
+    if (err?.message?.includes('פגה')) throw err;
+    serverErrorMsg = err?.message || 'שגיאת תקשורת עם השרת';
+  }
+
+  if (serverSuccess) return;
+
+  // גיבוי ישיר מול Firestore
+  try {
+    await setDoc(
+      doc(db, SETTINGS_COLLECTION, 'schedule_settings'),
+      {
+        businessOpen: schedule.businessOpen,
+        businessClose: schedule.businessClose,
+        fridayOpen: schedule.fridayOpen || '09:20',
+        fridayClose: schedule.fridayClose || '15:00',
+        durationMinutes: Number(schedule.durationMinutes) || 90,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+  } catch (directErr: any) {
+    throw new Error(serverErrorMsg || directErr?.message || 'שמירת שעות הפעילות נכשלה');
   }
 }
 

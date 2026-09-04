@@ -1,24 +1,40 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { getApps, initializeApp, cert } from 'firebase-admin/app';
+import { getApps as getAdminApps, initializeApp as initAdminApp, cert } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
+import { initializeApp as initWebApp, getApps as getWebApps } from 'firebase/app';
+import {
+  getFirestore as getWebFirestore,
+  doc,
+  getDoc,
+  setDoc,
+  deleteDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  runTransaction as runWebTransaction,
+} from 'firebase/firestore';
 import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
+import firebaseConfig from './firebase-applet-config.json';
 
 const app = express();
 const PORT = 3000;
 
-// אתחול Firebase Admin לאימות טוקני התחברות של מנהלות.
+// אתחול Firebase Admin
 let adminSdkReady = false;
+const hasServiceAccount = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT);
+
 try {
-  if (getApps().length === 0) {
+  if (getAdminApps().length === 0) {
     const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;
     if (saJson) {
-      initializeApp({ credential: cert(JSON.parse(saJson)), projectId: 'gen-lang-client-0382531831' });
+      initAdminApp({ credential: cert(JSON.parse(saJson)), projectId: firebaseConfig.projectId });
     } else {
-      initializeApp({ projectId: 'gen-lang-client-0382531831' });
+      initAdminApp({ projectId: firebaseConfig.projectId });
     }
   }
   adminSdkReady = true;
@@ -28,23 +44,27 @@ try {
 }
 
 /**
- * גישת השרת ל-Firestore דרך ה-Admin SDK.
- * ה-Admin SDK מזוהה כשרת מהימן ואינו כפוף לחוקי האבטחה,
- * ולכן ניתן להשאיר את החוקים נעולים לחלוטין.
+ * מופע מסד נתונים Admin (פעיל כאשר מוגדר FIREBASE_SERVICE_ACCOUNT)
+ * שים לב: חייבים להעביר את firestoreDatabaseId מ-firebaseConfig, אחרת מתחבר ל-'(default)' שאינו קיים.
  */
 let adminDb: FirebaseFirestore.Firestore | null = null;
 try {
-  adminDb = getFirestore();
-  console.log('[Firestore Admin] ✅ חיבור מנהל למסד הנתונים הוקם');
+  adminDb = getAdminFirestore(firebaseConfig.firestoreDatabaseId || undefined);
+  console.log('[Firestore Admin] ✅ מופע מסד נתונים Admin אותחל עבור:', firebaseConfig.firestoreDatabaseId);
 } catch (err: any) {
-  console.error('[Firestore Admin] ❌ כשל בחיבור:', err?.message);
+  console.error('[Firestore Admin] ❌ כשל באתחול:', err?.message);
 }
 
-function requireDb(): FirebaseFirestore.Firestore {
-  if (!adminDb) {
-    throw new Error('אין חיבור למסד הנתונים. יש להגדיר FIREBASE_SERVICE_ACCOUNT.');
-  }
-  return adminDb;
+/**
+ * מופע Web SDK של השרת - מספק גישה ישירה ויציבה באמצעות מפתח ה-API של Firebase
+ */
+let webDb: any = null;
+try {
+  const webApp = getWebApps().length === 0 ? initWebApp(firebaseConfig, 'server-web-client') : getWebApps()[0];
+  webDb = getWebFirestore(webApp, firebaseConfig.firestoreDatabaseId || undefined);
+  console.log('[Firestore Web SDK] ✅ חיבור שרת פעיל למסד הנתונים');
+} catch (err: any) {
+  console.error('[Firestore Web SDK] ❌ כשל בחיבור:', err?.message);
 }
 
 const normalizePhone = (p?: string) => (p || '').replace(/\D/g, '');
@@ -85,9 +105,25 @@ app.post('/api/appointments/cancel', async (req, res) => {
       }
     }
 
-    const fsdb = requireDb();
-    const snap = await fsdb.collection('appointments').doc(idStr).get();
-    const snapData = snap.exists ? snap.data() : null;
+    let snapData: any = null;
+
+    if (hasServiceAccount && adminDb) {
+      try {
+        const snap = await adminDb.collection('appointments').doc(idStr).get();
+        if (snap.exists) snapData = snap.data();
+      } catch (err) {
+        console.warn('[Cancel] Admin SDK get failed, trying Web SDK:', err);
+      }
+    }
+
+    if (!snapData && webDb) {
+      try {
+        const snap = await getDoc(doc(webDb, 'appointments', idStr));
+        if (snap.exists()) snapData = snap.data();
+      } catch (err) {
+        console.warn('[Cancel] Web SDK getDoc failed:', err);
+      }
+    }
 
     if (!isAdmin && snapData) {
       if (!customerPhone) return res.status(401).json({ success: false, error: 'Missing customerPhone for non-admin' });
@@ -98,8 +134,25 @@ app.post('/api/appointments/cancel', async (req, res) => {
       }
     }
 
-    if (snap.exists) {
-      await fsdb.collection('appointments').doc(idStr).set({ status: 'cancelled' }, { merge: true });
+    let updated = false;
+    if (snapData) {
+      if (hasServiceAccount && adminDb) {
+        try {
+          await adminDb.collection('appointments').doc(idStr).set({ status: 'cancelled' }, { merge: true });
+          updated = true;
+        } catch (err) {
+          console.warn('[Cancel] Admin SDK set failed, falling back to Web SDK:', err);
+        }
+      }
+
+      if (!updated && webDb) {
+        try {
+          await setDoc(doc(webDb, 'appointments', idStr), { status: 'cancelled' }, { merge: true });
+          updated = true;
+        } catch (err) {
+          console.warn('[Cancel] Web SDK setDoc failed:', err);
+        }
+      }
     }
 
     const apptDate = req.body?.appointmentDate || snapData?.appointment_date;
@@ -108,7 +161,14 @@ app.post('/api/appointments/cancel', async (req, res) => {
       const sId = `appt_${apptDate}_${apptTime.replace(':', '')}`;
       if (sId !== idStr) {
         try {
-          await fsdb.collection('appointments').doc(sId).set({ status: 'cancelled' }, { merge: true });
+          if (hasServiceAccount && adminDb) {
+            await adminDb.collection('appointments').doc(sId).set({ status: 'cancelled' }, { merge: true });
+          } else if (webDb) {
+            const sSnap = await getDoc(doc(webDb, 'appointments', sId));
+            if (sSnap.exists()) {
+              await setDoc(doc(webDb, 'appointments', sId), { status: 'cancelled' }, { merge: true });
+            }
+          }
         } catch {
           // ignore
         }
@@ -127,14 +187,32 @@ app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
     const { appointmentId, appointmentDate, startTime } = req.body;
     if (!appointmentId) return res.status(400).json({ success: false, error: 'Missing appointmentId' });
     
-    const fsdb = requireDb();
-    await fsdb.collection('appointments').doc(String(appointmentId)).delete();
+    const idStr = String(appointmentId);
+    let deleted = false;
+
+    if (hasServiceAccount && adminDb) {
+      try {
+        await adminDb.collection('appointments').doc(idStr).delete();
+        deleted = true;
+      } catch (err) {
+        console.warn('[Delete] Admin SDK delete failed, falling back to Web SDK:', err);
+      }
+    }
+
+    if (!deleted && webDb) {
+      await deleteDoc(doc(webDb, 'appointments', idStr));
+      deleted = true;
+    }
 
     if (appointmentDate && startTime) {
       const sId = `appt_${appointmentDate}_${startTime.replace(':', '')}`;
       if (sId !== String(appointmentId)) {
         try {
-          await fsdb.collection('appointments').doc(sId).delete();
+          if (hasServiceAccount && adminDb) {
+            await adminDb.collection('appointments').doc(sId).delete();
+          } else if (webDb) {
+            await deleteDoc(doc(webDb, 'appointments', sId));
+          }
         } catch {
           // ignore
         }
@@ -143,6 +221,7 @@ app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
 
     return res.json({ success: true });
   } catch (err: any) {
+    console.error('[Delete] Error deleting appointment:', err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -153,15 +232,26 @@ app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
     if (!Array.isArray(services)) {
       return res.status(400).json({ success: false, error: 'Invalid services format' });
     }
-    // שם המסמך ('services_config') ושם השדה ('services') חייבים להתאים
-    // בדיוק למה שהלקוח קורא ב-subscribeServices, אחרת השמירה "תצליח"
-    // אבל הנתונים לעולם לא ייקלטו באפליקציה.
-    await requireDb()
-      .collection('settings')
-      .doc('services_config')
-      .set({ services, updatedAt: new Date().toISOString() }, { merge: true });
+    const data = { services, updatedAt: new Date().toISOString() };
+    let saved = false;
+
+    if (hasServiceAccount && adminDb) {
+      try {
+        await adminDb.collection('settings').doc('services_config').set(data, { merge: true });
+        saved = true;
+      } catch (err) {
+        console.warn('[Settings Services] Admin SDK failed, falling back to Web SDK:', err);
+      }
+    }
+
+    if (!saved && webDb) {
+      await setDoc(doc(webDb, 'settings', 'services_config'), data, { merge: true });
+      saved = true;
+    }
+
     return res.json({ success: true });
   } catch (err: any) {
+    console.error('[Settings Services] Error:', err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -172,21 +262,33 @@ app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
     if (!schedule || typeof schedule !== 'object') {
       return res.status(400).json({ success: false, error: 'Invalid schedule format' });
     }
-    // הלקוח (subscribeScheduleSettings) קורא את השדות ישירות מהמסמך
-    // 'schedule_settings', לא מתוך אובייקט מקונן.
-    await requireDb().collection('settings').doc('schedule_settings').set(
-      {
-        businessOpen: schedule.businessOpen,
-        businessClose: schedule.businessClose,
-        fridayOpen: schedule.fridayOpen || '09:20',
-        fridayClose: schedule.fridayClose || '15:00',
-        durationMinutes: Number(schedule.durationMinutes) || 90,
-        updatedAt: new Date().toISOString(),
-      },
-      { merge: true }
-    );
+    const data = {
+      businessOpen: schedule.businessOpen,
+      businessClose: schedule.businessClose,
+      fridayOpen: schedule.fridayOpen || '09:20',
+      fridayClose: schedule.fridayClose || '15:00',
+      durationMinutes: Number(schedule.durationMinutes) || 90,
+      updatedAt: new Date().toISOString(),
+    };
+    let saved = false;
+
+    if (hasServiceAccount && adminDb) {
+      try {
+        await adminDb.collection('settings').doc('schedule_settings').set(data, { merge: true });
+        saved = true;
+      } catch (err) {
+        console.warn('[Settings Schedule] Admin SDK failed, falling back to Web SDK:', err);
+      }
+    }
+
+    if (!saved && webDb) {
+      await setDoc(doc(webDb, 'settings', 'schedule_settings'), data, { merge: true });
+      saved = true;
+    }
+
     return res.json({ success: true });
   } catch (err: any) {
+    console.error('[Settings Schedule] Error:', err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -644,33 +746,61 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
     );
 
     // Fallback: If in-memory array is empty, fetch directly from Firestore to ensure 08:00 AM dispatch runs reliably
-    if (appointments.length === 0 && adminDb) {
+    if (appointments.length === 0) {
       try {
-        const snap = await adminDb
-          .collection('appointments')
-          .where('appointment_date', '==', targetDate)
-          .where('status', '==', 'confirmed')
-          .get();
         const fetchedAppts: ServerAppointment[] = [];
-        snap.forEach((docSnap) => {
-          const d = docSnap.data();
-          if (
-            !d.customer_name?.includes('🔒') &&
-            !d.customer_name?.includes('חופש') &&
-            !d.customer_name?.includes('חסימה') &&
-            !d.customer_name?.includes('הפסקה')
-          ) {
-            fetchedAppts.push({
-              id: docSnap.id,
-              customer_name: d.customer_name || '',
-              customer_phone: d.customer_phone || '',
-              service_name: d.service_name || "לק ג'ל",
-              appointment_date: d.appointment_date,
-              start_time: d.start_time || '',
-              status: d.status || 'confirmed',
-            });
-          }
-        });
+        if (hasServiceAccount && adminDb) {
+          const snap = await adminDb
+            .collection('appointments')
+            .where('appointment_date', '==', targetDate)
+            .where('status', '==', 'confirmed')
+            .get();
+          snap.forEach((docSnap) => {
+            const d = docSnap.data();
+            if (
+              !d.customer_name?.includes('🔒') &&
+              !d.customer_name?.includes('חופש') &&
+              !d.customer_name?.includes('חסימה') &&
+              !d.customer_name?.includes('הפסקה')
+            ) {
+              fetchedAppts.push({
+                id: docSnap.id,
+                customer_name: d.customer_name || '',
+                customer_phone: d.customer_phone || '',
+                service_name: d.service_name || "לק ג'ל",
+                appointment_date: d.appointment_date,
+                start_time: d.start_time || '',
+                status: d.status || 'confirmed',
+              });
+            }
+          });
+        } else if (webDb) {
+          const q = query(
+            collection(webDb, 'appointments'),
+            where('appointment_date', '==', targetDate),
+            where('status', '==', 'confirmed')
+          );
+          const snap = await getDocs(q);
+          snap.forEach((docSnap) => {
+            const d = docSnap.data();
+            if (
+              !d.customer_name?.includes('🔒') &&
+              !d.customer_name?.includes('חופש') &&
+              !d.customer_name?.includes('חסימה') &&
+              !d.customer_name?.includes('הפסקה')
+            ) {
+              fetchedAppts.push({
+                id: docSnap.id,
+                customer_name: d.customer_name || '',
+                customer_phone: d.customer_phone || '',
+                service_name: d.service_name || "לק ג'ל",
+                appointment_date: d.appointment_date,
+                start_time: d.start_time || '',
+                status: d.status || 'confirmed',
+              });
+            }
+          });
+        }
         if (fetchedAppts.length > 0) {
           console.log(`[CRON] נשלפו ${fetchedAppts.length} תורים ישירות מ-Firestore לתאריך ${targetDate}`);
           appointments = fetchedAppts;
@@ -814,24 +944,37 @@ initCronSchedulers();
  * גרועה יותר מתזכורת שתישלח בהרצה הבאה.
  */
 async function tryClaimReminder(key: string): Promise<boolean> {
-  if (!adminDb) {
-    console.error('[Reminder Lock] ❌ אין חיבור ל-Firestore — לא ניתן לשלוח בבטחה');
-    return false;
+  if (hasServiceAccount && adminDb) {
+    try {
+      const lockRef = adminDb.collection('reminder_locks').doc(key);
+      return await adminDb.runTransaction(async (transaction) => {
+        const snap = await transaction.get(lockRef);
+        if (snap.exists) return false;
+        transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
+        return true;
+      });
+    } catch (err) {
+      console.warn(`[Reminder Lock] Admin טרנזקציה נכשלה עבור ${key}, מנסים דרך Web SDK:`, err);
+    }
   }
 
-  const lockRef = adminDb.collection('reminder_locks').doc(key);
-
-  try {
-    return await adminDb.runTransaction(async (transaction) => {
-      const snap = await transaction.get(lockRef);
-      if (snap.exists) return false;
-      transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
-      return true;
-    });
-  } catch (err) {
-    console.warn(`[Reminder Lock] טרנזקציה נכשלה עבור ${key}:`, err);
-    return false;
+  if (webDb) {
+    try {
+      const lockRef = doc(webDb, 'reminder_locks', key);
+      return await runWebTransaction(webDb, async (transaction) => {
+        const snap = await transaction.get(lockRef);
+        if (snap.exists()) return false;
+        transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
+        return true;
+      });
+    } catch (err) {
+      console.warn(`[Reminder Lock] טרנזקציה נכשלה עבור ${key}:`, err);
+      return false;
+    }
   }
+
+  console.error('[Reminder Lock] ❌ אין חיבור ל-Firestore — לא ניתן לשלוח בבטחה');
+  return false;
 }
 
 // ----------------------------------------------------

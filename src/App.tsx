@@ -383,6 +383,28 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#f8f9fa] text-slate-800 flex flex-col font-['Heebo',sans-serif]">
+      <style>{`
+        @keyframes doubleHalo {
+          0% {
+            box-shadow:
+              0 18px 38px -12px rgba(124,58,237,0.35),
+              0 0 0 0 rgba(124,58,237,0.5),
+              0 0 0 0 rgba(124,58,237,0.3);
+          }
+          100% {
+            box-shadow:
+              0 18px 38px -12px rgba(124,58,237,0.35),
+              0 0 0 18px rgba(124,58,237,0),
+              0 0 0 34px rgba(124,58,237,0);
+          }
+        }
+        .halo-btn {
+          animation: doubleHalo 2.4s ease-out 2;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .halo-btn { animation: none; }
+        }
+      `}</style>
       {/* Top Navigation Header */}
       <Header
         isAdmin={isUserAdmin}
@@ -492,7 +514,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleRequestBooking}
-                className="w-full px-6 rounded-3xl bg-white border-2 border-purple-500/80 hover:border-purple-600 hover:bg-purple-50/40 shadow-lg shadow-purple-500/10 hover:shadow-xl hover:shadow-purple-500/20 text-slate-950 font-black text-lg sm:text-xl transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99] h-[150px]"
+                className="halo-btn w-full px-6 rounded-3xl bg-white border-2 border-purple-500/80 hover:border-purple-600 hover:bg-purple-50/40 shadow-lg shadow-purple-500/10 hover:shadow-xl hover:shadow-purple-500/20 text-slate-950 font-black text-lg sm:text-xl transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99] h-[150px]"
               >
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-2xl bg-purple-600 text-white flex items-center justify-center shadow-sm group-hover:scale-105 transition">

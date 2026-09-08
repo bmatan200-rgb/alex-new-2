@@ -366,10 +366,35 @@ export default function App() {
   const mainService = services[0] || SERVICES[0];
 
   const cleanUserPhone = currentUser?.phone ? currentUser.phone.replace(/\D/g, '') : '';
+  /**
+   * תורים פעילים של הלקוחה — כלומר תורים שטרם הסתיימו.
+   *
+   * תור נחשב "עבר" רק אחרי ששעת הסיום שלו חלפה, לא בתחילתו.
+   * כך לקוחה שנמצאת כרגע בטיפול עדיין רואה את התור שלה.
+   *
+   * ההשוואה מתבצעת לפי שעון ישראל, כדי שלקוחה שנמצאת בחו"ל
+   * או שהטלפון שלה מוגדר לאזור זמן אחר תראה את אותו מצב.
+   */
   const customerActiveBookings = cleanUserPhone && cleanUserPhone.length >= 7
     ? appointments.filter((app) => {
         const cleanAppPhone = app.customer_phone.replace(/\D/g, '');
-        return cleanAppPhone === cleanUserPhone && app.status !== 'cancelled';
+        if (cleanAppPhone !== cleanUserPhone) return false;
+        if (app.status === 'cancelled') return false;
+
+        // חישוב הזמן הנוכחי בישראל
+        const nowIsrael = new Date(
+          new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' })
+        );
+
+        // בניית מועד סיום התור מהתאריך והשעה השמורים
+        const [y, m, d] = (app.appointment_date || '').split('-').map(Number);
+        const [endH, endM] = (app.end_time || '23:59').split(':').map(Number);
+
+        if (!y || !m || !d) return false; // תאריך פגום — לא מציגים
+
+        const appointmentEnd = new Date(y, m - 1, d, endH || 23, endM || 59);
+
+        return appointmentEnd >= nowIsrael;
       })
     : [];
 

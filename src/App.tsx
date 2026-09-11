@@ -78,6 +78,26 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // ------------------------------------------------------------------
+  // כניסת מנהלת דרך הכתובת /admin
+  //
+  // הכתובת אינה מנגנון אבטחה — ההגנה היא מייל וסיסמה של Firebase.
+  // היא רק מסתירה את הכניסה מלקוחות רגילות, שאין להן סיבה לדעת
+  // שקיים ממשק ניהול בכלל.
+  //
+  // אחרי פתיחת מסך ההתחברות הכתובת מנוקה חזרה ל-/, כדי שלא תישאר
+  // בהיסטוריית הדפדפן ולא תשותף בטעות.
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    const path = window.location.pathname.toLowerCase().replace(/\/+$/, '');
+
+    if (path === '/admin') {
+      setAuthPromptRole('admin');
+      setIsAuthModalOpen(true);
+      window.history.replaceState({}, '', '/');
+    }
+  }, []);
+
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => {
     const session = getStoredUserSession();

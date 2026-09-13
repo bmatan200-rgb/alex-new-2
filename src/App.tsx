@@ -35,6 +35,7 @@ import {
   saveStoredServices,
   getStoredScheduleSettings,
   saveStoredScheduleSettings,
+  isAdminPhone,
 } from './utils/storage';
 import {
   autoDispatchAppointmentBooking,
@@ -66,7 +67,6 @@ import { SalonInfoSection } from './components/SalonInfoSection';
 import { AuthModal } from './components/AuthModal';
 import { TermsOfServiceModal } from './components/TermsOfServiceModal';
 import { ExistingBookingChoiceModal } from './components/ExistingBookingChoiceModal';
-import { InstallPrompt } from './components/InstallPrompt';
 
 export default function App() {
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
@@ -811,9 +811,6 @@ export default function App() {
           <span>{toastMessage.text}</span>
         </div>
       )}
-
-      {/* באנר התקנת אפליקציה — אנדרואיד ואייפון */}
-      <InstallPrompt />
     </div>
   );
 }

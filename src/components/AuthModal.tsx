@@ -21,7 +21,7 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { UserSession, AdminUser } from '../types';
-import { SALON_INFO } from '../utils/storage';
+import { isAdminPhone, SALON_INFO } from '../utils/storage';
 import {
   verifyAdminLoginInFirestore,
   saveAdminUserToFirestore,
@@ -97,6 +97,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   if (!isOpen) return null;
 
+  const isCustomerAdminPhone = isAdminPhone(phone);
 
   // Handler for Customer Registration/Login
   const handleCustomerSubmit = async (e: React.FormEvent, forceCustomer: boolean = false) => {
@@ -117,19 +118,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
-    // טופס זה הוא כניסת לקוח בלבד. הרשאות ניהול נקבעות אך ורק
-    // לפי Firebase Authentication (דרך הכתובת /admin), ולעולם לא
-    // לפי מספר טלפון — מספר הטלפון של העסק מוצג באתר עצמו.
-    const isAdmin = false;
+    const isAdmin = forceCustomer ? false : isAdminPhone(phone);
 
-    // תקנון וחתימה דיגיטלית הם חובה לכל נרשמת, ללא יוצא מן הכלל
-    if (!signatureDataUrl) {
-      setError('יש לחתום דיגיטלית בלוח החתימה על מנת לאשר את התקנון');
-      return;
-    }
-    if (!acceptedTerms) {
-      setError('יש לסמן אישור על תקנון ותנאי השימוש כדי להמשיך');
-      return;
+    // Mandatory Terms & Digital Signature Check for customer
+    if (!isAdmin) {
+      if (!signatureDataUrl) {
+        setError('יש לחתום דיגיטלית בלוח החתימה על מנת לאשר את התקנון');
+        return;
+      }
+      if (!acceptedTerms) {
+        setError('יש לסמן אישור על תקנון ותנאי השימוש כדי להמשיך');
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -394,7 +394,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
 
               {/* Customer Terms & Signature */}
-              <div className="space-y-3 pt-1 text-right">
+              {!isCustomerAdminPhone && (
+                <div className="space-y-3 pt-1 text-right">
                   <div className="p-3 bg-purple-50/70 rounded-2xl border border-purple-200/90 text-xs space-y-1.5 text-slate-700">
                     <div className="flex items-center justify-between font-bold text-purple-950 border-b border-purple-200/60 pb-1">
                       <div className="flex items-center gap-1.5">
@@ -478,7 +479,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       </div>
                     </label>
                   </div>
-              </div>
+                </div>
+              )}
+
+              {/* Dynamic Admin Notification on Customer Screen */}
+              {isCustomerAdminPhone && (
+                <div className="p-3 bg-purple-950 text-white rounded-2xl border border-purple-500/60 shadow-xs space-y-1 text-right">
+                  <div className="flex items-center gap-1.5 text-purple-300 text-xs font-black">
+                    <ShieldCheck className="w-4 h-4 text-purple-400" />
+                    <span>זוהה מספר טלפון של מנהל</span>
+                  </div>
+                  <p className="text-[11px] text-purple-200">
+                    באפשרותך להיכנס ישירות לממשק מנהל או לעבור ללשונית "כניסת מנהל (Firebase)" להזנת סיסמה מלאה.
+                  </p>
+                </div>
+              )}
 
               {error && (
                 <div className="p-3 bg-red-50 text-red-700 text-xs font-bold rounded-xl border border-red-200 text-right">
@@ -487,14 +502,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               )}
 
               <div className="space-y-2 pt-1">
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="w-full min-h-[48px] py-3 px-4 bg-slate-950 hover:bg-black text-white rounded-2xl text-sm font-black transition flex items-center justify-center gap-2 cursor-pointer shadow-md active:scale-[0.99]"
-                >
-                  <span>{isSubmitting ? 'רושם למערכת...' : 'הרשמה וכניסה למערכת'}</span>
-                  <ArrowLeft className="w-4 h-4 text-slate-300" />
-                </button>
+                {isCustomerAdminPhone ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={(e) => handleCustomerSubmit(e, false)}
+                      className="w-full min-h-[46px] py-3 px-4 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl text-sm font-black transition border border-purple-500/60 flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                    >
+                      <Lock className="w-4 h-4 text-purple-200" />
+                      <span>כניסה מהירה לממשק מנהל</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => handleCustomerSubmit(e, true)}
+                      className="w-full min-h-[42px] py-2.5 px-4 bg-white hover:bg-slate-50 text-slate-700 rounded-2xl text-xs font-bold transition border border-slate-200 flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <User className="w-3.5 h-3.5 text-slate-400" />
+                      <span>כניסה רגילה כלקוח/ה</span>
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="w-full min-h-[48px] py-3 px-4 bg-slate-950 hover:bg-black text-white rounded-2xl text-sm font-black transition flex items-center justify-center gap-2 cursor-pointer shadow-md active:scale-[0.99]"
+                  >
+                    <span>{isSubmitting ? 'רושם למערכת...' : 'הרשמה וכניסה למערכת'}</span>
+                    <ArrowLeft className="w-4 h-4 text-slate-300" />
+                  </button>
+                )}
               </div>
             </form>
           )}
@@ -632,6 +668,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </button>
                 </div>
               </div>
+
+              {/* Mode Toggle: Login vs Register/Update in Firebase */}
+              {/* Removed as per instructions to only allow login via app */}
 
               {/* Error & Success Notices */}
               {error && (

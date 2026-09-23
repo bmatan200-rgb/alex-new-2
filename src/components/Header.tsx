@@ -15,7 +15,6 @@ import { SALON_INFO } from '../utils/storage';
 import { UserSession } from '../types';
 
 interface HeaderProps {
-  isAdmin?: boolean;
   activeTab: 'booking' | 'admin';
   onSelectTab: (tab: 'booking' | 'admin') => void;
   onOpenMyBooking: () => void;
@@ -33,11 +32,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAuthModal,
   onQuickSwitchRole,
   onLogout,
-  isAdmin,
 }) => {
-  // הרשאת הניהול מגיעה מ-App, שם היא נגזרת מ-Firebase Auth.
-  // אין להסיק אותה כאן מ-currentUser, שמקורו ב-localStorage.
-  const isUserAdmin = Boolean(isAdmin);
+  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin);
 
   const handleAdminTabClick = () => {
     if (isUserAdmin) {
@@ -169,7 +165,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Nav Switcher & Action Buttons */}
           <div className="flex items-center gap-2">
-            {isUserAdmin && (
+            {isUserAdmin ? (
               <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
                 <button
                   id="tab-booking-btn"
@@ -200,6 +196,17 @@ export const Header: React.FC<HeaderProps> = ({
                   <span>ממשק מנהל</span>
                 </button>
               </div>
+            ) : (
+              <button
+                id="admin-login-header-btn"
+                type="button"
+                onClick={() => onOpenAuthModal('admin')}
+                className="px-3 py-2 text-xs font-black text-purple-900 bg-purple-50 hover:bg-purple-100 hover:border-purple-300 rounded-xl transition cursor-pointer border border-purple-200 shadow-xs flex items-center gap-1.5"
+                title="כניסת מנהל/ת למערכת (Firebase)"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-purple-600" />
+                <span>כניסת מנהל</span>
+              </button>
             )}
 
             <button

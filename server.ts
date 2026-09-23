@@ -1,70 +1,31 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { getApps as getAdminApps, initializeApp as initAdminApp, cert } from 'firebase-admin/app';
+import { getDoc, doc, setDoc, runTransaction, deleteDoc } from 'firebase/firestore';
+import { db } from './src/lib/firebase';
+import { getApps, initializeApp, cert } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
-import { initializeApp as initWebApp, getApps as getWebApps } from 'firebase/app';
-import {
-  getFirestore as getWebFirestore,
-  doc,
-  getDoc,
-  setDoc,
-  deleteDoc,
-  collection,
-  query,
-  where,
-  getDocs,
-  runTransaction as runWebTransaction,
-} from 'firebase/firestore';
 import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
-import firebaseConfig from './firebase-applet-config.json';
 
 const app = express();
 const PORT = 3000;
 
-// אתחול Firebase Admin
+// אתחול Firebase Admin לאימות טוקני התחברות של מנהלות.
 let adminSdkReady = false;
-const hasServiceAccount = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT);
-
 try {
-  if (getAdminApps().length === 0) {
+  if (getApps().length === 0) {
     const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;
     if (saJson) {
-      initAdminApp({ credential: cert(JSON.parse(saJson)), projectId: firebaseConfig.projectId });
+      initializeApp({ credential: cert(JSON.parse(saJson)), projectId: 'gen-lang-client-0382531831' });
     } else {
-      initAdminApp({ projectId: firebaseConfig.projectId });
+      initializeApp({ projectId: 'gen-lang-client-0382531831' });
     }
   }
   adminSdkReady = true;
   console.log('[Firebase Admin] ✅ מוכן לאימות טוקנים');
 } catch (err: any) {
   console.error('[Firebase Admin] ❌ אתחול נכשל:', err?.message);
-}
-
-/**
- * מופע מסד נתונים Admin (פעיל כאשר מוגדר FIREBASE_SERVICE_ACCOUNT)
- * שים לב: חייבים להעביר את firestoreDatabaseId מ-firebaseConfig, אחרת מתחבר ל-'(default)' שאינו קיים.
- */
-let adminDb: FirebaseFirestore.Firestore | null = null;
-try {
-  adminDb = getAdminFirestore(firebaseConfig.firestoreDatabaseId || undefined);
-  console.log('[Firestore Admin] ✅ מופע מסד נתונים Admin אותחל עבור:', firebaseConfig.firestoreDatabaseId);
-} catch (err: any) {
-  console.error('[Firestore Admin] ❌ כשל באתחול:', err?.message);
-}
-
-/**
- * מופע Web SDK של השרת - מספק גישה ישירה ויציבה באמצעות מפתח ה-API של Firebase
- */
-let webDb: any = null;
-try {
-  const webApp = getWebApps().length === 0 ? initWebApp(firebaseConfig, 'server-web-client') : getWebApps()[0];
-  webDb = getWebFirestore(webApp, firebaseConfig.firestoreDatabaseId || undefined);
-  console.log('[Firestore Web SDK] ✅ חיבור שרת פעיל למסד הנתונים');
-} catch (err: any) {
-  console.error('[Firestore Web SDK] ❌ כשל בחיבור:', err?.message);
 }
 
 const normalizePhone = (p?: string) => (p || '').replace(/\D/g, '');
@@ -105,25 +66,8 @@ app.post('/api/appointments/cancel', async (req, res) => {
       }
     }
 
-    let snapData: any = null;
-
-    if (hasServiceAccount && adminDb) {
-      try {
-        const snap = await adminDb.collection('appointments').doc(idStr).get();
-        if (snap.exists) snapData = snap.data();
-      } catch (err) {
-        console.warn('[Cancel] Admin SDK get failed, trying Web SDK:', err);
-      }
-    }
-
-    if (!snapData && webDb) {
-      try {
-        const snap = await getDoc(doc(webDb, 'appointments', idStr));
-        if (snap.exists()) snapData = snap.data();
-      } catch (err) {
-        console.warn('[Cancel] Web SDK getDoc failed:', err);
-      }
-    }
+    const snap = await getDoc(doc(db, 'appointments', idStr));
+    const snapData = snap.exists() ? snap.data() : null;
 
     if (!isAdmin && snapData) {
       if (!customerPhone) return res.status(401).json({ success: false, error: 'Missing customerPhone for non-admin' });
@@ -134,25 +78,8 @@ app.post('/api/appointments/cancel', async (req, res) => {
       }
     }
 
-    let updated = false;
-    if (snapData) {
-      if (hasServiceAccount && adminDb) {
-        try {
-          await adminDb.collection('appointments').doc(idStr).set({ status: 'cancelled' }, { merge: true });
-          updated = true;
-        } catch (err) {
-          console.warn('[Cancel] Admin SDK set failed, falling back to Web SDK:', err);
-        }
-      }
-
-      if (!updated && webDb) {
-        try {
-          await setDoc(doc(webDb, 'appointments', idStr), { status: 'cancelled' }, { merge: true });
-          updated = true;
-        } catch (err) {
-          console.warn('[Cancel] Web SDK setDoc failed:', err);
-        }
-      }
+    if (snap.exists()) {
+      await setDoc(doc(db, 'appointments', idStr), { status: 'cancelled' }, { merge: true });
     }
 
     const apptDate = req.body?.appointmentDate || snapData?.appointment_date;
@@ -161,14 +88,7 @@ app.post('/api/appointments/cancel', async (req, res) => {
       const sId = `appt_${apptDate}_${apptTime.replace(':', '')}`;
       if (sId !== idStr) {
         try {
-          if (hasServiceAccount && adminDb) {
-            await adminDb.collection('appointments').doc(sId).set({ status: 'cancelled' }, { merge: true });
-          } else if (webDb) {
-            const sSnap = await getDoc(doc(webDb, 'appointments', sId));
-            if (sSnap.exists()) {
-              await setDoc(doc(webDb, 'appointments', sId), { status: 'cancelled' }, { merge: true });
-            }
-          }
+          await setDoc(doc(db, 'appointments', sId), { status: 'cancelled' }, { merge: true });
         } catch {
           // ignore
         }
@@ -187,32 +107,13 @@ app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
     const { appointmentId, appointmentDate, startTime } = req.body;
     if (!appointmentId) return res.status(400).json({ success: false, error: 'Missing appointmentId' });
     
-    const idStr = String(appointmentId);
-    let deleted = false;
-
-    if (hasServiceAccount && adminDb) {
-      try {
-        await adminDb.collection('appointments').doc(idStr).delete();
-        deleted = true;
-      } catch (err) {
-        console.warn('[Delete] Admin SDK delete failed, falling back to Web SDK:', err);
-      }
-    }
-
-    if (!deleted && webDb) {
-      await deleteDoc(doc(webDb, 'appointments', idStr));
-      deleted = true;
-    }
+    await deleteDoc(doc(db, 'appointments', String(appointmentId)));
 
     if (appointmentDate && startTime) {
       const sId = `appt_${appointmentDate}_${startTime.replace(':', '')}`;
       if (sId !== String(appointmentId)) {
         try {
-          if (hasServiceAccount && adminDb) {
-            await adminDb.collection('appointments').doc(sId).delete();
-          } else if (webDb) {
-            await deleteDoc(doc(webDb, 'appointments', sId));
-          }
+          await deleteDoc(doc(db, 'appointments', sId));
         } catch {
           // ignore
         }
@@ -221,7 +122,6 @@ app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
 
     return res.json({ success: true });
   } catch (err: any) {
-    console.error('[Delete] Error deleting appointment:', err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -232,26 +132,16 @@ app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
     if (!Array.isArray(services)) {
       return res.status(400).json({ success: false, error: 'Invalid services format' });
     }
-    const data = { services, updatedAt: new Date().toISOString() };
-    let saved = false;
-
-    if (hasServiceAccount && adminDb) {
-      try {
-        await adminDb.collection('settings').doc('services_config').set(data, { merge: true });
-        saved = true;
-      } catch (err) {
-        console.warn('[Settings Services] Admin SDK failed, falling back to Web SDK:', err);
-      }
-    }
-
-    if (!saved && webDb) {
-      await setDoc(doc(webDb, 'settings', 'services_config'), data, { merge: true });
-      saved = true;
-    }
-
+    // שם המסמך ('services_config') ושם השדה ('services') חייבים להתאים
+    // בדיוק למה שהלקוח קורא ב-subscribeServices, אחרת השמירה "תצליח"
+    // אבל הנתונים לעולם לא ייקלטו באפליקציה.
+    await setDoc(
+      doc(db, 'settings', 'services_config'),
+      { services, updatedAt: new Date().toISOString() },
+      { merge: true }
+    );
     return res.json({ success: true });
   } catch (err: any) {
-    console.error('[Settings Services] Error:', err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -262,33 +152,22 @@ app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
     if (!schedule || typeof schedule !== 'object') {
       return res.status(400).json({ success: false, error: 'Invalid schedule format' });
     }
-    const data = {
-      businessOpen: schedule.businessOpen,
-      businessClose: schedule.businessClose,
-      fridayOpen: schedule.fridayOpen || '09:20',
-      fridayClose: schedule.fridayClose || '15:00',
-      durationMinutes: Number(schedule.durationMinutes) || 90,
-      updatedAt: new Date().toISOString(),
-    };
-    let saved = false;
-
-    if (hasServiceAccount && adminDb) {
-      try {
-        await adminDb.collection('settings').doc('schedule_settings').set(data, { merge: true });
-        saved = true;
-      } catch (err) {
-        console.warn('[Settings Schedule] Admin SDK failed, falling back to Web SDK:', err);
-      }
-    }
-
-    if (!saved && webDb) {
-      await setDoc(doc(webDb, 'settings', 'schedule_settings'), data, { merge: true });
-      saved = true;
-    }
-
+    // הלקוח (subscribeScheduleSettings) קורא את השדות ישירות מהמסמך
+    // 'schedule_settings', לא מתוך אובייקט מקונן.
+    await setDoc(
+      doc(db, 'settings', 'schedule_settings'),
+      {
+        businessOpen: schedule.businessOpen,
+        businessClose: schedule.businessClose,
+        fridayOpen: schedule.fridayOpen || '09:20',
+        fridayClose: schedule.fridayClose || '15:00',
+        durationMinutes: Number(schedule.durationMinutes) || 90,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
     return res.json({ success: true });
   } catch (err: any) {
-    console.error('[Settings Schedule] Error:', err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -377,7 +256,7 @@ const DEFAULT_SERVER_SETTINGS = {
   enabled: true,
   notifyCustomerToday: true, // Same-day morning reminder at 08:00 AM
   morningReminderTime: '08:00', // 08:00 AM sharp (Asia/Jerusalem)
-  notifyCustomer1DayBefore: true, // תזכורת ערב ליום למחרת - ניתנת לכיבוי מהממשק
+  notifyCustomer1DayBefore: false, // Default off: reminder sent specifically on appointment day at 08:00
   eveningReminderTime: '20:00',
   autoSendEnabled: true,
   provider: process.env.WHATSAPP_PROVIDER || 'twilio',
@@ -746,61 +625,35 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
     );
 
     // Fallback: If in-memory array is empty, fetch directly from Firestore to ensure 08:00 AM dispatch runs reliably
-    if (appointments.length === 0) {
+    if (appointments.length === 0 && db) {
       try {
+        const { collection, getDocs, query, where } = await import('firebase/firestore');
+        const q = query(
+          collection(db, 'appointments'),
+          where('appointment_date', '==', targetDate),
+          where('status', '==', 'confirmed')
+        );
+        const snap = await getDocs(q);
         const fetchedAppts: ServerAppointment[] = [];
-        if (hasServiceAccount && adminDb) {
-          const snap = await adminDb
-            .collection('appointments')
-            .where('appointment_date', '==', targetDate)
-            .where('status', '==', 'confirmed')
-            .get();
-          snap.forEach((docSnap) => {
-            const d = docSnap.data();
-            if (
-              !d.customer_name?.includes('🔒') &&
-              !d.customer_name?.includes('חופש') &&
-              !d.customer_name?.includes('חסימה') &&
-              !d.customer_name?.includes('הפסקה')
-            ) {
-              fetchedAppts.push({
-                id: docSnap.id,
-                customer_name: d.customer_name || '',
-                customer_phone: d.customer_phone || '',
-                service_name: d.service_name || "לק ג'ל",
-                appointment_date: d.appointment_date,
-                start_time: d.start_time || '',
-                status: d.status || 'confirmed',
-              });
-            }
-          });
-        } else if (webDb) {
-          const q = query(
-            collection(webDb, 'appointments'),
-            where('appointment_date', '==', targetDate),
-            where('status', '==', 'confirmed')
-          );
-          const snap = await getDocs(q);
-          snap.forEach((docSnap) => {
-            const d = docSnap.data();
-            if (
-              !d.customer_name?.includes('🔒') &&
-              !d.customer_name?.includes('חופש') &&
-              !d.customer_name?.includes('חסימה') &&
-              !d.customer_name?.includes('הפסקה')
-            ) {
-              fetchedAppts.push({
-                id: docSnap.id,
-                customer_name: d.customer_name || '',
-                customer_phone: d.customer_phone || '',
-                service_name: d.service_name || "לק ג'ל",
-                appointment_date: d.appointment_date,
-                start_time: d.start_time || '',
-                status: d.status || 'confirmed',
-              });
-            }
-          });
-        }
+        snap.forEach((docSnap) => {
+          const d = docSnap.data();
+          if (
+            !d.customer_name?.includes('🔒') &&
+            !d.customer_name?.includes('חופש') &&
+            !d.customer_name?.includes('חסימה') &&
+            !d.customer_name?.includes('הפסקה')
+          ) {
+            fetchedAppts.push({
+              id: docSnap.id,
+              customer_name: d.customer_name || '',
+              customer_phone: d.customer_phone || '',
+              service_name: d.service_name || "לק ג'ל",
+              appointment_date: d.appointment_date,
+              start_time: d.start_time || '',
+              status: d.status || 'confirmed',
+            });
+          }
+        });
         if (fetchedAppts.length > 0) {
           console.log(`[CRON] נשלפו ${fetchedAppts.length} תורים ישירות מ-Firestore לתאריך ${targetDate}`);
           appointments = fetchedAppts;
@@ -895,72 +748,42 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 // ----------------------------------------------------------------------
 // Initialize Node-Cron Jobs
 // ----------------------------------------------------------------------
-/**
- * טוען את הגדרות התזכורות מ-Firestore בעליית השרת.
- * בלי זה, כל הפעלה מחדש של Render מאפסת את השעות לברירת המחדל.
- */
-async function loadSettingsFromFirestore() {
-  try {
-    if (!adminDb) return;
-    const snap = await adminDb.collection('settings').doc('whatsapp_settings').get();
-    if (snap.exists) {
-      const saved = snap.data();
-      activeServerSettings = { ...activeServerSettings, ...saved };
-      console.log('[Settings] ✅ הגדרות נטענו מ-Firestore:', {
-        morning: activeServerSettings.morningReminderTime,
-        evening: activeServerSettings.eveningReminderTime,
-        notifyToday: activeServerSettings.notifyCustomerToday,
-        notify1Day: activeServerSettings.notifyCustomer1DayBefore,
-      });
-    }
-  } catch (err: any) {
-    console.warn('[Settings] לא ניתן לטעון הגדרות מ-Firestore:', err?.message);
-  }
-}
-
-loadSettingsFromFirestore();
-
-/**
- * מתזמן דינמי: רץ כל דקה ובודק אם הגיעה שעת התזכורת שהוגדרה בממשק.
- *
- * למה כל דקה ולא בשעה קבועה: כך שינוי שעה מהדשבורד נכנס לתוקף מיד,
- * בלי צורך להפעיל מחדש את השרת או לשנות קוד.
- *
- * הגנה מפני כפילויות: כל תזכורת "נועלת" את עצמה ב-Firestore לפני
- * השליחה, ולכן גם אם הבדיקה תרוץ פעמיים באותה דקה, תישלח הודעה אחת.
- */
 function initCronSchedulers() {
-  console.log('[CRON Service] מאתחל מתזמן דינמי (Timezone: Asia/Jerusalem)...');
+  console.log('[CRON Service] מאתחל משימות תזכורת אוטומטיות (Timezone: Asia/Jerusalem)...');
 
+  /**
+   * 1. קרון בוקר: רץ כל יום בדיוק בשעה 08:00 (שעון ישראל)
+   * שולף ושולח תזכורות לכל תורי *היום*
+   */
   cron.schedule(
-    '* * * * *',
+    '0 8 * * *',
     async () => {
-      try {
-        const { dateIso, tomorrowIso, timeStr } = getIsraelTime();
-        const currentHHMM = timeStr.substring(0, 5);
-
-        const morningTime = (activeServerSettings?.morningReminderTime || '08:00').substring(0, 5);
-        const eveningTime = (activeServerSettings?.eveningReminderTime || '20:00').substring(0, 5);
-
-        if (currentHHMM === morningTime) {
-          console.log(`[CRON Task] הגיעה שעת תזכורת הבוקר (${morningTime}) - מריץ עבור ${dateIso}`);
-          await sendRemindersForDate(dateIso, 'today');
-        }
-
-        if (currentHHMM === eveningTime) {
-          console.log(`[CRON Task] הגיעה שעת תזכורת הערב (${eveningTime}) - מריץ עבור ${tomorrowIso}`);
-          await sendRemindersForDate(tomorrowIso, '1day');
-        }
-      } catch (err: any) {
-        console.error('[CRON Task] שגיאה בבדיקת התזכורות:', err?.message);
-      }
+      const todayDate = getIsraelDateString(0);
+      console.log(`[CRON Task] הרצת קרון בוקר 08:00 מתוזמן לתאריך ${todayDate}`);
+      await sendRemindersForDate(todayDate, 'today');
     },
     {
       timezone: 'Asia/Jerusalem',
     }
   );
+  console.log('[CRON Service] ✅ קרון בוקר (תורי היום) הוגדר בהצלחה לשעה 08:00 (Asia/Jerusalem).');
 
-  console.log('[CRON Service] ✅ מתזמן דינמי פעיל - שעות התזכורות נקראות מההגדרות בכל בדיקה.');
+  /**
+   * 2. קרון ערב: רץ כל יום בדיוק בשעה 20:00 (שעון ישראל)
+   * שולף ושולח תזכורות לכל תורי *מחר*
+   */
+  cron.schedule(
+    '0 20 * * *',
+    async () => {
+      const tomorrowDate = getIsraelDateString(1);
+      console.log(`[CRON Task] הרצת קרון ערב 20:00 מתוזמן לתאריך ${tomorrowDate}`);
+      await sendRemindersForDate(tomorrowDate, '1day');
+    },
+    {
+      timezone: 'Asia/Jerusalem',
+    }
+  );
+  console.log('[CRON Service] ✅ קרון ערב (תורי מחר) הוגדר בהצלחה לשעה 20:00 (Asia/Jerusalem).');
 }
 
 // הפעלת משימות הקרון
@@ -974,37 +797,24 @@ initCronSchedulers();
  * גרועה יותר מתזכורת שתישלח בהרצה הבאה.
  */
 async function tryClaimReminder(key: string): Promise<boolean> {
-  if (hasServiceAccount && adminDb) {
-    try {
-      const lockRef = adminDb.collection('reminder_locks').doc(key);
-      return await adminDb.runTransaction(async (transaction) => {
-        const snap = await transaction.get(lockRef);
-        if (snap.exists) return false;
-        transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
-        return true;
-      });
-    } catch (err) {
-      console.warn(`[Reminder Lock] Admin טרנזקציה נכשלה עבור ${key}, מנסים דרך Web SDK:`, err);
-    }
+  if (!db) {
+    console.error('[Reminder Lock] ❌ אין חיבור ל-Firestore — לא ניתן לשלוח בבטחה');
+    return false;
   }
 
-  if (webDb) {
-    try {
-      const lockRef = doc(webDb, 'reminder_locks', key);
-      return await runWebTransaction(webDb, async (transaction) => {
-        const snap = await transaction.get(lockRef);
-        if (snap.exists()) return false;
-        transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
-        return true;
-      });
-    } catch (err) {
-      console.warn(`[Reminder Lock] טרנזקציה נכשלה עבור ${key}:`, err);
-      return false;
-    }
-  }
+  const lockRef = doc(db, 'reminder_locks', key);
 
-  console.error('[Reminder Lock] ❌ אין חיבור ל-Firestore — לא ניתן לשלוח בבטחה');
-  return false;
+  try {
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(lockRef);
+      if (snap.exists()) return false;
+      transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
+      return true;
+    });
+  } catch (err) {
+    console.warn(`[Reminder Lock] טרנזקציה נכשלה עבור ${key}:`, err);
+    return false;
+  }
 }
 
 // ----------------------------------------------------
@@ -1064,26 +874,6 @@ app.post('/api/whatsapp/sync-settings', requireAdmin, (req: Request, res: Respon
         sanitizedSettings.twilioAuthToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
       }
       activeServerSettings = { ...activeServerSettings, ...sanitizedSettings };
-
-      // שמירה קבועה ב-Firestore כדי שההגדרות ישרדו הפעלה מחדש של השרת
-      if (adminDb) {
-        adminDb
-          .collection('settings')
-          .doc('whatsapp_settings')
-          .set(
-            {
-              morningReminderTime: activeServerSettings.morningReminderTime,
-              eveningReminderTime: activeServerSettings.eveningReminderTime,
-              notifyCustomerToday: activeServerSettings.notifyCustomerToday,
-              notifyCustomer1DayBefore: activeServerSettings.notifyCustomer1DayBefore,
-              customerTodayTemplate: activeServerSettings.customerTodayTemplate,
-              customer1DayTemplate: activeServerSettings.customer1DayTemplate,
-              updatedAt: new Date().toISOString(),
-            },
-            { merge: true }
-          )
-          .catch((err: any) => console.warn('[Settings] שמירה ל-Firestore נכשלה:', err?.message));
-      }
       console.log('[Server Settings] WhatsApp & Twilio settings synced:', {
         provider: activeServerSettings.provider,
         hasTwilioSid: Boolean(activeServerSettings.twilioAccountSid),
@@ -1302,7 +1092,7 @@ app.post('/api/register-webhook', async (req: Request, res: Response) => {
 });
 
 // Endpoint to view or configure registration webhook info
-app.get('/api/register-webhook/info', requireAdmin, (req: Request, res: Response) => {
+app.get('/api/register-webhook/info', (req: Request, res: Response) => {
   res.json({
     status: 'active',
     webhookEndpoint: '/api/register-webhook',

@@ -1,4 +1,3 @@
-import { auth } from '../lib/firebase';
 import { Appointment, WhatsAppReminderSettings } from '../types';
 import { SALON_INFO } from './storage';
 import { toIsraeliDateString, toISODateString } from './dateUtils';
@@ -98,16 +97,12 @@ export function getStoredReminderSettings(): WhatsAppReminderSettings {
   }
 }
 
-export async function saveReminderSettings(settings: WhatsAppReminderSettings): Promise<void> {
+export function saveReminderSettings(settings: WhatsAppReminderSettings): void {
   try {
     localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
-    const token = auth.currentUser ? await auth.currentUser.getIdToken() : '';
     fetch('/api/whatsapp/sync-settings', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ settings }),
     }).catch(() => {});
   } catch (err) {

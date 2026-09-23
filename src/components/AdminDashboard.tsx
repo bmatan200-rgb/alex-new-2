@@ -29,6 +29,8 @@ import {
   ArrowDown,
   History,
   CalendarDays,
+  Moon,
+  Sun,
 } from 'lucide-react';
 import { Appointment, ScheduleSettings, Service } from '../types';
 import {
@@ -498,15 +500,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </button>
           )}
 
-          {/* Business Hours & Treatment Duration Settings Button */}
+          {/* Treatment Duration & Price Settings Button */}
           <button
             type="button"
             onClick={() => setIsDurationModalOpen(true)}
             className="px-3.5 py-2.5 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
-            title="שינוי שעות פעילות, משך טיפול ומחיר"
+            title="שינוי משך הטיפול ומחיר"
           >
             <Clock className="w-4 h-4 text-purple-600" />
-            <span>שעות פעילות וטיפולים</span>
+            <span>משך טיפול: {formatDurationMinutes(currentService.duration_minutes || 110)}</span>
           </button>
 
           {/* SMS / WhatsApp Alert Center Button */}
@@ -563,6 +565,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           setIsWhatsAppModalOpen(true);
         }}
       />
+
+      {/* Quick SMS Scheduling Summary */}
+      <div className="bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
+        <div className="flex items-start sm:items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-emerald-100 flex items-center justify-center flex-shrink-0">
+            <MessageCircle className="w-5 h-5 text-emerald-700" />
+          </div>
+          <div>
+            <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+              מערכת תזכורות אוטומטית (node-cron)
+              <span className="text-[10px] bg-emerald-500 text-white px-2 py-0.5 rounded-full font-bold shadow-xs">פעילה ברקע ✓</span>
+            </h3>
+            <div className="text-xs text-slate-600 mt-1 flex flex-wrap items-center gap-1.5">
+              <span>תזמון אוטומטי קבוע (שעון ישראל):</span>
+              <span className="bg-white border border-emerald-200 px-2 py-0.5 rounded-md font-bold text-emerald-800 flex items-center gap-1">
+                <Moon className="w-3 h-3" />
+                ערב (20:00) לתורי מחר
+              </span>
+              <span className="bg-white border border-emerald-200 px-2 py-0.5 rounded-md font-bold text-emerald-800 flex items-center gap-1">
+                <Sun className="w-3 h-3" />
+                בוקר (08:00) לתורי היום
+              </span>
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setWhatsAppModalTab('templates');
+            setIsWhatsAppModalOpen(true);
+          }}
+          className="px-4 py-2 bg-white hover:bg-emerald-50 border border-emerald-300 text-emerald-700 font-bold text-xs rounded-xl transition shadow-xs flex-shrink-0 flex items-center justify-center gap-2"
+        >
+          <MessageCircle className="w-4 h-4" />
+          <span>עריכת נוסח ושליחה מיידית</span>
+        </button>
+      </div>
 
       {/* WhatsApp Modal */}
       <WhatsAppReminderModal

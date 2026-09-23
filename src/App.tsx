@@ -53,9 +53,6 @@ import {
   saveServicesToFirestore,
   subscribeScheduleSettings,
   saveScheduleSettingsToFirestore,
-  auth,
-  onAuthStateChanged,
-  FirebaseUser,
 } from './lib/firebase';
 import { formatDurationMinutes, formatILS, deduplicateAppointments } from './utils/dateUtils';
 import { Header } from './components/Header';
@@ -69,35 +66,6 @@ import { TermsOfServiceModal } from './components/TermsOfServiceModal';
 import { ExistingBookingChoiceModal } from './components/ExistingBookingChoiceModal';
 
 export default function App() {
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setFirebaseUser(user);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // ------------------------------------------------------------------
-  // כניסת מנהלת דרך הכתובת /admin
-  //
-  // הכתובת אינה מנגנון אבטחה — ההגנה היא מייל וסיסמה של Firebase.
-  // היא רק מסתירה את הכניסה מלקוחות רגילות, שאין להן סיבה לדעת
-  // שקיים ממשק ניהול בכלל.
-  //
-  // אחרי פתיחת מסך ההתחברות הכתובת מנוקה חזרה ל-/, כדי שלא תישאר
-  // בהיסטוריית הדפדפן ולא תשותף בטעות.
-  // ------------------------------------------------------------------
-  useEffect(() => {
-    const path = window.location.pathname.toLowerCase().replace(/\/+$/, '');
-
-    if (path === '/admin') {
-      setAuthPromptRole('admin');
-      setIsAuthModalOpen(true);
-      window.history.replaceState({}, '', '/');
-    }
-  }, []);
-
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => {
     const session = getStoredUserSession();
@@ -108,9 +76,10 @@ export default function App() {
   const [authPromptRole, setAuthPromptRole] = useState<'admin' | 'customer'>('customer');
   const [isTermsOpen, setIsTermsOpen] = useState<boolean>(false);
 
-  // תמיד מתחילים בתצוגת לקוח. מעבר לממשק הניהול קורה רק אחרי
-  // ש-onAuthStateChanged מאשר שיש משתמשת מחוברת ב-Firebase.
-  const [activeTab, setActiveTab] = useState<'booking' | 'admin'>('booking');
+  const [activeTab, setActiveTab] = useState<'booking' | 'admin'>(() => {
+    const session = getStoredUserSession();
+    return session?.isAdmin ? 'admin' : 'booking';
+  });
 
   const [isTorModalOpen, setIsTorModalOpen] = useState(false);
   const [isChoiceModalOpen, setIsChoiceModalOpen] = useState(false);
@@ -162,18 +131,10 @@ export default function App() {
 
   // Background settings, appointments synchronization, and keep-alive to server scheduler
   useEffect(() => {
-    if (!firebaseUser) return;
-
-    const authHeaders = async (): Promise<Record<string, string>> => ({
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${await firebaseUser.getIdToken()}`,
-    });
-
-    const initFetch = async () => {
-      try {
-        const h = await authHeaders();
-        const res = await fetch('/api/whatsapp/settings', { headers: h });
-        const data = await res.json();
+    // Initial fetch from server to get any backend env Twilio keys
+    fetch('/api/whatsapp/settings')
+      .then((res) => res.json())
+      .then((data) => {
         if (data.success && data.settings) {
           const current = getStoredReminderSettings();
           if (!current.twilioAccountSid && data.settings.twilioAccountSid) {
@@ -186,32 +147,28 @@ export default function App() {
             });
           }
         }
-      } catch (err) {}
-    };
-    initFetch();
+      })
+      .catch(() => {});
 
-    const doSyncAndCheck = async () => {
-      try {
-        const h = await authHeaders();
-        const liveSettings = getStoredReminderSettings();
-        fetch('/api/whatsapp/sync-settings', {
+    const doSyncAndCheck = () => {
+      const liveSettings = getStoredReminderSettings();
+      fetch('/api/whatsapp/sync-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: liveSettings }),
+      }).catch(() => {});
+
+      if (appointments && appointments.length > 0) {
+        // Sync appointments to server background scheduler for hands-free 20:56 and 08:00 dispatch
+        fetch('/api/whatsapp/sync-appointments', {
           method: 'POST',
-          headers: h,
-          body: JSON.stringify({ settings: liveSettings }),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            appointments,
+            sentLog: getSentRemindersLog()
+          }),
         }).catch(() => {});
-
-        if (appointments && appointments.length > 0) {
-          // Sync appointments to server background scheduler for hands-free 20:56 and 08:00 dispatch
-          fetch('/api/whatsapp/sync-appointments', {
-            method: 'POST',
-            headers: h,
-            body: JSON.stringify({ 
-              appointments,
-              sentLog: getSentRemindersLog()
-            }),
-          }).catch(() => {});
-        }
-      } catch (err) {}
+      }
     };
 
     // Immediate run on load/changes
@@ -235,19 +192,25 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleVisibilityChange);
     };
-  }, [appointments, firebaseUser]);
+  }, [appointments]);
 
-  const isUserAdmin = Boolean(firebaseUser);
+  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin);
 
   const handleLogin = (session: UserSession) => {
-    // הסשן המקומי משמש לנוחות בלבד (שם וטלפון של הלקוחה).
-    // הרשאת הניהול נקבעת ע"י onAuthStateChanged, לא כאן.
-    const cleanSession: UserSession = { ...session, isAdmin: false };
-
+    const verifiedAdmin = Boolean(session.isAdmin);
+    const cleanSession: UserSession = {
+      ...session,
+      isAdmin: verifiedAdmin,
+    };
     saveUserSession(cleanSession);
     setCurrentUser(cleanSession);
     setIsAuthModalOpen(false);
-    setActiveTab(session.isAdmin ? 'admin' : 'booking');
+
+    if (verifiedAdmin) {
+      setActiveTab('admin');
+    } else {
+      setActiveTab('booking');
+    }
   };
 
   const handleLogout = () => {
@@ -265,20 +228,17 @@ export default function App() {
 
   const handleQuickSwitchRole = (role: 'admin' | 'customer') => {
     const current = currentUser || getStoredUserSession();
-
-    // מעבר לממשק הניהול מותנה בהתחברות אמיתית ב-Firebase בלבד.
-    // מספר טלפון אינו הוכחת זהות — הוא מוצג באתר עצמו.
-    if (role === 'admin') {
-      if (firebaseUser) {
-        setActiveTab('admin');
-      } else {
-        setAuthPromptRole('admin');
-        setIsAuthModalOpen(true);
-      }
-      return;
-    }
-
-    {
+    if (role === 'admin' && current && isAdminPhone(current.phone)) {
+      const adminSession: UserSession = {
+        name: current.name || 'מנהלת',
+        phone: current.phone,
+        isAdmin: true,
+        loggedInAt: new Date().toISOString(),
+      };
+      saveUserSession(adminSession);
+      setCurrentUser(adminSession);
+      setActiveTab('admin');
+    } else {
       const clientSession: UserSession = {
         name: current?.name || 'לקוח/ה',
         phone: current?.phone || '',
@@ -386,35 +346,10 @@ export default function App() {
   const mainService = services[0] || SERVICES[0];
 
   const cleanUserPhone = currentUser?.phone ? currentUser.phone.replace(/\D/g, '') : '';
-  /**
-   * תורים פעילים של הלקוחה — כלומר תורים שטרם הסתיימו.
-   *
-   * תור נחשב "עבר" רק אחרי ששעת הסיום שלו חלפה, לא בתחילתו.
-   * כך לקוחה שנמצאת כרגע בטיפול עדיין רואה את התור שלה.
-   *
-   * ההשוואה מתבצעת לפי שעון ישראל, כדי שלקוחה שנמצאת בחו"ל
-   * או שהטלפון שלה מוגדר לאזור זמן אחר תראה את אותו מצב.
-   */
   const customerActiveBookings = cleanUserPhone && cleanUserPhone.length >= 7
     ? appointments.filter((app) => {
         const cleanAppPhone = app.customer_phone.replace(/\D/g, '');
-        if (cleanAppPhone !== cleanUserPhone) return false;
-        if (app.status === 'cancelled') return false;
-
-        // חישוב הזמן הנוכחי בישראל
-        const nowIsrael = new Date(
-          new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' })
-        );
-
-        // בניית מועד סיום התור מהתאריך והשעה השמורים
-        const [y, m, d] = (app.appointment_date || '').split('-').map(Number);
-        const [endH, endM] = (app.end_time || '23:59').split(':').map(Number);
-
-        if (!y || !m || !d) return false; // תאריך פגום — לא מציגים
-
-        const appointmentEnd = new Date(y, m - 1, d, endH || 23, endM || 59);
-
-        return appointmentEnd >= nowIsrael;
+        return cleanAppPhone === cleanUserPhone && app.status !== 'cancelled';
       })
     : [];
 
@@ -428,31 +363,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#f8f9fa] text-slate-800 flex flex-col font-['Heebo',sans-serif]">
-      <style>{`
-        @keyframes doubleHalo {
-          0% {
-            box-shadow:
-              0 18px 38px -12px rgba(124,58,237,0.35),
-              0 0 0 0 rgba(124,58,237,0.5),
-              0 0 0 0 rgba(124,58,237,0.3);
-          }
-          100% {
-            box-shadow:
-              0 18px 38px -12px rgba(124,58,237,0.35),
-              0 0 0 18px rgba(124,58,237,0),
-              0 0 0 34px rgba(124,58,237,0);
-          }
-        }
-        .halo-btn {
-          animation: doubleHalo 2.4s ease-out 2;
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .halo-btn { animation: none; }
-        }
-      `}</style>
       {/* Top Navigation Header */}
       <Header
-        isAdmin={isUserAdmin}
         activeTab={activeTab}
         onSelectTab={(tab) => {
           if (tab === 'admin') {
@@ -559,7 +471,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleRequestBooking}
-                className="halo-btn w-full px-6 rounded-3xl bg-white border-2 border-purple-500/80 hover:border-purple-600 hover:bg-purple-50/40 shadow-lg shadow-purple-500/10 hover:shadow-xl hover:shadow-purple-500/20 text-slate-950 font-black text-lg sm:text-xl transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99] h-[150px]"
+                className="w-full px-6 rounded-3xl bg-white border-2 border-purple-500/80 hover:border-purple-600 hover:bg-purple-50/40 shadow-lg shadow-purple-500/10 hover:shadow-xl hover:shadow-purple-500/20 text-slate-950 font-black text-lg sm:text-xl transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99] h-[150px]"
               >
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-2xl bg-purple-600 text-white flex items-center justify-center shadow-sm group-hover:scale-105 transition">
@@ -619,7 +531,7 @@ export default function App() {
 
             {/* Highlights info */}
             <div className="pt-2">
-              <SalonInfoSection scheduleSettings={scheduleSettings} />
+              <SalonInfoSection />
             </div>
           </div>
         ) : (

@@ -58,7 +58,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   // Admin State (Username, Phone, Email, Password synced via Firebase)
   const [adminUsername, setAdminUsername] = useState('אלכסנדרה ביטון');
   const [adminPhone, setAdminPhone] = useState('054-6307114');
-  const [adminEmail, setAdminEmail] = useState('alex@beauty.co.il');
+  const [adminEmail, setAdminEmail] = useState('alexbiton200@gmail.com');
   const [adminPassword, setAdminPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [adminMode, setAdminMode] = useState<'login' | 'register'>('login');
@@ -67,10 +67,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
-
-  // הלשונית "כניסת מנהל" מוצגת רק כשהמסך נפתח דרך /admin.
-  // לקוחה רגילה לא צריכה לדעת שקיים ממשק ניהול בכלל.
-  const showAdminTab = initialRolePrompt === 'admin';
 
   // Load and listen to Admin accounts from Firebase
   useEffect(() => {
@@ -88,12 +84,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   }, [isOpen]);
 
   useEffect(() => {
-    if (initialRolePrompt === 'admin' && showAdminTab) {
-      setActiveTab('admin');
-    } else {
-      setActiveTab('customer');
+    if (initialRolePrompt) {
+      setActiveTab(initialRolePrompt);
     }
-  }, [initialRolePrompt, isOpen, showAdminTab]);
+  }, [initialRolePrompt, isOpen]);
 
   if (!isOpen) return null;
 
@@ -315,7 +309,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
 
           {/* Role Mode Navigation Tabs */}
-          <div className={`grid ${showAdminTab ? 'grid-cols-2' : 'grid-cols-1'} p-1 bg-slate-100 rounded-2xl border border-slate-200/80 text-xs font-bold`}>
+          <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-2xl border border-slate-200/80 text-xs font-bold">
             <button
               type="button"
               onClick={() => {
@@ -332,23 +326,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <span>כניסת לקוח/ה</span>
             </button>
 
-            {showAdminTab && (
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveTab('admin');
-                  setError(null);
-                }}
-                className={`py-2.5 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  activeTab === 'admin'
-                    ? 'bg-purple-900 text-white shadow-xs font-black shadow-[0_0_12px_rgba(168,85,247,0.35)]'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <ShieldCheck className="w-4 h-4 text-purple-300" />
-                <span>כניסת מנהל (Firebase)</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('admin');
+                setError(null);
+              }}
+              className={`py-2.5 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                activeTab === 'admin'
+                  ? 'bg-purple-900 text-white shadow-xs font-black shadow-[0_0_12px_rgba(168,85,247,0.35)]'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-purple-300" />
+              <span>כניסת מנהל (Firebase)</span>
+            </button>
           </div>
 
           {/* TAB 1: CUSTOMER REGISTRATION / LOGIN */}
@@ -629,7 +621,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     id="admin-email-input"
                     type="email"
                     required
-                    placeholder="alex@beauty.co.il / bmatan200@gmail.com"
+                    placeholder="alexbiton200@gmail.com / bmatan200@gmail.com"
                     value={adminEmail}
                     onChange={(e) => setAdminEmail(e.target.value)}
                     dir="ltr"

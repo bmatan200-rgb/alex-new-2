@@ -108,3 +108,15 @@ export interface ScheduleSettings {
   durationMinutes: number; // e.g. 90 (1 hour and 30 minutes)
 }
 
+export interface Customer {
+  id?: string;
+  full_name: string;
+  phone: string;
+  created_at: string;
+  last_login_at: string;
+  notes?: string;
+  totalAppointments?: number;
+  lastAppointmentDate?: string;
+}
+
+

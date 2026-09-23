@@ -30,7 +30,7 @@ import {
   generateIcsFile,
 } from '../utils/dateUtils';
 import { SALON_INFO } from '../utils/storage';
-import { addAppointmentToFirestore } from '../lib/firebase';
+import { addAppointmentToFirestore, upsertCustomerToFirestore } from '../lib/firebase';
 import { ServiceSelector } from './ServiceSelector';
 import { DatePickerCarousel } from './DatePickerCarousel';
 import { SlotSelector } from './SlotSelector';
@@ -181,6 +181,12 @@ export const BookingForm: React.FC<BookingFormProps> = ({
       const fullAppt: Appointment = { ...newAppt, id: savedId };
       onBookSuccess(fullAppt);
       setConfirmedAppointment(fullAppt);
+
+      // Save/update customer in customers directory
+      upsertCustomerToFirestore({
+        full_name: name.trim(),
+        phone: phone.trim(),
+      }).catch(() => {});
 
       // Trigger Confetti
       try {

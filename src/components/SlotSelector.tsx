@@ -50,8 +50,8 @@ export const SlotSelector: React.FC<SlotSelectorProps> = ({
 
   const renderSlotButton = (slot: string) => {
     const isSelected = slot === selectedSlot;
-    const isAvailable = effectiveAvailable.includes(slot);
     const inPast = isSlotInPast(selectedDate, slot);
+    const isAvailable = effectiveAvailable.includes(slot) && !inPast;
     const isBooked = !isAvailable && !inPast;
     const isDisabled = inPast || isBooked;
 
@@ -103,9 +103,9 @@ export const SlotSelector: React.FC<SlotSelectorProps> = ({
           )}
 
           {inPast && (
-            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-200 text-slate-500 flex items-center gap-1">
-              <Lock className="w-2.5 h-2.5" />
-              <span>תפוס</span>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-400 border border-slate-200 flex items-center gap-1">
+              <Clock className="w-2.5 h-2.5 text-slate-400" />
+              <span>עברה</span>
             </span>
           )}
 

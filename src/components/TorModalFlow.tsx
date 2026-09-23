@@ -28,9 +28,11 @@ import {
   formatDurationMinutes,
   formatILS,
   getAllStandardSlots,
+  isSlotInPast,
+  isAppointmentInPast,
 } from '../utils/dateUtils';
-import { SALON_INFO, saveUserSession, isAdminPhone } from '../utils/storage';
-import { addAppointmentToFirestore } from '../lib/firebase';
+import { SALON_INFO, saveUserSession } from '../utils/storage';
+import { addAppointmentToFirestore, upsertCustomerToFirestore } from '../lib/firebase';
 import { ExistingBookingChoiceModal } from './ExistingBookingChoiceModal';
 
 interface TorModalFlowProps {
@@ -109,7 +111,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     const cleanPhone = rawPhone.replace(/\D/g, '');
     if (!cleanPhone || cleanPhone.length < 7) return 0;
     return appointments.filter(
-      (a) => a.status === 'confirmed' && a.customer_phone.replace(/\D/g, '') === cleanPhone
+      (a) => a.status === 'confirmed' && !isAppointmentInPast(a) && a.customer_phone.replace(/\D/g, '') === cleanPhone
     ).length;
   }, [customerPhone, currentUser, appointments]);
 
@@ -131,20 +133,10 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     });
   };
 
-  // Check if today / past time slots should be filtered out
+  // Filter out any slots that have already passed for today or past days
   const getEffectiveAvailableSlots = (dateIso: string) => {
     const slots = getSlotsForDay(dateIso);
-    const today = new Date();
-    const todayIso = today.toISOString().split('T')[0];
-
-    if (dateIso === todayIso) {
-      const nowMin = today.getHours() * 60 + today.getMinutes();
-      return slots.filter((slotTime) => {
-        const slotMin = timeToMinutes(slotTime);
-        return slotMin > nowMin + 15;
-      });
-    }
-    return slots;
+    return slots.filter((slotTime) => !isSlotInPast(dateIso, slotTime));
   };
 
   const currentAvailableSlots = selectedDate ? getEffectiveAvailableSlots(selectedDate) : [];
@@ -209,6 +201,16 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         signatureDataUrl: currentUser?.signatureDataUrl,
       });
 
+      // Save or update customer record in Firestore customers directory
+      if (!adminFlag) {
+        upsertCustomerToFirestore({
+          full_name: nameToUse,
+          phone: phoneToUse,
+        }).catch((err) => {
+          console.warn('[Customer Directory] upsert notice:', err);
+        });
+      }
+
       // Save to Firestore & local storage
       const savedId = await addAppointmentToFirestore(newAppt as any);
 
@@ -249,10 +251,14 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
       return;
     }
 
-    const isAdmin = isAdminPhone(cleanPhone);
+    // Only preserve admin rights if user is already an authenticated admin; booking as client never elevates role
+    const isAdmin = currentUser?.isAdmin === true;
 
     const existingActive = appointments.filter(
-      (a) => a.status === 'confirmed' && a.customer_phone.replace(/\D/g, '') === cleanPhone
+      (a) =>
+        a.status === 'confirmed' &&
+        !isAppointmentInPast(a) &&
+        a.customer_phone.replace(/\D/g, '') === cleanPhone
     );
 
     if (existingActive.length > 0 && !confirmedAdditionalBooking) {
@@ -722,7 +728,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
           setConfirmedAdditionalBooking(true);
           const cleanName = customerName.trim();
           const cleanPhone = customerPhone.replace(/\D/g, '');
-          const isAdmin = isAdminPhone(cleanPhone);
+          const isAdmin = currentUser?.isAdmin === true;
           executeBookingSubmission(cleanName, cleanPhone, isAdmin);
         }}
         onCancelExisting={async (appt) => {

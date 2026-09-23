@@ -31,6 +31,8 @@ import {
   CalendarDays,
   Moon,
   Sun,
+  Users,
+  LogOut,
 } from 'lucide-react';
 import { Appointment, ScheduleSettings, Service } from '../types';
 import {
@@ -50,6 +52,8 @@ import { SALON_INFO } from '../utils/storage';
 import { WhatsApp2HourAlertBanner } from './WhatsApp2HourAlertBanner';
 import { WhatsAppReminderModal } from './WhatsAppReminderModal';
 import { ServiceDurationModal } from './ServiceDurationModal';
+import { CustomerDirectory } from './CustomerDirectory';
+import { upsertCustomerToFirestore } from '../lib/firebase';
 import {
   buildCustomerTodayReminderText,
   buildCustomer1DayReminderText,
@@ -73,6 +77,7 @@ interface AdminDashboardProps {
   onCancelAppointment: (id: number | string) => void;
   onDeleteAppointment: (id: number | string) => void;
   onSwitchToClientView?: () => void;
+  onLogout?: () => void;
   onUpdateServices?: (services: Service[]) => void;
   scheduleSettings?: ScheduleSettings;
   onUpdateScheduleSettings?: (settings: ScheduleSettings) => void;
@@ -96,6 +101,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onCancelAppointment,
   onDeleteAppointment,
   onSwitchToClientView,
+  onLogout,
   onUpdateServices,
 }) => {
   const todayIso = toISODateString(new Date());
@@ -104,6 +110,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const tomorrowIso = toISODateString(tomorrowDate);
 
   const [selectedDate, setSelectedDate] = useState<string>(todayIso);
+  const [adminTab, setAdminTab] = useState<'calendar' | 'customers'>('calendar');
   const [filter, setFilter] = useState<'upcoming' | 'all' | 'today' | 'blocked' | 'past'>('upcoming');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [searchQuery, setSearchQuery] = useState('');
@@ -362,6 +369,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
 
     onAddAppointment(newApp);
+
+    // Save/update customer in Firestore if this is a real client appointment
+    if (manualPhone.trim() && manualPhone.trim() !== 'שריון יזום') {
+      upsertCustomerToFirestore({
+        full_name: manualName.trim(),
+        phone: manualPhone.trim(),
+        notes: manualNotes.trim() || undefined,
+      }).catch((err) => {
+        console.warn('[Customer Directory] manual appointment customer upsert:', err);
+      });
+    }
+
     setManualName('');
     setManualPhone('');
     setManualNotes('');
@@ -500,6 +519,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </button>
           )}
 
+          {onLogout && (
+            <button
+              type="button"
+              onClick={onLogout}
+              className="px-3.5 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs"
+              title="התנתקות מממשק מנהל"
+            >
+              <LogOut className="w-4 h-4 text-red-500" />
+              <span>התנתקות</span>
+            </button>
+          )}
+
           {/* Treatment Duration & Price Settings Button */}
           <button
             type="button"
@@ -557,6 +588,65 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       </div>
 
+      {/* Primary Navigation Tabs: יומן ותורים vs רשימת לקוחות */}
+      <div className="flex items-center gap-2 bg-slate-200/80 p-1.5 rounded-2xl border border-slate-300 shadow-xs">
+        <button
+          type="button"
+          onClick={() => setAdminTab('calendar')}
+          className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-black transition flex items-center justify-center gap-2 cursor-pointer ${
+            adminTab === 'calendar'
+              ? 'bg-white text-purple-950 shadow-md border border-purple-200'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+          }`}
+        >
+          <Calendar className="w-4 h-4 text-purple-600" />
+          <span>יומן וניהול תורים</span>
+          <span
+            className={`px-2 py-0.5 rounded-full text-xs font-black ${
+              adminTab === 'calendar' ? 'bg-purple-600 text-white' : 'bg-slate-300 text-slate-700'
+            }`}
+          >
+            {appointments.filter((a) => a.appointment_date >= todayIso && a.status === 'confirmed').length}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setAdminTab('customers')}
+          className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-black transition flex items-center justify-center gap-2 cursor-pointer ${
+            adminTab === 'customers'
+              ? 'bg-white text-purple-950 shadow-md border border-purple-200'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+          }`}
+        >
+          <Users className="w-4 h-4 text-purple-600" />
+          <span>רשימת לקוחות</span>
+          <span
+            className={`px-2 py-0.5 rounded-full text-xs font-black ${
+              adminTab === 'customers' ? 'bg-purple-600 text-white' : 'bg-slate-300 text-slate-700'
+            }`}
+          >
+            ספר לקוחות ✨
+          </span>
+        </button>
+      </div>
+
+      {adminTab === 'customers' ? (
+        <CustomerDirectory
+          appointments={appointments}
+          onOpenManualBookingForCustomer={(cust) => {
+            setAdminTab('calendar');
+            setActionTab('client');
+            setManualDate(todayIso);
+            setManualName(cust.name);
+            setManualPhone(cust.phone);
+            setIsAddingManual(true);
+            window.scrollTo({ top: 150, behavior: 'smooth' });
+          }}
+          onShowToast={(msg, type) => showToast(msg, type === 'error' ? 'error' : 'success')}
+        />
+      ) : (
+        <>
       {/* 2-Hour WhatsApp Live Alert & Countdown Tracker */}
       <WhatsApp2HourAlertBanner
         appointments={appointments}
@@ -1703,6 +1793,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 };

@@ -90,6 +90,34 @@
         }
       },
       "required": ["username", "phone", "email", "password"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Registered customer records in the directory",
+      "type": "object",
+      "properties": {
+        "full_name": {
+          "type": "string",
+          "description": "Full name of the customer"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Phone number of the customer"
+        },
+        "created_at": {
+          "type": "string",
+          "description": "Registration timestamp"
+        },
+        "last_login_at": {
+          "type": "string",
+          "description": "Last activity or login timestamp"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Customer notes or preferences"
+        }
+      },
+      "required": ["full_name", "phone", "created_at", "last_login_at"]
     }
   },
   "firestore": {
@@ -100,6 +128,10 @@
     "/admin_users/{adminId}": {
       "entity": "AdminUser",
       "description": "Collection of synced admin users with username, phone, email, and password"
+    },
+    "/customers/{customerId}": {
+      "entity": "Customer",
+      "description": "Directory of registered customers with phone, name, and activity timestamps"
     }
   }
 }

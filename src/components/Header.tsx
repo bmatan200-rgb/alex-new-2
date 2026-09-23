@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import {
   Sparkles,
   Calendar,
@@ -15,17 +16,17 @@ import { SALON_INFO } from '../utils/storage';
 import { UserSession } from '../types';
 
 interface HeaderProps {
-  activeTab: 'booking' | 'admin';
-  onSelectTab: (tab: 'booking' | 'admin') => void;
+  activeTab?: 'booking' | 'admin';
+  onSelectTab?: (tab: 'booking' | 'admin') => void;
   onOpenMyBooking: () => void;
   currentUser: UserSession | null;
-  onOpenAuthModal: (role?: 'admin' | 'customer') => void;
+  onOpenAuthModal?: (role?: 'admin' | 'customer') => void;
   onQuickSwitchRole?: (role: 'admin' | 'customer') => void;
   onLogout: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  activeTab,
+  activeTab = 'booking',
   onSelectTab,
   onOpenMyBooking,
   currentUser,
@@ -36,13 +37,15 @@ export const Header: React.FC<HeaderProps> = ({
   const isUserAdmin = Boolean(currentUser && currentUser.isAdmin);
 
   const handleAdminTabClick = () => {
-    if (isUserAdmin) {
+    if (isUserAdmin && onSelectTab) {
       onSelectTab('admin');
     }
   };
 
   const handleCustomerTabClick = () => {
-    onSelectTab('booking');
+    if (onSelectTab) {
+      onSelectTab('booking');
+    }
   };
 
   return (
@@ -76,19 +79,14 @@ export const Header: React.FC<HeaderProps> = ({
               <span>תצוגת לקוח</span>
             </button>
 
-            <button
-              type="button"
-              onClick={handleAdminTabClick}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                activeTab === 'admin'
-                  ? 'bg-purple-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-white'
-              }`}
+            <Link
+              to="/admin/dashboard"
+              className="px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 text-slate-400 hover:text-white"
               title="מעבר לצפייה וניהול כמנהלת"
             >
               <ShieldCheck className="w-3 h-3 text-purple-300" />
               <span>תצוגת מנהל</span>
-            </button>
+            </Link>
           </div>
         )}
 
@@ -119,7 +117,7 @@ export const Header: React.FC<HeaderProps> = ({
         ) : (
           <button
             type="button"
-            onClick={() => onOpenAuthModal('customer')}
+            onClick={() => onOpenAuthModal?.('customer')}
             className="text-purple-300 hover:text-white text-[10px] font-bold underline cursor-pointer"
           >
             רישום / כניסה
@@ -165,50 +163,20 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Nav Switcher & Action Buttons */}
           <div className="flex items-center gap-2">
-            {isUserAdmin ? (
-              <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
-                <button
-                  id="tab-booking-btn"
-                  type="button"
-                  onClick={handleCustomerTabClick}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                    activeTab === 'booking'
-                      ? 'bg-slate-950 text-white shadow-sm font-extrabold border border-purple-500/40 shadow-[0_0_10px_rgba(168,85,247,0.2)]'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <Calendar className="w-3.5 h-3.5 text-purple-400" />
-                  <span>הזמנת תור</span>
-                </button>
-
-                <button
-                  id="tab-admin-btn"
-                  type="button"
-                  onClick={handleAdminTabClick}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                    activeTab === 'admin'
-                      ? 'bg-slate-950 text-white shadow-sm font-extrabold border border-purple-500/40 shadow-[0_0_10px_rgba(168,85,247,0.2)]'
-                      : 'text-purple-700 hover:text-purple-900 font-bold bg-purple-50/70 border border-purple-200/60'
-                  }`}
-                  title="מעבר לצפייה וניהול כמנהלת"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-purple-600" />
-                  <span>ממשק מנהל</span>
-                </button>
-              </div>
-            ) : (
-              <button
-                id="admin-login-header-btn"
-                type="button"
-                onClick={() => onOpenAuthModal('admin')}
-                className="px-3 py-2 text-xs font-black text-purple-900 bg-purple-50 hover:bg-purple-100 hover:border-purple-300 rounded-xl transition cursor-pointer border border-purple-200 shadow-xs flex items-center gap-1.5"
-                title="כניסת מנהל/ת למערכת (Firebase)"
+            {/* כפתור ממשק ניהול מוצג אך ורק אם מחוברת מנהלת מאומתת */}
+            {isUserAdmin && (
+              <Link
+                to="/admin/dashboard"
+                id="admin-dashboard-btn"
+                className="px-3.5 py-2 text-xs font-bold rounded-xl transition cursor-pointer border shadow-xs flex items-center gap-1.5 bg-purple-600 hover:bg-purple-700 text-white border-purple-500 shadow-[0_0_12px_rgba(147,51,234,0.3)]"
+                title="מעבר ללוח בקרה/ניהול"
               >
-                <ShieldCheck className="w-3.5 h-3.5 text-purple-600" />
-                <span>כניסת מנהל</span>
-              </button>
+                <ShieldCheck className="w-3.5 h-3.5 text-purple-200" />
+                <span>ממשק מנהל</span>
+              </Link>
             )}
 
+            {/* לחצן התור שלי / ביטול - זמין ללקוח */}
             <button
               id="my-booking-search-btn"
               onClick={onOpenMyBooking}

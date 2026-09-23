@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { getDoc, doc, setDoc, runTransaction, deleteDoc } from 'firebase/firestore';
+import { getDoc, doc, setDoc, runTransaction, deleteDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from './src/lib/firebase';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
@@ -166,6 +166,177 @@ app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
       },
       { merge: true }
     );
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// Customer Directory Endpoints
+// ----------------------------------------------------
+
+/**
+ * שמירה או עדכון של לקוח באוסף customers ב-Firestore.
+ * מתבצע בעת כניסת לקוח, הרשמה או קביעת תור.
+ */
+app.post('/api/customers/upsert', async (req: Request, res: Response) => {
+  try {
+    const { full_name, phone, notes } = req.body;
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone || cleanPhone.length < 7) {
+      return res.status(400).json({ success: false, error: 'מספר טלפון לא תקין' });
+    }
+
+    const trimmedName = (full_name || '').trim();
+    const docId = `cust_${cleanPhone}`;
+    const nowIso = new Date().toISOString();
+    const customerRef = doc(db, 'customers', docId);
+
+    const snap = await getDoc(customerRef);
+    if (snap.exists()) {
+      const existing = snap.data();
+      await setDoc(
+        customerRef,
+        {
+          full_name: trimmedName || existing.full_name || 'לקוח/ה',
+          phone: phone?.trim() || existing.phone,
+          last_login_at: nowIso,
+          ...(notes !== undefined ? { notes } : {}),
+        },
+        { merge: true }
+      );
+    } else {
+      await setDoc(customerRef, {
+        full_name: trimmedName || 'לקוח/ה',
+        phone: phone?.trim() || cleanPhone,
+        created_at: nowIso,
+        last_login_at: nowIso,
+        notes: notes || '',
+      });
+    }
+
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error('[Customers Upsert] Error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * קבלת רשימת הלקוחות עבור לוח הבקרה של המנהלת (מוגן בהרשאת מנהלת בלבד).
+ * סורק גם תורים קיימים כדי לחשב כמות תורים ותאריך תור אחרון לכל לקוח.
+ */
+app.get('/api/admin/customers', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const [custsSnap, apptsSnap] = await Promise.all([
+      getDocs(collection(db, 'customers')),
+      getDocs(collection(db, 'appointments')),
+    ]);
+
+    // מיפוי תורים לפי מספר טלפון נקי
+    const appointmentsByPhone: Record<
+      string,
+      { count: number; lastDate: string; name: string }
+    > = {};
+
+    apptsSnap.forEach((docSnap) => {
+      const data = docSnap.data();
+      const phone = normalizePhone(data.customer_phone);
+      if (!phone || phone.length < 7) return;
+
+      // דילוג על חסימות יזומות של המנהלת
+      if (
+        data.customer_phone === 'חסימת יומן' ||
+        data.customer_phone === 'שריון יזום' ||
+        (data.customer_name && data.customer_name.includes('🔒'))
+      ) {
+        return;
+      }
+
+      if (!appointmentsByPhone[phone]) {
+        appointmentsByPhone[phone] = {
+          count: 0,
+          lastDate: data.appointment_date || '',
+          name: data.customer_name || '',
+        };
+      }
+
+      if (data.status !== 'cancelled') {
+        appointmentsByPhone[phone].count += 1;
+      }
+
+      if (data.appointment_date && data.appointment_date > appointmentsByPhone[phone].lastDate) {
+        appointmentsByPhone[phone].lastDate = data.appointment_date;
+      }
+    });
+
+    const customersMap = new Map<string, any>();
+
+    // הוספת הלקוחות הקיימים מאוסף customers
+    custsSnap.forEach((docSnap) => {
+      const data = docSnap.data();
+      const clean = normalizePhone(data.phone) || docSnap.id.replace('cust_', '');
+      const apptInfo = appointmentsByPhone[clean];
+
+      customersMap.set(clean, {
+        id: docSnap.id,
+        full_name: data.full_name || apptInfo?.name || 'לקוח/ה',
+        phone: data.phone || clean,
+        created_at: data.created_at || new Date().toISOString(),
+        last_login_at: data.last_login_at || data.created_at || new Date().toISOString(),
+        notes: data.notes || '',
+        totalAppointments: apptInfo ? apptInfo.count : 0,
+        lastAppointmentDate: apptInfo ? apptInfo.lastDate : '',
+      });
+    });
+
+    // סנכרון אוטומטי של לקוחות מתוך תורים שטרם נרשמו ב-customers
+    for (const [phone, info] of Object.entries(appointmentsByPhone)) {
+      if (!customersMap.has(phone)) {
+        const docId = `cust_${phone}`;
+        const autoCustomer = {
+          id: docId,
+          full_name: info.name || 'לקוח/ה',
+          phone,
+          created_at: info.lastDate ? `${info.lastDate}T09:00:00.000Z` : new Date().toISOString(),
+          last_login_at: new Date().toISOString(),
+          notes: '',
+          totalAppointments: info.count,
+          lastAppointmentDate: info.lastDate,
+        };
+        customersMap.set(phone, autoCustomer);
+
+        // שמירה אסינכרונית ברקע ב-Firestore כדי שיהיה מתועד באופן קבוע
+        setDoc(doc(db, 'customers', docId), {
+          full_name: autoCustomer.full_name,
+          phone: autoCustomer.phone,
+          created_at: autoCustomer.created_at,
+          last_login_at: autoCustomer.last_login_at,
+          notes: '',
+        }).catch(() => {});
+      }
+    }
+
+    const customersList = Array.from(customersMap.values()).sort((a, b) =>
+      (b.last_login_at || b.created_at || '').localeCompare(a.last_login_at || a.created_at || '')
+    );
+
+    return res.json({ success: true, customers: customersList });
+  } catch (err: any) {
+    console.error('[Admin Customers API] Error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * מחיקת לקוח על ידי מנהלת מחוברת בלבד
+ */
+app.delete('/api/admin/customers/:id', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ success: false, error: 'Missing customer id' });
+    await deleteDoc(doc(db, 'customers', id));
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -1329,8 +1500,20 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
+    // Catch-all route for React Router (handles /admin, /admin/dashboard, etc. on page refresh without 404)
     app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const candidatePaths = [
+        path.join(distPath, 'index.html'),
+        path.join(__dirname, 'index.html'),
+        path.join(__dirname, 'dist', 'index.html'),
+        path.join(process.cwd(), 'index.html'),
+      ];
+      for (const p of candidatePaths) {
+        if (fs.existsSync(p)) {
+          return res.sendFile(p);
+        }
+      }
+      return res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 

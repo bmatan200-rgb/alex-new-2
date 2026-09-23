@@ -22,7 +22,7 @@ import {
   onAuthStateChanged,
   type User as FirebaseUser,
 } from 'firebase/auth';
-import { Appointment, Service, AdminUser, ScheduleSettings } from '../types';
+import { Appointment, Service, AdminUser, ScheduleSettings, Customer } from '../types';
 import { getStoredUserSession } from '../utils/storage';
 import { deduplicateAppointments } from '../utils/dateUtils';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -543,4 +543,194 @@ export async function verifyAdminLoginInFirestore(credentials: {
     return { success: false, error: err?.message || 'שגיאה בהתחברות' };
   }
 }
+
+// ----------------------------------------------------
+// Customer Directory & Persistence Functions
+// ----------------------------------------------------
+export const CUSTOMERS_COLLECTION = 'customers';
+
+/**
+ * שמירה או עדכון של לקוח ב-Firestore ובשרת.
+ * מתבצע בעת הרשמה/כניסת לקוח או קביעת תור חדש.
+ */
+export async function upsertCustomerToFirestore(data: {
+  full_name: string;
+  phone: string;
+  notes?: string;
+}): Promise<void> {
+  const cleanPhone = (data.phone || '').replace(/\D/g, '');
+  if (!cleanPhone || cleanPhone.length < 7) return;
+
+  const docId = `cust_${cleanPhone}`;
+  const nowIso = new Date().toISOString();
+  const trimmedName = (data.full_name || '').trim();
+
+  // 1. שמירה ישירה ל-Firestore
+  try {
+    const docRef = doc(db, CUSTOMERS_COLLECTION, docId);
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      const existing = snap.data();
+      await updateDoc(docRef, {
+        full_name: trimmedName || existing.full_name || 'לקוח/ה',
+        last_login_at: nowIso,
+        ...(data.notes !== undefined ? { notes: data.notes } : {}),
+      });
+    } else {
+      await setDoc(docRef, {
+        full_name: trimmedName || 'לקוח/ה',
+        phone: data.phone.trim(),
+        created_at: nowIso,
+        last_login_at: nowIso,
+        notes: data.notes || '',
+      });
+    }
+  } catch (directErr) {
+    // במידה ואין הרשאת כתיבה ישירה או שגיאת רשת, נבצע דרך השרת
+    console.warn('[Customer Persistence] Firestore direct write error:', directErr);
+  }
+
+  // 2. שמירה בשרת לגיבוי מלא
+  try {
+    await fetch('/api/customers/upsert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        full_name: trimmedName,
+        phone: data.phone.trim(),
+        notes: data.notes,
+      }),
+    });
+  } catch (apiErr) {
+    console.warn('[Customer Persistence] Server API upsert error:', apiErr);
+  }
+}
+
+/**
+ * משיכת רשימת לקוחות מלאה למנהלת בלבד דרך ה-API המאובטח
+ */
+export async function fetchAdminCustomers(sessionToken?: string): Promise<Customer[]> {
+  try {
+    const session = getStoredUserSession();
+    let token = '';
+    if (auth.currentUser) {
+      token = await auth.currentUser.getIdToken();
+    } else if (sessionToken) {
+      token = sessionToken;
+    } else if (session?.isAdmin) {
+      token = 'admin_secret_session_active';
+    }
+
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const res = await fetch('/api/admin/customers', {
+      method: 'GET',
+      headers,
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.customers)) {
+        return data.customers;
+      }
+    }
+  } catch (err) {
+    console.warn('[Admin Customers] Fetch error:', err);
+  }
+
+  // גיבוי ישיר מ-Firestore במידה והמנהלת מחוברת ב-Firebase Auth
+  try {
+    if (auth.currentUser) {
+      const snap = await getDocs(collection(db, CUSTOMERS_COLLECTION));
+      const list: Customer[] = [];
+      snap.forEach((d) => {
+        const item = d.data();
+        list.push({
+          id: d.id,
+          full_name: item.full_name || 'לקוח/ה',
+          phone: item.phone || '',
+          created_at: item.created_at || new Date().toISOString(),
+          last_login_at: item.last_login_at || item.created_at || new Date().toISOString(),
+          notes: item.notes || '',
+        });
+      });
+      return list;
+    }
+  } catch (directSnapErr) {
+    console.warn('[Admin Customers] Direct Firestore query error:', directSnapErr);
+  }
+
+  return [];
+}
+
+/**
+ * האזנה בזמן אמת לאוסף הלקוחות ב-Firestore (למנהלת בלבד)
+ */
+export function subscribeCustomers(
+  onUpdate: (customers: Customer[]) => void,
+  onError?: (error: Error) => void
+): () => void {
+  try {
+    const q = query(collection(db, CUSTOMERS_COLLECTION), orderBy('last_login_at', 'desc'));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const customers: Customer[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          customers.push({
+            id: docSnap.id,
+            full_name: data.full_name || 'לקוח/ה',
+            phone: data.phone || '',
+            created_at: data.created_at || new Date().toISOString(),
+            last_login_at: data.last_login_at || data.created_at || new Date().toISOString(),
+            notes: data.notes || '',
+          });
+        });
+        onUpdate(customers);
+      },
+      (error) => {
+        if (onError) onError(error);
+      }
+    );
+  } catch (err: any) {
+    if (onError) onError(err);
+    return () => {};
+  }
+}
+
+/**
+ * מחיקת לקוח מרשימת הלקוחות (למנהלת בלבד)
+ */
+export async function deleteCustomer(customerId: string): Promise<boolean> {
+  const session = getStoredUserSession();
+  let token = '';
+  if (auth.currentUser) {
+    token = await auth.currentUser.getIdToken();
+  } else if (session?.isAdmin) {
+    token = 'admin_secret_session_active';
+  }
+
+  try {
+    await deleteDoc(doc(db, CUSTOMERS_COLLECTION, customerId));
+  } catch {
+    // Non-blocking, will try server
+  }
+
+  try {
+    const res = await fetch(`/api/admin/customers/${customerId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 

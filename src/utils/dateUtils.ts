@@ -98,6 +98,14 @@ export function buildNextDays(count: number = 21): DayInfo[] {
   return days;
 }
 
+export function getNowInIsrael(): Date {
+  try {
+    return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
+  } catch {
+    return new Date();
+  }
+}
+
 export function timeToMinutes(t: string): number {
   const [h, m] = t.split(':').map(Number);
   return h * 60 + m;
@@ -146,9 +154,16 @@ export function calculateAvailableSlots({
   const slots: string[] = [];
   for (let start = openMin; start + durationMinutes <= closeMin; start += slotInterval) {
     const end = start + durationMinutes;
+    const timeStr = minutesToTime(start);
+
+    // If a specific date is checked, block and do not return slots that have already passed today or earlier
+    if (dateString && isSlotInPast(dateString, timeStr)) {
+      continue;
+    }
+
     const overlaps = booked.some((r) => start < r.end && end > r.start);
     if (!overlaps) {
-      slots.push(minutesToTime(start));
+      slots.push(timeStr);
     }
   }
   return slots;
@@ -249,7 +264,7 @@ export function formatHebrewFullDate(dateString: string): string {
 
 export function isSlotInPast(dateString: string, timeString: string): boolean {
   if (!dateString || !timeString) return false;
-  const now = new Date();
+  const now = getNowInIsrael();
   const todayStr = toISODateString(now);
   if (dateString < todayStr) return true;
   if (dateString > todayStr) return false;
@@ -261,6 +276,15 @@ export function isSlotInPast(dateString: string, timeString: string): boolean {
   if (hours < currentHours) return true;
   if (hours === currentHours && minutes <= currentMinutes) return true;
   return false;
+}
+
+export function isAppointmentInPast(appointment: { appointment_date: string; start_time: string; end_time?: string }): boolean {
+  if (!appointment?.appointment_date || !appointment?.start_time) return false;
+  return isSlotInPast(appointment.appointment_date, appointment.start_time);
+}
+
+export function isAppointmentFuture(appointment: { appointment_date: string; start_time: string; end_time?: string }): boolean {
+  return !isAppointmentInPast(appointment);
 }
 
 export function generateGoogleCalendarUrl({

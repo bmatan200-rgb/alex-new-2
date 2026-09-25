@@ -430,9 +430,8 @@ const DEFAULT_SERVER_SETTINGS = {
   notifyCustomer1DayBefore: false, // Default off: reminder sent specifically on appointment day at 08:00
   eveningReminderTime: '20:00',
   autoSendEnabled: true,
-  provider: process.env.WHATSAPP_PROVIDER || 'twilio',
-  twilioType: process.env.TWILIO_TYPE || 'sms',
-  twilioPhoneNumber: process.env.TWILIO_PHONE_NUMBER || '',
+  provider: process.env.WHATSAPP_PROVIDER || (process.env.TELNYX_API_KEY ? 'telnyx' : 'webhook'),
+  telnyxFrom: process.env.TELNYX_FROM || '',
   customerTodayTemplate: `היי {customer_name} 🌸\nתזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלבירור או שינוי: {phone}\nנתראה! 💖`,
   customer1DayTemplate: `היי {customer_name} 🌸\nתזכורת לתור שלך למחר ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלשינוי או בירור: {phone}\nמחכים לראותך! 💖`,
 };
@@ -525,7 +524,105 @@ function getIsraelTime(): { dateIso: string; tomorrowIso: string; hour: number; 
   return { dateIso, tomorrowIso, hour, minute, timeStr };
 }
 
-// Universal WhatsApp & SMS message dispatcher (Twilio, Green API, UltraMsg, Webhook)
+/**
+ * פונקציית שליחת הודעת SMS באמצעות הספרייה של Telnyx
+ * משתמשת אך ורק במשתני הסביבה:
+ * - process.env.TELNYX_API_KEY (עבור האימות)
+ * - process.env.TELNYX_PROFILE_ID (עבור ה-messaging_profile_id)
+ * - process.env.TELNYX_FROM (עבור שדה השולח)
+ */
+export async function sendTelnyxSMS(
+  to: string,
+  message: string
+): Promise<{ success: boolean; data?: any; error?: string }> {
+  const apiKey = process.env.TELNYX_API_KEY;
+  const messagingProfileId = process.env.TELNYX_PROFILE_ID;
+  const fromNumber = process.env.TELNYX_FROM;
+
+  if (!apiKey) {
+    return {
+      success: false,
+      error: 'חסר משתנה סביבה TELNYX_API_KEY עבור אימות מול Telnyx',
+    };
+  }
+
+  if (!fromNumber) {
+    return {
+      success: false,
+      error: 'חסר משתנה סביבה TELNYX_FROM עבור שדה השולח',
+    };
+  }
+
+  try {
+    // נרמול מספר הטלפון לתקן בינלאומי E.164 (למשל 0501234567 -> +972501234567)
+    let cleanPhone = String(to || '').replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) {
+      cleanPhone = '972' + cleanPhone.slice(1);
+    } else if (!cleanPhone.startsWith('972') && cleanPhone.length === 9) {
+      cleanPhone = '972' + cleanPhone;
+    }
+    const formattedTo = cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}`;
+
+    // ייבוא מודול Telnyx
+    const telnyxModule = await import('telnyx');
+    const Telnyx: any = (telnyxModule as any).default || telnyxModule;
+
+    // תמיכה בגרסאות שונות של ה-SDK (v3+ Class / v1-v2 Factory)
+    let client: any;
+    try {
+      client = new Telnyx({ apiKey: apiKey.trim() });
+    } catch {
+      client = typeof Telnyx === 'function' ? Telnyx(apiKey.trim()) : new Telnyx(apiKey.trim());
+    }
+
+    const payload: {
+      from: string;
+      to: string;
+      text: string;
+      messaging_profile_id?: string;
+    } = {
+      from: fromNumber.trim(),
+      to: formattedTo,
+      text: message,
+    };
+
+    if (messagingProfileId && messagingProfileId.trim()) {
+      payload.messaging_profile_id = messagingProfileId.trim();
+    }
+
+    // תמיכה במתודת send (הגרסה העדכנית) או create (גרסאות ישנות יותר)
+    const sendMethod = client.messages?.send || client.messages?.create;
+    if (!sendMethod) {
+      throw new Error('מתודת שליחת הודעות (send/create) לא נמצאה ב-Telnyx SDK');
+    }
+
+    console.log(`[Telnyx Gateway] שולח SMS אל ${formattedTo} מאת ${fromNumber}...`);
+    const response = await sendMethod.call(client.messages, payload);
+    const responseData = response?.data || response;
+
+    console.log(`[Telnyx Gateway] הודעה נשלחה בהצלחה! ID: ${responseData?.id || 'OK'}`);
+
+    return {
+      success: true,
+      data: {
+        id: responseData?.id,
+        to: formattedTo,
+        from: fromNumber,
+        status: responseData?.to?.[0]?.status || 'sent',
+        channel: 'sms',
+        provider: 'telnyx',
+      },
+    };
+  } catch (err: any) {
+    console.error('[Telnyx Gateway] שגיאה בשליחת הודעה דרך Telnyx:', err);
+    return {
+      success: false,
+      error: `שגיאה משרת Telnyx: ${err?.message || 'שגיאה לא ידועה'} (ניסיון שליחה אל: ${to})`,
+    };
+  }
+}
+
+// Universal WhatsApp & SMS message dispatcher (Telnyx, Green API, UltraMsg, Webhook)
 async function sendWhatsAppViaProvider(params: {
   phone: string;
   message: string;
@@ -533,10 +630,6 @@ async function sendWhatsAppViaProvider(params: {
   instanceId?: string;
   apiKey?: string;
   webhookUrl?: string;
-  twilioAccountSid?: string;
-  twilioAuthToken?: string;
-  twilioPhoneNumber?: string;
-  twilioType?: 'whatsapp' | 'sms';
 }): Promise<{ success: boolean; data?: any; error?: string }> {
   const { phone, message } = params;
   const formattedPhone = cleanPhoneForWhatsApp(phone);
@@ -545,103 +638,21 @@ async function sendWhatsAppViaProvider(params: {
     params.provider ||
     activeServerSettings?.provider ||
     process.env.WHATSAPP_PROVIDER ||
-    (params.twilioAccountSid || activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID ? 'twilio' : '') ||
+    (process.env.TELNYX_API_KEY ? 'telnyx' : '') ||
     (params.instanceId ? 'greenapi' : 'webhook');
 
-  if (provider === 'direct') {
-    provider = 'twilio';
+  if (provider === 'direct' || provider === 'twilio') {
+    provider = 'telnyx';
   }
 
   const instanceId = params.instanceId || activeServerSettings?.instanceId || process.env.GREEN_API_INSTANCE_ID || process.env.ULTRAMSG_INSTANCE_ID || '';
   const apiKey = params.apiKey || activeServerSettings?.apiKey || process.env.GREEN_API_TOKEN || process.env.ULTRAMSG_TOKEN || '';
   const webhookUrl = params.webhookUrl || activeServerSettings?.webhookUrl || process.env.WHATSAPP_WEBHOOK_URL || '';
 
-  const twilioAccountSid = params.twilioAccountSid || activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
-  const twilioAuthToken = params.twilioAuthToken || activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
-  let twilioPhoneNumber = params.twilioPhoneNumber || activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '';
-  if (twilioPhoneNumber === 'whatsapp:+14155238886' && (process.env.TWILIO_TYPE === 'sms' || activeServerSettings?.twilioType === 'sms')) {
-    twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || '';
-  }
-  const twilioType = params.twilioType || activeServerSettings?.twilioType || 'sms';
-
   try {
-    // 1. Twilio Integration (WhatsApp & SMS)
-    if (provider === 'twilio' || (twilioAccountSid && twilioAuthToken && !instanceId)) {
-      if (!twilioAccountSid || !twilioAuthToken) {
-        return {
-          success: false,
-          error: 'חסר Twilio Account SID או Auth Token בהגדרות המערכת',
-        };
-      }
-
-      const twilioModule = await import('twilio');
-      const twilioFactory: any = (twilioModule as any).default || twilioModule;
-      const client = twilioFactory(twilioAccountSid.trim(), twilioAuthToken.trim());
-
-      let resolvedTwilioType = process.env.TWILIO_TYPE || params.twilioType || activeServerSettings?.twilioType;
-      
-      // Auto-detect if user entered a plain number without "whatsapp:" prefix
-      if (resolvedTwilioType === 'whatsapp' && !twilioPhoneNumber.toLowerCase().startsWith('whatsapp:') && twilioPhoneNumber !== '+14155238886' && !twilioPhoneNumber.includes('14155238886')) {
-        resolvedTwilioType = 'sms';
-      }
-
-      if (!resolvedTwilioType) {
-        resolvedTwilioType = twilioPhoneNumber.toLowerCase().startsWith('whatsapp:') ? 'whatsapp' : 'sms';
-      }
-      
-      // Force SMS if requested explicitly via env
-      if (process.env.TWILIO_TYPE === 'sms') {
-        resolvedTwilioType = 'sms';
-      }
-
-      const isWhatsApp = resolvedTwilioType === 'whatsapp';
-      
-      let fromNumber = (twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '+15599345376').trim();
-      let toNumber = formatIsraeliPhoneToE164(phone);
-
-      if (isWhatsApp) {
-        if (!fromNumber.toLowerCase().startsWith('whatsapp:')) {
-          fromNumber = `whatsapp:${fromNumber}`;
-        }
-        if (!toNumber.toLowerCase().startsWith('whatsapp:')) {
-          toNumber = `whatsapp:${toNumber}`;
-        }
-      } else {
-        // Standard SMS mode via Twilio virtual number
-        fromNumber = fromNumber.replace(/^whatsapp:/i, '').trim();
-        if (fromNumber === '+14155238886' || fromNumber === '14155238886' || !fromNumber) {
-          fromNumber = (process.env.TWILIO_PHONE_NUMBER || '+15599345376').trim();
-        }
-        if (!fromNumber.startsWith('+') && fromNumber.length >= 7) {
-          fromNumber = `+${fromNumber}`;
-        }
-        toNumber = toNumber.replace(/^whatsapp:/i, '').trim();
-        if (!toNumber.startsWith('+')) {
-          toNumber = `+${toNumber}`;
-        }
-      }
-
-      console.log(`[Twilio Gateway] Sending ${isWhatsApp ? 'WhatsApp' : 'SMS'} to ${toNumber} from ${fromNumber}...`);
-
-      const resMessage = await client.messages.create({
-        body: message,
-        from: fromNumber,
-        to: toNumber,
-      });
-
-      console.log(`[Twilio Gateway] Success! Message SID: ${resMessage.sid}, Status: ${resMessage.status}`);
-
-      return {
-        success: true,
-        data: {
-          sid: resMessage.sid,
-          status: resMessage.status,
-          to: resMessage.to,
-          from: resMessage.from,
-          channel: isWhatsApp ? 'whatsapp' : 'sms',
-          provider: 'twilio',
-        },
-      };
+    // 1. Telnyx Integration (SMS)
+    if (provider === 'telnyx' || (process.env.TELNYX_API_KEY && !instanceId)) {
+      return await sendTelnyxSMS(phone, message);
     }
 
     // 2. Green API
@@ -690,49 +701,19 @@ async function sendWhatsAppViaProvider(params: {
       return { success: response.ok, data };
     }
 
-    console.log(`[WhatsApp Server Gateway] Auto-sending message to ${formattedPhone}: "${message.substring(0, 60)}..."`);
+    console.log(`[Messaging Gateway] Auto-sending message to ${formattedPhone}: "${message.substring(0, 60)}..."`);
     return {
       success: true,
       data: { status: 'queued_sent', recipient: formattedPhone, messagePreview: message.substring(0, 50) },
     };
   } catch (err: any) {
-    const isQuotaError =
-      err?.message?.includes('exceeded the 50 daily messages limit') ||
-      err?.message?.includes('63038');
-
-    if (!isQuotaError) {
-      console.error('[WhatsApp/Twilio Server Gateway] Error sending message:', err);
-    } else {
-      console.warn('[WhatsApp/Twilio Server Gateway] Twilio quota exceeded for this trial account.');
-    }
-
-    let friendlyError = `שגיאה משרת Twilio: ${err?.message || 'שגיאה לא ידועה'}`;
-    
-    // Add context about recipient phone
+    console.error('[Messaging Gateway] Error sending message:', err);
+    const friendlyError = `שגיאה בשליחת הודעה: ${err?.message || 'שגיאה לא ידועה'}`;
     const debugContext = ` (ניסיון שליחה אל: ${formattedPhone})`;
-
-    if (isQuotaError) {
-      friendlyError =
-        'נגמרה מכסת 50 ההודעות היומית בחשבון ה-Twilio (חשבון התנסות). יש לשדרג את החשבון ב-Twilio או להמתין למחר.';
-    } else if (err?.code === 21608 || err?.message?.includes('unverified')) {
-      friendlyError =
-        'שגיאת Twilio: המספר אינו מאומת בחשבון ה-Trial. בחשבון ניסיון של Twilio יש לאמת את המספר ב-Verified Caller IDs או לשדרג את החשבון.';
-    } else if (err?.code === 63016 || err?.message?.includes('Sandbox')) {
-      friendlyError =
-        'שגיאת Twilio WhatsApp: הנמען טרם שלח הודעת הצטרפות (join) ל-Sandbox של Twilio. טיפ: ניתן להגדיר שליחה ב-SMS בהגדרות המערכת לשליחה ישירה לכל מספר.';
-    } else if (err?.code === 20003 || err?.message?.includes('Authenticate')) {
-      friendlyError =
-        'שגיאת Twilio: פרטי ה-Account SID או ה-Auth Token שגויים. אנא בדקי את הפרטים בהגדרות.';
-    } else if (err?.code === 21408 || err?.message?.includes('Permission to send an SMS has not been enabled')) {
-      friendlyError = 'שגיאת הרשאות יעד ב-Twilio (Geo Permissions): חשבונך חסום לשליחת SMS לישראל. יש להתחבר ל-Twilio, לנווט ל-Messaging -> Settings -> Geo Permissions ולאפשר שליחת SMS לישראל (Israel).' + debugContext;
-    } else if (err?.code === 21211 || err?.message?.includes('not a valid phone number')) {
-      friendlyError =
-        'שגיאת Twilio: מספר הטלפון אינו בפורמט בינלאומי תקין.';
-    }
 
     return {
       success: false,
-      error: friendlyError + (!friendlyError.includes('ניסיון שליחה') ? debugContext : ''),
+      error: friendlyError + debugContext,
     };
   }
 }
@@ -1013,43 +994,36 @@ function maskSecretToken(token: string | undefined): string {
 // Get current server settings & env configuration (Secrets masked for security)
 app.get('/api/whatsapp/settings', requireAdmin, (req: Request, res: Response) => {
   try {
-    const rawSid = activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
-    const rawToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
-    const hasEnvTwilio = Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN);
+    const rawApiKey = process.env.TELNYX_API_KEY || '';
+    const profileId = process.env.TELNYX_PROFILE_ID || '';
+    const fromNumber = activeServerSettings?.telnyxFrom || process.env.TELNYX_FROM || '';
 
     res.json({
       success: true,
       settings: {
         ...activeServerSettings,
-        twilioAccountSid: rawSid,
-        // Security: Mask the auth token so raw secret credentials are not sent over public API
-        twilioAuthToken: maskSecretToken(rawToken),
-        hasTwilioAuthToken: Boolean(rawToken),
-        twilioPhoneNumber: activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '',
+        hasTelnyxApiKey: Boolean(rawApiKey),
+        telnyxApiKey: maskSecretToken(rawApiKey),
+        telnyxProfileId: profileId,
+        telnyxFrom: fromNumber,
       },
-      hasEnvTwilio,
+      hasTelnyxConfig: Boolean(rawApiKey && fromNumber),
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err?.message });
   }
 });
 
-// Sync settings from client to server (Twilio, Green API, timing, etc.)
+// Sync settings from client to server (Telnyx, Green API, timing, etc.)
 app.post('/api/whatsapp/sync-settings', requireAdmin, (req: Request, res: Response) => {
   try {
     const { settings } = req.body;
     if (settings && typeof settings === 'object') {
       const sanitizedSettings = { ...settings };
-      // If token is masked placeholder, keep existing server token
-      if (sanitizedSettings.twilioAuthToken && sanitizedSettings.twilioAuthToken.includes('••••')) {
-        sanitizedSettings.twilioAuthToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
-      }
       activeServerSettings = { ...activeServerSettings, ...sanitizedSettings };
-      console.log('[Server Settings] WhatsApp & Twilio settings synced:', {
+      console.log('[Server Settings] Messaging & Telnyx settings synced:', {
         provider: activeServerSettings.provider,
-        hasTwilioSid: Boolean(activeServerSettings.twilioAccountSid),
-        hasTwilioToken: Boolean(activeServerSettings.twilioAuthToken),
-        twilioType: activeServerSettings.twilioType,
+        telnyxFrom: activeServerSettings.telnyxFrom,
         hasGreenApi: Boolean(activeServerSettings.instanceId),
       });
       return res.json({ success: true, settings: activeServerSettings });
@@ -1084,7 +1058,7 @@ app.post('/api/whatsapp/sync-appointments', requireAdmin, (req: Request, res: Re
   }
 });
 
-// Immediate WhatsApp / Twilio Dispatch Route (Protected with Rate Limiting & Input Validation)
+// Immediate SMS / WhatsApp / Telnyx Dispatch Route (Protected with Rate Limiting & Input Validation)
 app.post('/api/whatsapp/send', requireAdmin, async (req: Request, res: Response) => {
   const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
 
@@ -1104,10 +1078,6 @@ app.post('/api/whatsapp/send', requireAdmin, async (req: Request, res: Response)
       instanceId,
       apiKey,
       webhookUrl,
-      twilioAccountSid,
-      twilioAuthToken,
-      twilioPhoneNumber,
-      twilioType,
       reminderType,
       appointment,
     } = req.body;
@@ -1137,10 +1107,6 @@ app.post('/api/whatsapp/send', requireAdmin, async (req: Request, res: Response)
       instanceId,
       apiKey,
       webhookUrl,
-      twilioAccountSid,
-      twilioAuthToken,
-      twilioPhoneNumber,
-      twilioType,
     });
 
     if (appointment && reminderType) {
@@ -1159,7 +1125,7 @@ app.post('/api/whatsapp/send', requireAdmin, async (req: Request, res: Response)
 });
 
 // ============================================================================
-// USER REGISTRATION WEBHOOK (Twilio SMS / WhatsApp / Make / Zapier Integration)
+// USER REGISTRATION WEBHOOK (SMS / WhatsApp / Make / Zapier Integration)
 // ============================================================================
 // Note for developer: Configure your specific external backend Webhook URL below
 // or set the REGISTRATION_WEBHOOK_URL environment variable.
@@ -1292,11 +1258,8 @@ app.get('/api/whatsapp/status', (req: Request, res: Response) => {
     },
     syncedAppointmentsCount: serverAppointments.length,
     sentRemindersCount: Object.keys(sentHistory).length,
-    activeProvider: activeServerSettings?.provider || process.env.WHATSAPP_PROVIDER || 'twilio',
-    hasTwilioCredentials: Boolean(
-      (activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID) &&
-      (activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN)
-    ),
+    activeProvider: activeServerSettings?.provider || (process.env.TELNYX_API_KEY ? 'telnyx' : 'webhook'),
+    hasTelnyxCredentials: Boolean(process.env.TELNYX_API_KEY && process.env.TELNYX_FROM),
     hasGreenApiCredentials: Boolean(
       (activeServerSettings?.instanceId || process.env.GREEN_API_INSTANCE_ID) &&
       (activeServerSettings?.apiKey || process.env.GREEN_API_TOKEN)
@@ -1305,94 +1268,45 @@ app.get('/api/whatsapp/status', (req: Request, res: Response) => {
   });
 });
 
-// Comprehensive Twilio & WhatsApp Diagnostic Endpoint
+// Comprehensive Telnyx & Messaging Diagnostic Endpoint
 app.get('/api/whatsapp/diagnose', requireAdmin, async (req: Request, res: Response) => {
-  const twilioSid = activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
-  const twilioToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
-  const twilioPhone = activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '';
-  let twilioType = process.env.TWILIO_TYPE || activeServerSettings?.twilioType || 'sms';
-  if (twilioType === 'whatsapp' && twilioPhone && !twilioPhone.toLowerCase().startsWith('whatsapp:') && !twilioPhone.includes('14155238886')) {
-    twilioType = 'sms';
-  }
+  const apiKey = process.env.TELNYX_API_KEY || '';
+  const profileId = process.env.TELNYX_PROFILE_ID || '';
+  const fromNumber = process.env.TELNYX_FROM || activeServerSettings?.telnyxFrom || '';
 
   const diagnostics: any = {
     timestamp: new Date().toISOString(),
     israelTime: getIsraelTime(),
-    provider: activeServerSettings?.provider || 'twilio',
-    twilio: {
-      hasCredentials: Boolean(twilioSid && twilioToken),
-      accountSidMasked: twilioSid ? `${twilioSid.substring(0, 6)}...${twilioSid.substring(twilioSid.length - 4)}` : null,
-      phoneNumber: twilioPhone,
-      channel: twilioType,
-      accountInfo: null,
-      quotaExceeded: false,
-      unjoinedSandboxDetected: false,
-      sandboxCode: 'join mainly-level',
-      sandboxNumber: '+14155238886',
-      sandboxJoinLink: 'https://wa.me/14155238886?text=join%20mainly-level',
-      recentMessages: [],
-      errorSummary: null,
+    provider: activeServerSettings?.provider || (apiKey ? 'telnyx' : 'webhook'),
+    telnyx: {
+      hasCredentials: Boolean(apiKey && fromNumber),
+      apiKeyMasked: apiKey ? `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}` : null,
+      profileId: profileId || null,
+      fromNumber: fromNumber || null,
       readyToSend: false,
+      errorSummary: null,
     },
   };
 
-  if (!twilioSid || !twilioToken) {
-    diagnostics.twilio.errorSummary = 'חסרים פרטי אימות של Twilio (Account SID / Auth Token)';
+  if (!apiKey || !fromNumber) {
+    diagnostics.telnyx.errorSummary = 'חסרים משתני סביבה של Telnyx (TELNYX_API_KEY או TELNYX_FROM)';
     return res.json(diagnostics);
   }
 
   try {
-    const twilioModule = await import('twilio');
-    const twilioFactory: any = (twilioModule as any).default || twilioModule;
-    const client = twilioFactory(twilioSid, twilioToken);
-
-    // 1. Fetch account info
+    const telnyxModule = await import('telnyx');
+    const Telnyx: any = (telnyxModule as any).default || telnyxModule;
+    let client: any;
     try {
-      const account = await client.api.v2010.accounts(twilioSid).fetch();
-      diagnostics.twilio.accountInfo = {
-        friendlyName: account.friendlyName,
-        status: account.status,
-        type: account.type, // 'Trial' or 'Full'
-      };
-    } catch (accErr: any) {
-      diagnostics.twilio.errorSummary = `שגיאה באימות מול Twilio: ${accErr?.message}`;
-      return res.json(diagnostics);
+      client = new Telnyx({ apiKey: apiKey.trim() });
+    } catch {
+      client = typeof Telnyx === 'function' ? Telnyx(apiKey.trim()) : new Telnyx(apiKey.trim());
     }
 
-    // 2. Fetch last 8 messages
-    try {
-      const messages = await client.messages.list({ limit: 8 });
-      diagnostics.twilio.recentMessages = messages.map((m: any) => ({
-        sid: m.sid,
-        to: m.to,
-        from: m.from,
-        status: m.status,
-        errorCode: m.errorCode,
-        errorMessage: m.errorMessage,
-        dateCreated: m.dateCreated,
-      }));
-
-      // Check for specific error codes
-      const has63038 = messages.some((m: any) => m.errorCode === 63038 || String(m.errorMessage || '').includes('50 daily messages limit'));
-      const has63015 = messages.some((m: any) => m.errorCode === 63015);
-
-      diagnostics.twilio.quotaExceeded = has63038;
-      diagnostics.twilio.unjoinedSandboxDetected = has63015;
-
-      if (has63038) {
-        diagnostics.twilio.errorSummary = 'חשבון Twilio (Trial) הגיע למגבלת 50 הודעות ליום. המגבלה מתאפסת מחר או לאחר שדרוג החשבון.';
-      } else if (has63015) {
-        diagnostics.twilio.errorSummary = 'נמענים מסוימים טרם הצטרפו ל-Sandbox של Twilio.';
-      } else {
-        diagnostics.twilio.readyToSend = true;
-      }
-    } catch (msgErr: any) {
-      diagnostics.twilio.errorSummary = `לא ניתן לשלוף הודעות אחרונות: ${msgErr?.message}`;
-    }
-
+    diagnostics.telnyx.readyToSend = true;
     return res.json(diagnostics);
   } catch (err: any) {
-    diagnostics.twilio.errorSummary = `שגיאת חיבור כללית: ${err?.message}`;
+    diagnostics.telnyx.errorSummary = `שגיאת אימות מול Telnyx: ${err?.message}`;
     return res.json(diagnostics);
   }
 });

@@ -246,15 +246,9 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
               <div>
                 <div className="flex items-center gap-2">
                   <h3 className="text-base font-bold text-slate-900 font-['Rubik',sans-serif]">
-                    תזכורות יום התור ({settings.morningReminderTime || '08:00'} בבוקר): יש {todayAppts.length} תור/ים היום ({toIsraeliDateString(todayIso)})
+                    יש {todayAppts.length} תור/ים היום ({toIsraeliDateString(todayIso)})
                   </h3>
-                  <span className="text-[10px] bg-amber-100 text-amber-900 px-2 py-0.5 rounded-full font-bold border border-amber-300">
-                    באותו יום ב-{settings.morningReminderTime || '08:00'} ☀️
-                  </span>
                 </div>
-                <p className="text-xs text-slate-600 mt-0.5">
-                  נשלח אוטומטית בשעה {settings.morningReminderTime || '08:00'}, או מיד בלחיצה על כפתור השליחה האוטומטית
-                </p>
               </div>
             </div>
 
@@ -367,15 +361,9 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
               <div>
                 <div className="flex items-center gap-2">
                   <h3 className="text-base font-bold text-slate-900 font-['Rubik',sans-serif]">
-                    תזכורות יום לפני ({settings.eveningReminderTime || '20:00'} בערב): יש {tomorrowAppts.length} תור/ים למחר ({toIsraeliDateString(tomorrowIso)})
+                    יש {tomorrowAppts.length} תור/ים למחר ({toIsraeliDateString(tomorrowIso)})
                   </h3>
-                  <span className="text-[10px] bg-indigo-100 text-indigo-900 px-2 py-0.5 rounded-full font-bold border border-indigo-200">
-                    יום לפני ב-{settings.eveningReminderTime || '20:00'} 🌙
-                  </span>
                 </div>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  נשלח אוטומטית בשעה {settings.eveningReminderTime || '20:00'}, או מיד בלחיצה על כפתור השליחה האוטומטית
-                </p>
               </div>
             </div>
 
@@ -477,40 +465,7 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
         </div>
       )}
 
-      {/* Standby Summary Bar */}
-      {todayAppts.length === 0 && tomorrowAppts.length === 0 && (
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center flex-shrink-0">
-              <MessageCircle className="w-5 h-5 fill-emerald-600/20" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h4 className="text-xs font-bold text-slate-900">
-                  תזכורות WhatsApp אוטומטיות: יום לפני ב-{settings.eveningReminderTime || '20:56'} + ביום התור ב-{settings.morningReminderTime || '08:00'}
-                </h4>
-                <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold border border-emerald-200">
-                  פעיל ✓
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-0.5">
-                המערכת שולחת אוטומטית בשעות שהוגדרו, וניתן גם ללחוץ בכל עת על כפתור השליחה המיידי ⚡
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="px-3 py-1.5 bg-slate-100 hover:bg-purple-100 hover:text-purple-900 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border border-slate-200"
-            >
-              <Settings className="w-3.5 h-3.5 text-purple-600" />
-              <span>הגדרות ונוסח הודעות</span>
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Removed Standby Summary Bar */}
     </div>
   );
 };

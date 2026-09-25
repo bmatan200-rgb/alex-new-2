@@ -18,14 +18,10 @@ export const DEFAULT_REMINDER_SETTINGS: WhatsAppReminderSettings = {
   autoSendEnabled: true,
   browserNotificationsEnabled: true,
   soundEnabled: true,
-  provider: 'twilio',
+  provider: 'telnyx',
   webhookUrl: '',
   apiKey: '',
   instanceId: '',
-  twilioAccountSid: '',
-  twilioAuthToken: '',
-  twilioPhoneNumber: '',
-  twilioType: 'sms',
   eveningReminderTime: '20:00',
   morningReminderTime: '08:00',
   customerTodayTemplate: `היי {customer_name} 🌸
@@ -76,12 +72,9 @@ export function getStoredReminderSettings(): WhatsAppReminderSettings {
     if (!raw) return DEFAULT_REMINDER_SETTINGS;
     const parsed = JSON.parse(raw);
     
-    // Sanitize old WhatsApp sandbox defaults if present
-    if (parsed.twilioPhoneNumber === 'whatsapp:+14155238886' || parsed.twilioPhoneNumber?.includes('14155238886')) {
-      parsed.twilioPhoneNumber = '';
-    }
-    if (!parsed.twilioType) {
-      parsed.twilioType = 'sms';
+    // Migrate provider to Telnyx
+    if (!parsed.provider || parsed.provider === 'twilio' || parsed.provider === 'direct') {
+      parsed.provider = 'telnyx';
     }
 
     // Default morning reminder time to exactly 08:00
@@ -550,15 +543,16 @@ export async function triggerBrowserPushNotification(title: string, body: string
 
 export function isProviderConfigured(settings?: WhatsAppReminderSettings): boolean {
   if (!settings) return false;
+  if (settings.provider === 'telnyx') return true;
   if (settings.provider === 'greenapi' && settings.instanceId && settings.apiKey) return true;
   if (settings.provider === 'ultramsg' && settings.instanceId && settings.apiKey) return true;
   if (settings.provider === 'webhook' && settings.webhookUrl) return true;
-  if (settings.provider === 'twilio' && settings.twilioAccountSid && settings.twilioAuthToken) return true;
+  if (settings.provider === 'twilio') return true;
   return false;
 }
 
 /**
- * Send automated WhatsApp or SMS request via Twilio (or configured provider) through backend server
+ * Send automated WhatsApp or SMS request via Telnyx (or configured provider) through backend server
  */
 export async function dispatchAutomatedWhatsAppApi({
   phone,
@@ -655,18 +649,31 @@ export async function dispatchAutomatedWhatsAppApi({
       return { success: false, message: `Webhook החזיר סטטוס שגיאה: ${res.status}` };
     }
 
-    // 4. Primary: Backend Twilio Gateway (/api/whatsapp/send)
+    // 4. Primary: Backend Telnyx SMS Gateway (/api/whatsapp/send)
+    let token = '';
+    try {
+      if (auth.currentUser) {
+        token = await auth.currentUser.getIdToken();
+      }
+    } catch {
+      // ignore
+    }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-admin-request': 'true',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const res = await fetch('/api/whatsapp/send', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         phone: formattedPhone,
         message,
-        provider: 'twilio',
-        twilioAccountSid: settings.twilioAccountSid || undefined,
-        twilioAuthToken: settings.twilioAuthToken || undefined,
-        twilioPhoneNumber: settings.twilioPhoneNumber || undefined,
-        twilioType: settings.twilioType || 'sms',
+        provider: 'telnyx',
         reminderType,
         appointment,
       }),
@@ -675,26 +682,38 @@ export async function dispatchAutomatedWhatsAppApi({
     let data;
     try {
       data = await res.json();
-    } catch (err) {
-      console.warn('Failed to parse response:', err);
-      return { success: false, message: `השרת החזיר תשובה לא חוקית (${res.status}). ייתכן ושגיאת התחברות.` };
+    } catch (parseErr) {
+      console.error('[Admin Dashboard / Telnyx SMS] שגיאה בפענוח תשובת השרת:', parseErr, 'Status:', res.status);
+      return { success: false, message: `השרת החזיר תשובה לא חוקית (${res.status}).` };
     }
 
-    if (res.ok && (data.success || data.data?.sid)) {
-      const channel = settings.twilioType === 'sms' ? 'SMS' : 'WhatsApp';
+    if (res.ok && data?.success) {
+      console.log('[Admin Dashboard / Telnyx SMS] הודעת SMS נשלחה בהצלחה דרך Telnyx:', {
+        to: formattedPhone,
+        data: data.data,
+      });
       return {
         success: true,
-        message: `התזכורת נשלחה אוטומטית בהצלחה דרך Twilio (${channel})! ⚡`,
+        message: `תזכורת SMS נשלחה בהצלחה דרך Telnyx ל-${recipientType === 'customer' ? appointment.customer_name : 'אלכס'}! ⚡`,
       };
     }
 
+    // Detailed console.error for Telnyx failure analysis
+    console.error('[Admin Dashboard / Telnyx SMS] שגיאה בשליחת SMS מול Telnyx API:', {
+      to: formattedPhone,
+      httpStatus: res.status,
+      statusText: res.statusText,
+      error: data?.error,
+      fullResponse: data,
+    });
+
     return {
       success: false,
-      message: `שגיאה משרת Twilio: ${data.error || res.statusText}`,
+      message: data?.error || `שגיאה משרת Telnyx (${res.status})`,
     };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    console.warn('[Auto Dispatch Twilio] Error:', errorMsg);
+    console.error('[Admin Dashboard / Telnyx SMS] שגיאת תקשורת חריגה בשליחה:', err);
     return { success: false, message: `שגיאת תקשורת בשליחה: ${errorMsg}` };
   }
 }

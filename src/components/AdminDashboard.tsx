@@ -136,17 +136,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const key = `${appt.id}-${target}`;
     setSendingApptId(key);
     const settings = getStoredReminderSettings();
-
-    // If Twilio is selected as provider but SID/Token are not configured yet, open automation tab immediately
-    if (settings.provider === 'twilio' && (!settings.twilioAccountSid || !settings.twilioAuthToken)) {
-      showToast('כדי לשלוח אוטומטית ברקע דרך Twilio, יש להזין את ה-Account SID וה-Auth Token', 'error');
-      setWhatsAppModalTab('automation');
-      setIsWhatsAppModalOpen(true);
-      setSendingApptId(null);
-      return;
+    if (settings.provider === 'twilio') {
+      settings.provider = 'telnyx';
     }
 
-    const phone = target === 'customer' ? appt.customer_phone : SALON_INFO.whatsappNumber;
+    const rawPhone = target === 'customer' ? appt.customer_phone : SALON_INFO.whatsappNumber;
+    const phone = formatIsraeliPhoneToE164(rawPhone);
     const isToday = appt.appointment_date === todayIso;
     const reminderType = isToday ? 'today' : '1day';
 
@@ -160,6 +155,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
 
     try {
+      console.log(`[Admin Dashboard] שולח תזכורת SMS דרך Telnyx אל: ${phone} (לקוח/ה: ${appt.customer_name})`);
       const result = await dispatchAutomatedWhatsAppApi({
         phone,
         message: text,
@@ -172,11 +168,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       if (result.success) {
         markReminderSent(appt.id, target, reminderType);
         setSentLog(getSentRemindersLog());
-        showToast(result.message || `תזכורת נשלחה אוטומטית בהצלחה ל-${target === 'customer' ? appt.customer_name : 'אלכס'}! ⚡`, 'success');
+        showToast(result.message || `תזכורת SMS נשלחה בהצלחה ל-${target === 'customer' ? appt.customer_name : 'אלכס'}! ⚡`, 'success');
       } else {
-        showToast(result.message || 'שגיאה בשליחה אוטומטית דרך Twilio', 'error');
+        console.error('[Admin Dashboard] שליחת SMS בלחיצת כפתור נכשלה:', {
+          appointmentId: appt.id,
+          customerName: appt.customer_name,
+          phone,
+          error: result.message,
+        });
+        showToast(result.message || 'שגיאה בשליחת תזכורת SMS דרך Telnyx', 'error');
       }
     } catch (err: any) {
+      console.error('[Admin Dashboard] חריגה בלתי צפויה בשליחת SMS:', err);
       showToast(`שגיאה בשליחה: ${err?.message || 'אנא נסי שוב'}`, 'error');
     } finally {
       setSendingApptId(null);

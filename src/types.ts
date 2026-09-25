@@ -60,7 +60,7 @@ export interface WhatsAppReminderSettings {
   autoSendEnabled: boolean; // Automatic background dispatch via API/Webhook
   browserNotificationsEnabled: boolean;
   soundEnabled: boolean;
-  provider: 'direct' | 'webhook' | 'greenapi' | 'ultramsg' | 'twilio' | 'make';
+  provider: 'telnyx' | 'direct' | 'webhook' | 'greenapi' | 'ultramsg' | 'twilio' | 'make';
   webhookUrl?: string;
   apiKey?: string;
   instanceId?: string;

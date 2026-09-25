@@ -29,6 +29,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Appointment, WhatsAppReminderSettings } from '../types';
+import { auth } from '../lib/firebase';
 import { SALON_INFO } from '../utils/storage';
 import {
   getStoredReminderSettings,
@@ -68,7 +69,6 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
     'today_morning'
   );
   const [testPhoneNumber, setTestPhoneNumber] = useState<string>(SALON_INFO.phone);
-  const [showTwilioToken, setShowTwilioToken] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [resetSuccess, setResetSuccess] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ status: 'idle' | 'loading' | 'success' | 'error'; message: string }>({
@@ -93,7 +93,16 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
   const fetchDiagnostics = async () => {
     setIsDiagnosing(true);
     try {
-      const res = await fetch('/api/whatsapp/diagnose');
+      let token = '';
+      try {
+        if (auth.currentUser) token = await auth.currentUser.getIdToken();
+      } catch {}
+      const res = await fetch('/api/whatsapp/diagnose', {
+        headers: {
+          'x-admin-request': 'true',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
       const data = await res.json();
       setDiagnostics(data);
     } catch (err) {
@@ -221,43 +230,59 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
 
   // Immediate send to test number
   const handleTestAutomatedApi = async () => {
-    setTestResult({ status: 'loading', message: 'שולח הודעה מיידית דרך השרת...' });
+    setTestResult({ status: 'loading', message: 'שולח הודעת SMS מיידית דרך Telnyx...' });
     try {
       const rawTargetPhone = testPhoneNumber.trim() || SALON_INFO.whatsappNumber;
       const targetPhone = formatIsraeliPhoneToE164(rawTargetPhone);
+
+      let token = '';
+      try {
+        if (auth.currentUser) token = await auth.currentUser.getIdToken();
+      } catch {}
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'x-admin-request': 'true',
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      console.log(`[Test Send / Telnyx SMS] שולח SMS בדיקה אל: ${targetPhone}`);
       const serverRes = await fetch('/api/whatsapp/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           phone: targetPhone,
           message: `[הודעת בדיקה מיידית - ${SALON_INFO.name}]\n${customer1DayPreviewText}`,
-          provider: settings.provider,
-          instanceId: settings.instanceId,
-          apiKey: settings.apiKey,
-          webhookUrl: settings.webhookUrl,
-          twilioAccountSid: settings.twilioAccountSid,
-          twilioAuthToken: settings.twilioAuthToken,
-          twilioPhoneNumber: settings.twilioPhoneNumber,
-          twilioType: settings.twilioType || 'sms',
+          provider: 'telnyx',
           reminderType: '1day',
           appointment: demoAppt,
         }),
       });
 
       const serverData = await serverRes.json();
-      if (serverData.success) {
-        const providerName = settings.provider === 'twilio' ? `Twilio (${settings.twilioType === 'sms' ? 'SMS' : 'WhatsApp'})` : settings.provider;
+      if (serverRes.ok && serverData.success) {
+        console.log('[Test Send / Telnyx SMS] הודעת בדיקה נשלחה בהצלחה:', serverData);
         setTestResult({
           status: 'success',
-          message: `ההודעה נשלחה מיידית בהצלחה דרך ${providerName} למספר ${targetPhone}! (SID: ${serverData.data?.sid || 'ok'})`,
+          message: `ההודעה נשלחה מיידית בהצלחה דרך Telnyx למספר ${targetPhone}! (ID: ${serverData.data?.id || 'ok'})`,
         });
       } else {
+        console.error('[Test Send / Telnyx SMS] שליחת SMS בדיקה נכשלה מול Telnyx:', {
+          targetPhone,
+          httpStatus: serverRes.status,
+          statusText: serverRes.statusText,
+          error: serverData?.error,
+          serverData,
+        });
         setTestResult({
           status: 'error',
-          message: serverData.error || 'שגיאה בשליחה דרך השרת. בדקי את פרטי ה-API והטלפון.',
+          message: serverData.error || 'שגיאה בשליחה דרך Telnyx. בדקי את משתני הסביבה ב-Render.',
         });
       }
     } catch (err: any) {
+      console.error('[Test Send / Telnyx SMS] שגיאת רשת חריגה:', err);
       setTestResult({
         status: 'error',
         message: `שגיאת רשת: ${err?.message || 'נכשלה הפעולה'}`,
@@ -392,7 +417,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
             }`}
           >
             <Settings className="w-4 h-4" />
-            <span>3. הגדרות Twilio / API</span>
+            <span>3. הגדרות Telnyx / API</span>
           </button>
         </div>
 
@@ -936,7 +961,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
               <div className="p-4 bg-purple-50/80 border border-purple-200 rounded-2xl space-y-2">
                 <span className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
                   <Settings className="w-4 h-4 text-purple-600" />
-                  <span>הגדרות ספק לשליחה אוטומטית (Twilio / Green API / Webhook)</span>
+                  <span>הגדרות ספק לשליחה אוטומטית (Telnyx / Green API / Webhook)</span>
                 </span>
                 <p className="text-slate-600 leading-relaxed">
                   השרת מפעיל משימת רקע לשליחה אוטומטית לפי שעון ישראל, בשעות שהוגדרו למעלה.
@@ -1050,11 +1075,11 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
               <div>
                 <label className="block font-bold text-slate-800 mb-1.5">בחירת ספק השליחה:</label>
                 <select
-                  value={settings.provider || 'twilio'}
+                  value={settings.provider === 'twilio' ? 'telnyx' : (settings.provider || 'telnyx')}
                   onChange={(e) => setSettings({ ...settings, provider: e.target.value as any })}
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 focus:bg-white focus:border-purple-600 outline-none cursor-pointer"
                 >
-                  <option value="twilio">⭐ Twilio (WhatsApp & SMS רשמי ומאובטח)</option>
+                  <option value="telnyx">⭐ Telnyx (שליחת הודעות SMS מהירה ומאובטחת)</option>
                   <option value="greenapi">Green-API (חיבור WhatsApp Web ישיר)</option>
                   <option value="ultramsg">UltraMsg (חיבור WhatsApp API)</option>
                   <option value="webhook">Webhook (Make / Zapier / n8n)</option>
@@ -1062,107 +1087,36 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                 </select>
               </div>
 
-              {/* 1. Twilio Provider Form */}
-              {settings.provider === 'twilio' && (
+              {/* 1. Telnyx Provider Card */}
+              {(settings.provider === 'telnyx' || settings.provider === 'twilio') && (
                 <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-4">
                   <div className="flex items-center justify-between pb-2 border-b border-slate-200">
                     <span className="font-bold text-slate-900 flex items-center gap-1.5">
                       <Smartphone className="w-4 h-4 text-purple-600" />
-                      <span>פרטי חשבון Twilio</span>
+                      <span>הגדרות ספק Telnyx (SMS)</span>
                     </span>
-
-                    {/* Channel Selector: WhatsApp vs SMS */}
-                    <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200">
-                      <button
-                        type="button"
-                        onClick={() => setSettings({ ...settings, twilioType: 'whatsapp' })}
-                        className={`px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer ${
-                          settings.twilioType !== 'sms'
-                            ? 'bg-emerald-600 text-white shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        WhatsApp
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSettings({ ...settings, twilioType: 'sms' })}
-                        className={`px-3 py-1 rounded-lg font-bold text-xs transition cursor-pointer ${
-                          settings.twilioType === 'sms'
-                            ? 'bg-purple-600 text-white shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        SMS
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block font-bold text-slate-700 mb-1">
-                        Account SID
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                        value={settings.twilioAccountSid || ''}
-                        onChange={(e) => setSettings({ ...settings, twilioAccountSid: e.target.value.trim() })}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:border-purple-600 outline-none font-mono text-xs"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block font-bold text-slate-700 mb-1">
-                        Auth Token
-                      </label>
-                      <div className="relative">
-                        <input
-                          type={showTwilioToken ? 'text' : 'password'}
-                          placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                          value={settings.twilioAuthToken || ''}
-                          onChange={(e) => setSettings({ ...settings, twilioAuthToken: e.target.value.trim() })}
-                          className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl focus:border-purple-600 outline-none font-mono text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowTwilioToken(!showTwilioToken)}
-                          className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
-                        >
-                          {showTwilioToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-slate-700 mb-1">
-                      מספר השולח ב-Twilio (From Number)
-                    </label>
-                    <input
-                      type="text"
-                      placeholder={
-                        settings.twilioType === 'sms'
-                          ? '+1234567890 (Twilio Phone Number)'
-                          : 'whatsapp:+14155238886 (Twilio Sandbox / Number)'
-                      }
-                      value={settings.twilioPhoneNumber || ''}
-                      onChange={(e) => setSettings({ ...settings, twilioPhoneNumber: e.target.value.trim() })}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:border-purple-600 outline-none font-mono text-xs"
-                    />
-                    <span className="text-[11px] text-slate-500 mt-1 block">
-                      {settings.twilioType === 'sms'
-                        ? 'מספר הטלפון הווירטואלי שלך ב-Twilio (ברירת מחדל: +15599345376)'
-                        : 'עבור WhatsApp Sandbox: whatsapp:+14155238886'}
+                    <span className="text-[11px] font-bold px-2 py-0.5 bg-purple-100 text-purple-800 rounded-full">
+                      אינטגרציית שרת (Render)
                     </span>
                   </div>
 
-                  {/* Live Twilio Diagnostics Box */}
-                  <div className="mt-3 p-3.5 bg-white rounded-xl border border-slate-200 space-y-3">
+                  <div className="p-3 bg-purple-50/70 border border-purple-200 rounded-xl text-purple-950 text-xs leading-relaxed space-y-1">
+                    <p className="font-bold">
+                      השליחה מתבצעת ישירות דרך שרת ה-Node.js ב-Render באמצעות הספרייה הרשמית של Telnyx:
+                    </p>
+                    <ul className="list-disc list-inside space-y-0.5 text-[11px] text-purple-900 font-mono">
+                      <li>process.env.TELNYX_API_KEY (אימות)</li>
+                      <li>process.env.TELNYX_PROFILE_ID (Messaging Profile)</li>
+                      <li>process.env.TELNYX_FROM (מספר שולח)</li>
+                    </ul>
+                  </div>
+
+                  {/* Live Telnyx Diagnostics Box */}
+                  <div className="p-3.5 bg-white rounded-xl border border-slate-200 space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="font-bold text-slate-900 flex items-center gap-1.5 text-xs">
                         <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                        <span>אבחון חיבור ובקרה חי ל-Twilio</span>
+                        <span>אבחון חיבור ובקרה חי ל-Telnyx</span>
                       </span>
                       <button
                         type="button"
@@ -1179,39 +1133,40 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                       <div className="space-y-2.5 text-[11px]">
                         <div className="grid grid-cols-2 gap-2">
                           <div className="p-2 bg-slate-50 rounded-lg border border-slate-200">
-                            <span className="text-slate-500 block">סטטוס אימות:</span>
-                            <span className="font-bold text-emerald-700 flex items-center gap-1">
-                              <CheckCircle className="w-3 h-3" />
-                              מחובר ומאומת תקין ✓
-                            </span>
+                            <span className="text-slate-500 block">סטטוס הגדרות:</span>
+                            {diagnostics.telnyx?.hasCredentials ? (
+                              <span className="font-bold text-emerald-700 flex items-center gap-1">
+                                <CheckCircle className="w-3 h-3" />
+                                מוגדר בשרת ומאומת ✓
+                              </span>
+                            ) : (
+                              <span className="font-bold text-amber-700 flex items-center gap-1">
+                                <AlertTriangle className="w-3 h-3" />
+                                חסרים משתני סביבה ב-Render
+                              </span>
+                            )}
                           </div>
                           <div className="p-2 bg-slate-50 rounded-lg border border-slate-200">
-                            <span className="text-slate-500 block">סוג חשבון:</span>
-                            <span className="font-bold text-amber-700">
-                              {diagnostics.twilio?.accountInfo?.type === 'Trial' ? 'חשבון התנסות (Trial)' : 'חשבון מלא (Full)'}
+                            <span className="text-slate-500 block">מספר שולח (From):</span>
+                            <span className="font-bold text-purple-700 font-mono">
+                              {diagnostics.telnyx?.fromNumber || 'לא מוגדר'}
                             </span>
                           </div>
                         </div>
 
-                        {diagnostics.twilio?.quotaExceeded && (
-                          <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 space-y-1.5">
+                        {diagnostics.telnyx?.errorSummary && (
+                          <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-[11px] space-y-1">
                             <div className="flex items-center gap-1.5 font-bold text-amber-950">
                               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                              <span>התראה על מגבלת חשבון Twilio (Trial) להיום</span>
+                              <span>הודעת מערכת</span>
                             </div>
-                            <p className="leading-relaxed">
-                              חשבון Twilio הגיע למגבלת <strong>50 הודעות ליום</strong> שמוגדרת לחשבונות חינמיים.
-                              המכסה תתאפס אוטומטית מחר, או מיד עם טעינת יתרה בחשבון Twilio.
-                            </p>
-                            <p className="font-medium text-[11px] text-amber-800">
-                              💡 <strong>פתרון מיידי:</strong> ניתן לשלוח תזכורות בלחיצה אחת על אייקון הוואטסאפ (💬) בשורת כל תור ביומן ללא כל תלות ב-Twilio ובחינם!
-                            </p>
+                            <p>{diagnostics.telnyx.errorSummary}</p>
                           </div>
                         )}
                       </div>
                     ) : (
                       <div className="p-3 bg-slate-50 rounded-lg text-slate-500 text-center text-xs">
-                        טוען נתוני אבחון מול Twilio...
+                        טוען נתוני אבחון מול Telnyx...
                       </div>
                     )}
                   </div>

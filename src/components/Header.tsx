@@ -20,6 +20,7 @@ interface HeaderProps {
   onSelectTab?: (tab: 'booking' | 'admin') => void;
   onOpenMyBooking: () => void;
   currentUser: UserSession | null;
+  adminSession?: UserSession | null;
   onOpenAuthModal?: (role?: 'admin' | 'customer') => void;
   onQuickSwitchRole?: (role: 'admin' | 'customer') => void;
   onLogout: () => void;
@@ -30,11 +31,12 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectTab,
   onOpenMyBooking,
   currentUser,
+  adminSession,
   onOpenAuthModal,
   onQuickSwitchRole,
   onLogout,
 }) => {
-  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin);
+  const isUserAdmin = Boolean(adminSession && adminSession.isAdmin);
 
   const handleAdminTabClick = () => {
     if (isUserAdmin && onSelectTab) {
@@ -61,7 +63,7 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
         </div>
 
-        {/* Quick View Mode Switcher Pill - ONLY visible to verified Admin (0546307114 / 0543111408) */}
+        {/* Quick View Mode Switcher Pill - ONLY visible when admin is logged in */}
         {isUserAdmin && (
           <div className="flex items-center gap-1.5 bg-slate-900/90 p-0.5 rounded-xl border border-purple-500/30">
             <span className="text-[10px] text-purple-300 font-bold px-1.5 hidden sm:inline">מצב תצוגה:</span>
@@ -81,7 +83,7 @@ export const Header: React.FC<HeaderProps> = ({
 
             <Link
               to="/admin/dashboard"
-              className="px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 text-slate-400 hover:text-white"
+              className="px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 text-purple-300 hover:text-white"
               title="מעבר לצפייה וניהול כמנהלת"
             >
               <ShieldCheck className="w-3 h-3 text-purple-300" />
@@ -93,17 +95,10 @@ export const Header: React.FC<HeaderProps> = ({
         {/* User Session Status Chip */}
         {currentUser ? (
           <div className="flex items-center gap-2">
-            {isUserAdmin ? (
-              <span className="bg-purple-900/90 text-purple-200 px-2 py-0.5 rounded-full text-[10px] font-black border border-purple-400 flex items-center gap-1 shadow-[0_0_8px_rgba(168,85,247,0.4)]">
-                <ShieldCheck className="w-3 h-3 text-purple-300" />
-                <span>מנהלת: {currentUser.name}</span>
-              </span>
-            ) : (
-              <span className="bg-slate-800 text-slate-200 px-2 py-0.5 rounded-full text-[10px] font-medium border border-slate-700 flex items-center gap-1">
-                <User className="w-3 h-3 text-purple-300" />
-                <span>שלום, {currentUser.name}</span>
-              </span>
-            )}
+            <span className="bg-slate-800 text-slate-200 px-2 py-0.5 rounded-full text-[10px] font-medium border border-slate-700 flex items-center gap-1">
+              <User className="w-3 h-3 text-purple-300" />
+              <span>שלום, {currentUser.name}</span>
+            </span>
             <button
               type="button"
               onClick={onLogout}

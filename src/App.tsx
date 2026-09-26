@@ -25,6 +25,9 @@ import {
   getStoredUserSession,
   saveUserSession,
   clearUserSession,
+  getStoredAdminSession,
+  saveAdminSession,
+  clearAdminSession,
   getStoredServices,
   saveStoredServices,
   getStoredScheduleSettings,
@@ -59,6 +62,7 @@ export default function App() {
   const navigate = useNavigate();
 
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
+  const [adminSession, setAdminSession] = useState<UserSession | null>(() => getStoredAdminSession());
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [isTermsOpen, setIsTermsOpen] = useState<boolean>(false);
 
@@ -124,7 +128,8 @@ export default function App() {
 
   // Admin Login callback from dedicated /admin route
   const handleAdminLoginSuccess = (session: UserSession) => {
-    setCurrentUser(session);
+    saveAdminSession(session);
+    setAdminSession(session);
     showToast(`שלום ${session.name}, התחברת בהצלחה לממשק המנהל!`);
   };
 
@@ -136,12 +141,9 @@ export default function App() {
       console.warn('Firebase signOut warning:', err);
     }
     clearUserSession();
-    try {
-      localStorage.removeItem('alex_admin_session_token');
-    } catch {
-      // ignore
-    }
+    clearAdminSession();
     setCurrentUser(null);
+    setAdminSession(null);
     showToast('התנתקת בהצלחה מהמערכת');
   };
 
@@ -270,7 +272,7 @@ export default function App() {
     }
   };
 
-  const isUserAdmin = Boolean(currentUser && currentUser.isAdmin);
+  const isUserAdmin = Boolean(adminSession && adminSession.isAdmin);
 
   return (
     <>
@@ -288,6 +290,7 @@ export default function App() {
                 onSelectTab={() => {}}
                 onOpenMyBooking={() => setIsMyBookingOpen(true)}
                 currentUser={currentUser}
+                adminSession={adminSession}
                 onOpenAuthModal={() => setIsAuthModalOpen(true)}
                 onLogout={handleLogout}
               />
@@ -588,7 +591,7 @@ export default function App() {
                           <span>לוח ניהול ובקרה • {SALON_INFO.name}</span>
                         </div>
                         <p className="text-[11px] text-slate-400 font-medium">
-                          מחוברת כמנהלת: {currentUser?.email || currentUser?.name || 'אלכס'}
+                          מחוברת כמנהלת: {adminSession?.email || adminSession?.name || 'אלכסנדרה ביטון'}
                         </p>
                       </div>
                     </div>

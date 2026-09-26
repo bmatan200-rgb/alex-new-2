@@ -206,11 +206,11 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         notes: notes.trim() || undefined,
       };
 
-      // Save user session in localStorage
+      // Save user session in localStorage (Always strictly customer session)
       saveUserSession({
         name: nameToUse,
         phone: phoneToUse,
-        isAdmin: adminFlag,
+        isAdmin: false,
         loggedInAt: new Date().toISOString(),
         acceptedTerms: currentUser?.acceptedTerms ?? true,
         acceptedTermsAt: currentUser?.acceptedTermsAt || new Date().toISOString(),

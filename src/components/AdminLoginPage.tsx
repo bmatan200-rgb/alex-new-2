@@ -13,7 +13,7 @@ import {
 import { useNavigate, Link } from 'react-router-dom';
 import { auth, signInWithEmailAndPassword } from '../lib/firebase';
 import { UserSession } from '../types';
-import { saveUserSession, SALON_INFO } from '../utils/storage';
+import { saveAdminSession, SALON_INFO } from '../utils/storage';
 
 interface AdminLoginPageProps {
   onLoginSuccess: (session: UserSession) => void;
@@ -70,7 +70,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
         acceptedTermsAt: nowIso,
       };
 
-      saveUserSession(adminSession);
+      saveAdminSession(adminSession);
       setSuccess('התחברת בהצלחה! מעביר ללוח הבקרה...');
 
       setTimeout(() => {

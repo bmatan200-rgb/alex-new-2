@@ -53,7 +53,8 @@ export const SERVICES: Service[] = [
 const STORAGE_KEY_SERVICES = 'alex_beauty_services_v2';
 const STORAGE_KEY_SCHEDULE_SETTINGS = 'alex_beauty_schedule_settings_v1';
 const STORAGE_KEY_APPOINTMENTS = 'alex_beauty_appointments_v5';
-const STORAGE_KEY_USER_SESSION = 'alex_beauty_user_session_v4';
+const STORAGE_KEY_USER_SESSION = 'alex_customer_session_v6';
+const STORAGE_KEY_ADMIN_SESSION = 'alex_admin_auth_session_v6';
 
 export function getStoredScheduleSettings(): ScheduleSettings {
   try {
@@ -166,18 +167,26 @@ export function deleteAppointmentPermanently(appointmentId: number | string): vo
 export function getStoredUserSession(): UserSession | null {
   try {
     // Clean up all legacy session keys so the app always starts clean
-    ['alex_beauty_user_session_v1', 'alex_beauty_user_session_v2', 'alex_beauty_user_session_v3'].forEach((k) => {
-      try { localStorage.removeItem(k); } catch {}
+    [
+      'alex_beauty_user_session_v1',
+      'alex_beauty_user_session_v2',
+      'alex_beauty_user_session_v3',
+      'alex_beauty_user_session_v4',
+      'alex_beauty_user_session_v5',
+    ].forEach((k) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {}
     });
 
     const raw = localStorage.getItem(STORAGE_KEY_USER_SESSION);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && parsed.phone && parsed.name) {
-      // Ensure session has proper structure
+      // Customer session is strictly customer data (never admin)
       return {
         ...parsed,
-        isAdmin: Boolean(parsed.isAdmin),
+        isAdmin: false,
       };
     }
     return null;
@@ -190,7 +199,7 @@ export function saveUserSession(session: UserSession): void {
   try {
     const sessionToSave: UserSession = {
       ...session,
-      isAdmin: Boolean(session.isAdmin),
+      isAdmin: false, // Customer sessions are always non-admin
       name: (session.name || '').trim(),
       phone: (session.phone || '').trim(),
       loggedInAt: session.loggedInAt || new Date().toISOString(),
@@ -201,13 +210,61 @@ export function saveUserSession(session: UserSession): void {
   }
 }
 
+export function getStoredAdminSession(): UserSession | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_ADMIN_SESSION);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.isAdmin === true) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveAdminSession(session: UserSession): void {
+  try {
+    const sessionToSave: UserSession = {
+      ...session,
+      isAdmin: true,
+      name: (session.name || 'אלכסנדרה ביטון (מנהלת)').trim(),
+      email: (session.email || '').trim(),
+      phone: (session.phone || SALON_INFO.phone).trim(),
+      loggedInAt: session.loggedInAt || new Date().toISOString(),
+    };
+    localStorage.setItem(STORAGE_KEY_ADMIN_SESSION, JSON.stringify(sessionToSave));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function clearAdminSession(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY_ADMIN_SESSION);
+    localStorage.removeItem('alex_admin_session_token');
+  } catch {
+    // Ignore
+  }
+}
+
 export function clearUserSession(): void {
   try {
     localStorage.removeItem(STORAGE_KEY_USER_SESSION);
+    localStorage.removeItem(STORAGE_KEY_ADMIN_SESSION);
     localStorage.removeItem('alex_admin_session_token');
-    localStorage.removeItem('alex_beauty_user_session_v1');
-    localStorage.removeItem('alex_beauty_user_session_v2');
-    localStorage.removeItem('alex_beauty_user_session_v3');
+    [
+      'alex_beauty_user_session_v1',
+      'alex_beauty_user_session_v2',
+      'alex_beauty_user_session_v3',
+      'alex_beauty_user_session_v4',
+      'alex_beauty_user_session_v5',
+    ].forEach((k) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {}
+    });
   } catch {
     // Ignore
   }

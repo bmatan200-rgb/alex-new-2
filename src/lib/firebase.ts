@@ -23,7 +23,7 @@ import {
   type User as FirebaseUser,
 } from 'firebase/auth';
 import { Appointment, Service, AdminUser, ScheduleSettings, Customer } from '../types';
-import { getStoredUserSession } from '../utils/storage';
+import { getStoredUserSession, getStoredAdminSession } from '../utils/storage';
 import { deduplicateAppointments } from '../utils/dateUtils';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -173,7 +173,7 @@ export async function cancelAppointmentInFirestore(
   startTime?: string
 ): Promise<void> {
   const idStr = String(appointmentId);
-  const session = getStoredUserSession();
+  const session = getStoredAdminSession() || getStoredUserSession();
   const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
   
   let serverOk = false;
@@ -229,7 +229,7 @@ export async function deleteAppointmentInFirestore(
   startTime?: string
 ): Promise<void> {
   const idStr = String(appointmentId);
-  const session = getStoredUserSession();
+  const session = getStoredAdminSession() || getStoredUserSession();
   const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
 
   let serverOk = false;
@@ -302,7 +302,7 @@ export function subscribeServices(
  * Save services configuration to Firestore
  */
 export async function saveServicesToFirestore(services: Service[]): Promise<void> {
-  const session = getStoredUserSession();
+  const session = getStoredAdminSession() || getStoredUserSession();
   const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
 
   let serverOk = false;
@@ -369,7 +369,7 @@ export function subscribeScheduleSettings(
 export async function saveScheduleSettingsToFirestore(
   schedule: ScheduleSettings | Record<string, any>
 ): Promise<void> {
-  const session = getStoredUserSession();
+  const session = getStoredAdminSession() || getStoredUserSession();
   const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
 
   let serverOk = false;
@@ -611,7 +611,7 @@ export async function upsertCustomerToFirestore(data: {
  */
 export async function fetchAdminCustomers(sessionToken?: string): Promise<Customer[]> {
   try {
-    const session = getStoredUserSession();
+    const session = getStoredAdminSession() || getStoredUserSession();
     let token = '';
     if (auth.currentUser) {
       token = await auth.currentUser.getIdToken();
@@ -706,7 +706,7 @@ export function subscribeCustomers(
  * מחיקת לקוח מרשימת הלקוחות (למנהלת בלבד)
  */
 export async function deleteCustomer(customerId: string): Promise<boolean> {
-  const session = getStoredUserSession();
+  const session = getStoredAdminSession() || getStoredUserSession();
   let token = '';
   if (auth.currentUser) {
     token = await auth.currentUser.getIdToken();

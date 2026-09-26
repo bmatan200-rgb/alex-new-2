@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   Calendar,
+  CalendarPlus,
   Clock,
   Phone,
   MessageCircle,
@@ -53,6 +54,7 @@ import { WhatsApp2HourAlertBanner } from './WhatsApp2HourAlertBanner';
 import { WhatsAppReminderModal } from './WhatsAppReminderModal';
 import { ServiceDurationModal } from './ServiceDurationModal';
 import { CustomerDirectory } from './CustomerDirectory';
+import { AdminBookingModal } from './AdminBookingModal';
 import { upsertCustomerToFirestore } from '../lib/firebase';
 import {
   buildCustomerTodayReminderText,
@@ -103,6 +105,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onSwitchToClientView,
   onLogout,
   onUpdateServices,
+  scheduleSettings,
+  onUpdateScheduleSettings,
 }) => {
   const todayIso = toISODateString(new Date());
   const tomorrowDate = new Date();
@@ -116,6 +120,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddingManual, setIsAddingManual] = useState(false);
   const [actionTab, setActionTab] = useState<'block' | 'client'>('block');
+  const [isAdminBookingOpen, setIsAdminBookingOpen] = useState(false);
+  const [adminBookingPrefill, setAdminBookingPrefill] = useState<{
+    date?: string;
+    slot?: string;
+    customerName?: string;
+    customerPhone?: string;
+    notes?: string;
+  }>({});
+
+  const openAdminBooking = (prefill?: {
+    date?: string;
+    slot?: string;
+    customerName?: string;
+    customerPhone?: string;
+    notes?: string;
+  }) => {
+    setAdminBookingPrefill(prefill || { date: selectedDate });
+    setIsAdminBookingOpen(true);
+  };
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
   const [whatsAppModalTab, setWhatsAppModalTab] = useState<'how_it_works' | 'templates' | 'automation'>('how_it_works');
   const [isDurationModalOpen, setIsDurationModalOpen] = useState(false);
@@ -576,17 +599,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           <button
             type="button"
-            onClick={() => {
-              setActionTab('client');
-              setManualDate(selectedDate);
-              const firstFree = manualDateOccupancy.find((s) => s.isAvailable);
-              if (firstFree) setManualTime(firstFree.time);
-              setIsAddingManual(true);
-            }}
-            className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
+            onClick={() => openAdminBooking({ date: selectedDate })}
+            className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-xs active:scale-95"
           >
             <PlusCircle className="w-4 h-4" />
-            <span>תור ללקוח/ה</span>
+            <span>קביעת תור ללקוח/ה ✨</span>
           </button>
         </div>
       </div>
@@ -638,13 +655,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <CustomerDirectory
           appointments={appointments}
           onOpenManualBookingForCustomer={(cust) => {
-            setAdminTab('calendar');
-            setActionTab('client');
-            setManualDate(todayIso);
-            setManualName(cust.name);
-            setManualPhone(cust.phone);
-            setIsAddingManual(true);
-            window.scrollTo({ top: 150, behavior: 'smooth' });
+            openAdminBooking({
+              customerName: cust.name,
+              customerPhone: cust.phone,
+              date: todayIso,
+            });
           }}
           onShowToast={(msg, type) => showToast(msg, type === 'error' ? 'error' : 'success')}
         />
@@ -712,6 +727,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           onUpdateServices?.(updated);
           showToast('משך הטיפול והגדרות היומן עודכנו בהצלחה!', 'success');
         }}
+      />
+
+      {/* Admin Interactive Client Booking Modal */}
+      <AdminBookingModal
+        isOpen={isAdminBookingOpen}
+        onClose={() => setIsAdminBookingOpen(false)}
+        services={services}
+        appointments={appointments}
+        scheduleSettings={scheduleSettings}
+        onAddAppointment={onAddAppointment}
+        initialDate={adminBookingPrefill.date}
+        initialSlot={adminBookingPrefill.slot}
+        initialCustomerName={adminBookingPrefill.customerName}
+        initialCustomerPhone={adminBookingPrefill.customerPhone}
+        initialNotes={adminBookingPrefill.notes}
+        onShowToast={(msg, type) => showToast(msg, type || 'success')}
       />
 
       {/* Cancel Appointment Confirmation Modal */}
@@ -832,15 +863,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               <button
                 type="button"
-                onClick={() => setActionTab('client')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                  actionTab === 'client'
-                    ? 'bg-purple-600 text-white'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                }`}
+                onClick={() => {
+                  setIsAddingManual(false);
+                  openAdminBooking({ date: selectedDate });
+                }}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer bg-purple-600 hover:bg-purple-700 text-white shadow-xs active:scale-95"
               >
-                <User className="w-3.5 h-3.5" />
-                <span>שריון תור ללקוח/ה ידנית</span>
+                <PlusCircle className="w-3.5 h-3.5" />
+                <span>קביעת תור ללקוח/ה (ממשק ויזואלי) ✨</span>
               </button>
             </div>
 
@@ -1113,108 +1143,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </button>
             </form>
           ) : (
-            /* Manual Client Appointment Form */
-            <form onSubmit={handleManualSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">שם הלקוח/ה *</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="שם מלא"
-                    value={manualName}
-                    onChange={(e) => setManualName(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 text-slate-900 rounded-xl border border-slate-200 outline-none focus:border-purple-600 focus:bg-white"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">טלפון לקוח/ה</label>
-                  <input
-                    type="tel"
-                    placeholder="050-0000000"
-                    value={manualPhone}
-                    onChange={(e) => setManualPhone(e.target.value)}
-                    dir="ltr"
-                    className="w-full px-3 py-2 bg-slate-50 text-slate-900 rounded-xl border border-slate-200 outline-none focus:border-purple-600 focus:bg-white text-right"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">תאריך *</label>
-                  <input
-                    type="date"
-                    required
-                    value={manualDate}
-                    onChange={(e) => setManualDate(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 text-slate-900 rounded-xl border border-slate-200 outline-none focus:border-purple-600 focus:bg-white font-medium"
-                  />
-                  <span className="text-[11px] text-slate-500 mt-1 block">
-                    {formatHebrewFullDate(manualDate)}
-                  </span>
-                </div>
-
-                <div>
-                  <label className="block text-slate-700 font-bold mb-1">הערות לתור</label>
-                  <input
-                    type="text"
-                    placeholder="הערה לתור..."
-                    value={manualNotes}
-                    onChange={(e) => setManualNotes(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 text-slate-900 rounded-xl border border-slate-200 outline-none focus:border-purple-600 focus:bg-white"
-                  />
-                </div>
+            /* Visual Client Booking Card */
+            <div className="p-6 sm:p-8 bg-gradient-to-br from-purple-50 via-white to-purple-50/60 border-2 border-purple-200 rounded-2xl text-center space-y-4 shadow-xs">
+              <div className="w-14 h-14 bg-purple-100 text-purple-700 rounded-2xl flex items-center justify-center mx-auto shadow-xs border border-purple-200">
+                <CalendarPlus className="w-7 h-7 text-purple-600" />
               </div>
-
-              {/* Slot selector for manual booking */}
-              <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
-                <label className="block font-bold text-slate-800">
-                  בחירת שעה (מסונכרן עם היומן - {formatDurationMinutes(currentService.duration_minutes || 110)} לטיפול):
-                </label>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                  {manualDateOccupancy.map((slot) => {
-                    const isSelected = manualTime === slot.time && slot.isAvailable;
-                    const isOccupied = !slot.isAvailable;
-
-                    return (
-                      <button
-                        key={slot.time}
-                        type="button"
-                        disabled={isOccupied}
-                        onClick={() => setManualTime(slot.time)}
-                        className={`p-2.5 rounded-xl border text-right transition font-medium ${
-                          isOccupied
-                            ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60'
-                            : isSelected
-                            ? 'bg-purple-600 text-white border-purple-600 font-bold shadow-md'
-                            : 'bg-white hover:bg-purple-50 text-slate-800 border-slate-200 cursor-pointer'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-['Rubik',sans-serif] font-bold">
-                            שעה: {slot.time}
-                          </span>
-                          {isOccupied ? (
-                            <span className="text-[10px] text-red-600 font-bold">תפוס</span>
-                          ) : (
-                            <span className="text-[10px] text-emerald-600 font-bold">פנוי</span>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className="space-y-1.5 max-w-md mx-auto">
+                <h3 className="text-base sm:text-lg font-black text-slate-900 font-['Rubik',sans-serif]">
+                  מערכת קביעת תורים אינטראקטיבית ללקוחות
+                </h3>
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                  שריון תור ב-4 שלבים ויזואליים ונוחים בדיוק כמו שהלקוח רואה — בחירת סוג הטיפול, לוח ימים עם ספירת שעות פנויות, ובחירה מהירה מרשימת הלקוחות.
+                </p>
               </div>
-
               <button
-                type="submit"
-                className="w-full py-3.5 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-xl transition cursor-pointer shadow-md flex items-center justify-center gap-2"
+                type="button"
+                onClick={() => {
+                  setIsAddingManual(false);
+                  openAdminBooking({ date: selectedDate });
+                }}
+                className="px-6 py-3.5 bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white font-bold text-xs sm:text-sm rounded-xl transition cursor-pointer shadow-md shadow-purple-600/25 inline-flex items-center gap-2 active:scale-95"
               >
-                <PlusCircle className="w-4 h-4" />
-                <span>שמירת תור הלקוח/ה</span>
+                <CalendarPlus className="w-4 h-4" />
+                <span>פתיחת מערכת קביעת תור ללקוח/ה ✨</span>
               </button>
-            </form>
+            </div>
           )}
         </div>
       )}
@@ -1373,15 +1326,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <button
                             type="button"
                             onClick={() => {
-                              setActionTab('client');
-                              setManualDate(selectedDate);
-                              setManualTime(slot.time);
-                              setIsAddingManual(true);
+                              openAdminBooking({
+                                date: selectedDate,
+                                slot: slot.time,
+                              });
                             }}
                             className="flex-1 py-1.5 px-2.5 bg-purple-50 hover:bg-purple-100 text-purple-900 text-xs font-bold rounded-xl transition flex items-center justify-center gap-1 cursor-pointer border border-purple-200"
                           >
                             <PlusCircle className="w-3.5 h-3.5 text-purple-700" />
-                            <span>רישום לקוח/ה</span>
+                            <span>קביעת תור לשעה זו ✨</span>
                           </button>
                         </>
                       ) : isClient && slot.appointment ? (

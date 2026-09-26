@@ -42,7 +42,7 @@ import {
   auth,
   signOut,
 } from './lib/firebase';
-import { formatDurationMinutes, formatILS, deduplicateAppointments, isAppointmentInPast } from './utils/dateUtils';
+import { formatILS, deduplicateAppointments, isAppointmentInPast } from './utils/dateUtils';
 import { Header } from './components/Header';
 import { TorModalFlow } from './components/TorModalFlow';
 import { ConfirmationModal } from './components/ConfirmationModal';
@@ -391,8 +391,8 @@ export default function App() {
                           <h2 className="text-2xl sm:text-3xl lg:text-4xl font-black text-slate-900 tracking-tight font-['Rubik',sans-serif] group-hover:text-purple-700 transition-colors">
                             קביעת תור
                           </h2>
-                          <p className="text-sm sm:text-base text-slate-600 font-semibold mt-1 sm:mt-1.5" dir="rtl">
-                            {mainService.name} • {formatILS(mainService.price)} ({formatDurationMinutes(mainService.duration_minutes)})
+                          <p className="text-sm sm:text-base text-purple-700 font-bold mt-1 sm:mt-1.5" dir="rtl">
+                            {mainService.name ? `${mainService.name} • ` : ''}{mainService.price || 150} ש״ח
                           </p>
                         </div>
                       </div>

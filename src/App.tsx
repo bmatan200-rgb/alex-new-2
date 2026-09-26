@@ -114,6 +114,31 @@ export default function App() {
     };
   }, []);
 
+  // Synchronize Firebase Auth state for Admin session
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged((firebaseUser) => {
+      if (firebaseUser) {
+        const storedAdmin = getStoredAdminSession();
+        if (!storedAdmin) {
+          const newAdminSession: UserSession = {
+            name: firebaseUser.displayName || 'אלכסנדרה ביטון (מנהלת)',
+            phone: SALON_INFO.phone,
+            email: firebaseUser.email || 'alex@beauty.co.il',
+            isAdmin: true,
+            loggedInAt: new Date().toISOString(),
+          };
+          saveAdminSession(newAdminSession);
+          setAdminSession(newAdminSession);
+        }
+      } else {
+        clearAdminSession();
+        setAdminSession(null);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   // Customer Login / Registration callback
   const handleCustomerLogin = (session: UserSession) => {
     const cleanSession: UserSession = {
@@ -126,6 +151,13 @@ export default function App() {
     showToast(`שלום ${cleanSession.name}! כעת ניתן לקבוע תור.`);
   };
 
+  // Customer Logout handler (Used exclusively on the customer page)
+  const handleCustomerLogout = () => {
+    clearUserSession();
+    setCurrentUser(null);
+    showToast('התנתקת מחשבון הלקוח');
+  };
+
   // Admin Login callback from dedicated /admin route
   const handleAdminLoginSuccess = (session: UserSession) => {
     saveAdminSession(session);
@@ -133,18 +165,17 @@ export default function App() {
     showToast(`שלום ${session.name}, התחברת בהצלחה לממשק המנהל!`);
   };
 
-  // Logout handler
-  const handleLogout = async () => {
+  // Admin Logout handler (Used exclusively in the Admin Dashboard)
+  const handleAdminLogout = async () => {
     try {
       await signOut(auth);
     } catch (err) {
       console.warn('Firebase signOut warning:', err);
     }
-    clearUserSession();
     clearAdminSession();
-    setCurrentUser(null);
     setAdminSession(null);
-    showToast('התנתקת בהצלחה מהמערכת');
+    showToast('התנתקת בהצלחה מממשק המנהל');
+    navigate('/admin');
   };
 
   const handleBookSuccess = async (newAppointment: Appointment) => {
@@ -290,9 +321,8 @@ export default function App() {
                 onSelectTab={() => {}}
                 onOpenMyBooking={() => setIsMyBookingOpen(true)}
                 currentUser={currentUser}
-                adminSession={adminSession}
                 onOpenAuthModal={() => setIsAuthModalOpen(true)}
-                onLogout={handleLogout}
+                onLogout={handleCustomerLogout}
               />
 
               {/* Main Content Container */}
@@ -471,17 +501,13 @@ export default function App() {
                   >
                     תקנון ותנאי שימוש
                   </button>
-                  {isUserAdmin && (
-                    <>
-                      <span>•</span>
-                      <Link
-                        to="/admin/dashboard"
-                        className="text-purple-600 hover:text-purple-800 font-bold underline transition"
-                      >
-                        מעבר לממשק ניהול
-                      </Link>
-                    </>
-                  )}
+                  <span>•</span>
+                  <Link
+                    to="/admin"
+                    className="text-slate-400 hover:text-purple-700 underline transition font-medium"
+                  >
+                    כניסת מנהלת
+                  </Link>
                 </div>
               </footer>
 
@@ -608,7 +634,7 @@ export default function App() {
 
                       <button
                         type="button"
-                        onClick={handleLogout}
+                        onClick={handleAdminLogout}
                         className="px-3 py-1.5 rounded-xl bg-red-950/70 hover:bg-red-900 text-red-200 border border-red-800/80 text-xs font-bold transition cursor-pointer"
                         title="התנתקות מלוח הבקרה"
                       >
@@ -626,7 +652,7 @@ export default function App() {
                     onCancelAppointment={handleCancelAppointment}
                     onDeleteAppointment={handleDeleteAppointment}
                     onSwitchToClientView={() => navigate('/')}
-                    onLogout={handleLogout}
+                    onLogout={handleAdminLogout}
                     onUpdateServices={handleUpdateServices}
                     scheduleSettings={scheduleSettings}
                     onUpdateScheduleSettings={handleUpdateScheduleSettings}

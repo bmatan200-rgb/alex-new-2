@@ -1,16 +1,12 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
 import {
   Sparkles,
   Calendar,
-  Lock,
   Phone,
   MapPin,
   Clock,
   User,
-  ShieldCheck,
   LogOut,
-  SlidersHorizontal,
 } from 'lucide-react';
 import { SALON_INFO } from '../utils/storage';
 import { UserSession } from '../types';
@@ -20,39 +16,20 @@ interface HeaderProps {
   onSelectTab?: (tab: 'booking' | 'admin') => void;
   onOpenMyBooking: () => void;
   currentUser: UserSession | null;
-  adminSession?: UserSession | null;
   onOpenAuthModal?: (role?: 'admin' | 'customer') => void;
-  onQuickSwitchRole?: (role: 'admin' | 'customer') => void;
   onLogout: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  activeTab = 'booking',
   onSelectTab,
   onOpenMyBooking,
   currentUser,
-  adminSession,
   onOpenAuthModal,
-  onQuickSwitchRole,
   onLogout,
 }) => {
-  const isUserAdmin = Boolean(adminSession && adminSession.isAdmin);
-
-  const handleAdminTabClick = () => {
-    if (isUserAdmin && onSelectTab) {
-      onSelectTab('admin');
-    }
-  };
-
-  const handleCustomerTabClick = () => {
-    if (onSelectTab) {
-      onSelectTab('booking');
-    }
-  };
-
   return (
     <header className="relative bg-white/95 backdrop-blur-md border-b border-slate-200 sticky top-0 z-30 transition-all shadow-xs">
-      {/* Top status bar & Role Switcher */}
+      {/* Top status bar */}
       <div className="bg-slate-950 text-purple-200 text-xs py-1.5 px-3 sm:px-6 flex flex-wrap items-center justify-between gap-2 border-b border-purple-900/40 font-medium">
         <div className="flex items-center gap-2">
           <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)] animate-pulse"></span>
@@ -62,35 +39,6 @@ export const Header: React.FC<HeaderProps> = ({
             <Clock className="w-3.5 h-3.5 inline text-purple-400" /> ראשון-חמישי 09:20-20:30
           </span>
         </div>
-
-        {/* Quick View Mode Switcher Pill - ONLY visible when admin is logged in */}
-        {isUserAdmin && (
-          <div className="flex items-center gap-1.5 bg-slate-900/90 p-0.5 rounded-xl border border-purple-500/30">
-            <span className="text-[10px] text-purple-300 font-bold px-1.5 hidden sm:inline">מצב תצוגה:</span>
-            
-            <button
-              type="button"
-              onClick={handleCustomerTabClick}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                activeTab === 'booking'
-                  ? 'bg-purple-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <User className="w-3 h-3" />
-              <span>תצוגת לקוח</span>
-            </button>
-
-            <Link
-              to="/admin/dashboard"
-              className="px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 text-purple-300 hover:text-white"
-              title="מעבר לצפייה וניהול כמנהלת"
-            >
-              <ShieldCheck className="w-3 h-3 text-purple-300" />
-              <span>תצוגת מנהל</span>
-            </Link>
-          </div>
-        )}
 
         {/* User Session Status Chip */}
         {currentUser ? (
@@ -124,7 +72,7 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="flex items-center justify-between gap-3">
           {/* Logo & Brand */}
           <div
-            onClick={() => onSelectTab('booking')}
+            onClick={() => onSelectTab?.('booking')}
             className="flex items-center gap-3 cursor-pointer select-none group"
           >
             {/* Clean Logo Badge */}
@@ -156,21 +104,8 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
 
-          {/* Nav Switcher & Action Buttons */}
+          {/* Action Buttons */}
           <div className="flex items-center gap-2">
-            {/* כפתור ממשק ניהול מוצג אך ורק אם מחוברת מנהלת מאומתת */}
-            {isUserAdmin && (
-              <Link
-                to="/admin/dashboard"
-                id="admin-dashboard-btn"
-                className="px-3.5 py-2 text-xs font-bold rounded-xl transition cursor-pointer border shadow-xs flex items-center gap-1.5 bg-purple-600 hover:bg-purple-700 text-white border-purple-500 shadow-[0_0_12px_rgba(147,51,234,0.3)]"
-                title="מעבר ללוח בקרה/ניהול"
-              >
-                <ShieldCheck className="w-3.5 h-3.5 text-purple-200" />
-                <span>ממשק מנהל</span>
-              </Link>
-            )}
-
             {/* לחצן התור שלי / ביטול - זמין ללקוח */}
             <button
               id="my-booking-search-btn"

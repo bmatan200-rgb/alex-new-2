@@ -34,6 +34,7 @@ import {
 import { SALON_INFO, saveUserSession } from '../utils/storage';
 import { addAppointmentToFirestore, upsertCustomerToFirestore } from '../lib/firebase';
 import { ExistingBookingChoiceModal } from './ExistingBookingChoiceModal';
+import { CancelAppointmentConfirmModal } from './CancelAppointmentConfirmModal';
 
 interface TorModalFlowProps {
   isOpen: boolean;
@@ -78,6 +79,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
   const [showExistingChoiceModal, setShowExistingChoiceModal] = useState(false);
   const [existingBookingsForUser, setExistingBookingsForUser] = useState<Appointment[]>([]);
   const [confirmedAdditionalBooking, setConfirmedAdditionalBooking] = useState(false);
+  const [apptToCancelInFlow, setApptToCancelInFlow] = useState<Appointment | null>(null);
 
   // Sync user info from session whenever currentUser or modal opens, and reset selection on open
   React.useEffect(() => {
@@ -731,12 +733,22 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
           const isAdmin = currentUser?.isAdmin === true;
           executeBookingSubmission(cleanName, cleanPhone, isAdmin);
         }}
-        onCancelExisting={async (appt) => {
+        onCancelExisting={(appt) => {
           setShowExistingChoiceModal(false);
-          if (onCancelAppointment) {
-            await onCancelAppointment(appt.id);
+          setApptToCancelInFlow(appt);
+        }}
+      />
+
+      {/* Confirmation modal before actual cancel in flow */}
+      <CancelAppointmentConfirmModal
+        isOpen={Boolean(apptToCancelInFlow)}
+        appointment={apptToCancelInFlow}
+        onClose={() => setApptToCancelInFlow(null)}
+        onConfirm={async () => {
+          if (apptToCancelInFlow && onCancelAppointment) {
+            await onCancelAppointment(apptToCancelInFlow.id);
+            setApptToCancelInFlow(null);
           }
-          alert(`התור לתאריך ${appt.appointment_date} בשעה ${appt.start_time} בוטל בהצלחה.`);
         }}
       />
     </div>

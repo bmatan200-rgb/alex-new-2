@@ -12,6 +12,7 @@ import {
   ChevronLeft,
   Search,
   MapPin,
+  Trash2,
 } from 'lucide-react';
 import { Appointment, ScheduleSettings, Service, UserSession } from './types';
 import {
@@ -45,6 +46,7 @@ import { formatDurationMinutes, formatILS, deduplicateAppointments, isAppointmen
 import { Header } from './components/Header';
 import { TorModalFlow } from './components/TorModalFlow';
 import { ConfirmationModal } from './components/ConfirmationModal';
+import { CancelAppointmentConfirmModal } from './components/CancelAppointmentConfirmModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import { AdminLoginPage } from './components/AdminLoginPage';
 import { MyBookingModal } from './components/MyBookingModal';
@@ -358,9 +360,10 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={() => setCustomerApptToCancel(app)}
-                                className="w-full sm:w-auto px-3.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+                                className="w-full sm:w-auto px-3.5 py-1.5 bg-red-50 hover:bg-red-100 active:bg-red-200 text-red-700 border border-red-200 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs active:scale-95"
                                 title="ביטול תור"
                               >
+                                <Trash2 className="w-3.5 h-3.5 text-red-600" />
                                 <span>ביטול תור</span>
                               </button>
                             </div>
@@ -507,29 +510,31 @@ export default function App() {
                   setIsChoiceModalOpen(false);
                   setIsTorModalOpen(true);
                 }}
-                onCancelExisting={async (appt) => {
+                onCancelExisting={(appt) => {
                   setIsChoiceModalOpen(false);
-                  await handleCancelAppointment(appt.id);
+                  setCustomerApptToCancel(appt);
                 }}
               />
 
-              <ConfirmationModal
+              <CancelAppointmentConfirmModal
                 isOpen={Boolean(customerApptToCancel)}
-                title="ביטול תור"
-                message={
-                  customerApptToCancel
-                    ? `האם את בטוחה שברצונך לבטל את התור ל-${customerApptToCancel.service_name} בתאריך ${customerApptToCancel.appointment_date} בשעה ${customerApptToCancel.start_time}?`
-                    : ''
-                }
-                confirmText="כן, בטלי את התור"
-                cancelText="חזרה"
+                appointment={customerApptToCancel}
+                onClose={() => setCustomerApptToCancel(null)}
                 onConfirm={async () => {
                   if (customerApptToCancel) {
                     await handleCancelAppointment(customerApptToCancel.id);
                     setCustomerApptToCancel(null);
                   }
                 }}
-                onCancel={() => setCustomerApptToCancel(null)}
+              />
+
+              <ConfirmationModal
+                appointment={confirmedAppointment}
+                onClose={() => setConfirmedAppointment(null)}
+                onBookAnother={() => {
+                  setConfirmedAppointment(null);
+                  setIsTorModalOpen(true);
+                }}
               />
 
               <AuthModal

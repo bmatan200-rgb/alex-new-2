@@ -731,7 +731,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                   title="תור זה כבר תפוס"
                                 >
                                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                    <div className="w-full h-[2px] bg-red-400/80 shadow-xs" />
                                   </div>
 
                                   <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
@@ -743,9 +743,8 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                       <span>תפוס</span>
                                     </span>
                                   </div>
-                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                  <div className="text-[10px] font-semibold text-slate-400 relative z-10">
                                     <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
-                                    <span className="text-red-600 font-bold">לא פנוי</span>
                                   </div>
                                 </div>
                               );
@@ -758,7 +757,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                 title="שעה זו עברה"
                               >
                                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                  <div className="w-full h-[1.5px] bg-slate-300" />
                                 </div>
 
                                 <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
@@ -827,7 +826,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                   title="תור זה כבר תפוס"
                                 >
                                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                    <div className="w-full h-[2px] bg-red-400/80 shadow-xs" />
                                   </div>
 
                                   <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
@@ -839,9 +838,8 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                       <span>תפוס</span>
                                     </span>
                                   </div>
-                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                  <div className="text-[10px] font-semibold text-slate-400 relative z-10">
                                     <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
-                                    <span className="text-red-600 font-bold">לא פנוי</span>
                                   </div>
                                 </div>
                               );
@@ -854,7 +852,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                 title="שעה זו עברה"
                               >
                                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                  <div className="w-full h-[1.5px] bg-slate-300" />
                                 </div>
 
                                 <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
@@ -921,7 +919,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                   title="תור זה כבר תפוס"
                                 >
                                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                    <div className="w-full h-[2px] bg-red-400/80 shadow-xs" />
                                   </div>
 
                                   <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
@@ -933,9 +931,8 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                       <span>תפוס</span>
                                     </span>
                                   </div>
-                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                  <div className="text-[10px] font-semibold text-slate-400 relative z-10">
                                     <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
-                                    <span className="text-red-600 font-bold">לא פנוי</span>
                                   </div>
                                 </div>
                               );
@@ -948,7 +945,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                 title="שעה זו עברה"
                               >
                                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                  <div className="w-full h-[1.5px] bg-slate-300" />
                                 </div>
 
                                 <div className="flex items-center justify-between gap-1 mb-1 relative z-10">

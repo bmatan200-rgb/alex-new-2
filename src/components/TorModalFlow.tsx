@@ -120,8 +120,6 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     ).length;
   }, [customerPhone, currentUser, appointments]);
 
-  if (!isOpen) return null;
-
   const durationMinutes = selectedService?.duration_minutes || scheduleSettings?.durationMinutes || 90;
   const businessOpen = scheduleSettings?.businessOpen || BUSINESS_OPEN;
   const businessClose = scheduleSettings?.businessClose || BUSINESS_CLOSE;
@@ -287,6 +285,8 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
 
     await executeBookingSubmission(cleanName, cleanPhone, isAdmin);
   };
+
+  if (!isOpen) return null;
 
   const selectedDayInfo = days.find((d) => d.iso === selectedDate);
 
@@ -555,9 +555,9 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                   className="relative p-3 rounded-2xl bg-slate-50/90 border-2 border-red-200/70 text-slate-400 select-none overflow-hidden cursor-not-allowed group shadow-2xs"
                                   title="תור זה כבר תפוס"
                                 >
-                                  {/* Red diagonal strike line across the slot box */}
+                                  {/* Red horizontal strike line across the slot box */}
                                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                    <div className="w-full h-[2px] bg-red-400/80 shadow-xs" />
                                   </div>
 
                                   <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
@@ -569,9 +569,8 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                       <span>תפוס</span>
                                     </span>
                                   </div>
-                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                  <div className="text-[10px] font-semibold text-slate-400 relative z-10">
                                     <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
-                                    <span className="text-red-600 font-bold">לא פנוי</span>
                                   </div>
                                 </div>
                               );
@@ -584,7 +583,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                 title="שעה זו עברה"
                               >
                                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                  <div className="w-full h-[1.5px] bg-slate-300" />
                                 </div>
 
                                 <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
@@ -653,7 +652,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                   title="תור זה כבר תפוס"
                                 >
                                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                    <div className="w-full h-[2px] bg-red-400/80 shadow-xs" />
                                   </div>
 
                                   <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
@@ -665,9 +664,8 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                       <span>תפוס</span>
                                     </span>
                                   </div>
-                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                  <div className="text-[10px] font-semibold text-slate-400 relative z-10">
                                     <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
-                                    <span className="text-red-600 font-bold">לא פנוי</span>
                                   </div>
                                 </div>
                               );
@@ -680,7 +678,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                 title="שעה זו עברה"
                               >
                                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                  <div className="w-full h-[1.5px] bg-slate-300" />
                                 </div>
 
                                 <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
@@ -747,7 +745,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                   title="תור זה כבר תפוס"
                                 >
                                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                    <div className="w-full h-[2px] bg-red-400/80 shadow-xs" />
                                   </div>
 
                                   <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
@@ -759,9 +757,8 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                       <span>תפוס</span>
                                     </span>
                                   </div>
-                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                  <div className="text-[10px] font-semibold text-slate-400 relative z-10">
                                     <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
-                                    <span className="text-red-600 font-bold">לא פנוי</span>
                                   </div>
                                 </div>
                               );
@@ -774,7 +771,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                 title="שעה זו עברה"
                               >
                                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                  <div className="w-full h-[1.5px] bg-slate-300" />
                                 </div>
 
                                 <div className="flex items-center justify-between gap-1 mb-1 relative z-10">

@@ -390,7 +390,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const slotOcc = manualDateOccupancy.find((s) => s.time === manualTime);
     if (slotOcc && slotOcc.status === 'client_booked') {
       alert(
-        `בשעה זו (${manualTime}) כבר נקבע תור ל-${slotOcc.appointment?.customer_name}. אנא בחרי שעה פנויה.`
+        `בשעה זו (${manualTime}) כבר נקבע תור ל-${slotOcc.appointment?.customer_name}. נא לבחור שעה פנויה.`
       );
       return;
     }
@@ -826,7 +826,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 className="w-full py-3 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl text-xs sm:text-sm transition flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-red-600/20"
               >
                 <XCircle className="w-4 h-4" />
-                <span>כן, בטלי את התור ושחררי את השעה ביומן</span>
+                <span>כן, ביטול התור ושחרור השעה ביומן</span>
               </button>
 
               <button
@@ -847,7 +847,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 onClick={() => setAppointmentToCancel(null)}
                 className="w-full py-2 px-3 text-slate-600 hover:bg-slate-100 font-medium rounded-xl text-xs transition cursor-pointer"
               >
-                חזרה ליומן (אל תבטלי)
+                חזרה ליומן (ללא ביטול)
               </button>
             </div>
           </div>
@@ -980,7 +980,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               {blockType === 'single_slot' && (
                 <div className="space-y-2 pt-2 border-t border-slate-100">
                   <label className="block text-xs font-bold text-slate-800">
-                    בחרי שעה לחסימה (בהפרשים זהים לשל הלקוח — שעה ו-50 דק׳):
+                    בחירת שעה לחסימה (בהפרשים זהים לשל הלקוח — שעה ו-50 דק׳):
                   </label>
 
                   {blockDateOccupancy.length === 0 ? (

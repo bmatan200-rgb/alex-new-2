@@ -657,7 +657,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                     onClick={() => setStep('day')}
                     className="px-4 py-2 bg-purple-600 text-white rounded-xl font-bold text-xs cursor-pointer shadow-xs"
                   >
-                    בחרי יום אחר
+                    בחירת יום אחר
                   </button>
                 </div>
               ) : (
@@ -673,12 +673,12 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                         onClick={() => setStep('day')}
                         className="underline text-purple-700 font-black cursor-pointer hover:text-purple-900"
                       >
-                        בחרי יום אחר
+                        בחירת יום אחר
                       </button>
                     </div>
                   ) : (
                     <div className="flex items-center justify-between text-xs text-slate-500 font-medium px-1">
-                      <span>{isBlockAction ? 'בחרי שעה לתפיסה / חופש:' : 'בחרי שעה פנויה לקביעת התור:'}</span>
+                      <span>{isBlockAction ? 'בחירת שעה לתפיסה / חופש:' : 'בחירת שעה פנויה לקביעת התור:'}</span>
                       <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 text-[11px]">
                         {effectiveAvailableSlotsCount} תורים פנויים
                       </span>

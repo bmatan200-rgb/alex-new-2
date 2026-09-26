@@ -99,7 +99,7 @@ export const ServiceCard: React.FC<ServiceCardProps> = ({
               ) : (
                 <>
                   <Sparkles className="w-4 h-4 text-[#d4af37]" />
-                  <span>בחרי שירות זה</span>
+                  <span>בחירת שירות זה</span>
                 </>
               )}
             </div>

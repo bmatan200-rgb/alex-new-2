@@ -236,10 +236,10 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     } catch (err: any) {
       console.error('Failed to book appointment:', err);
       if (err?.name === 'SlotTakenError' || err?.message?.includes('השעה הזו כבר נתפסה')) {
-        setErrorMessage('השעה הזו כבר נתפסה, בבקשה תבחרי שעה אחרת');
+        setErrorMessage('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
         setStep('slot'); // חזרה לבחירת שעה
       } else {
-        setErrorMessage('אירעה שגיאה בקביעת התור. אנא נסי שנית.');
+        setErrorMessage('אירעה שגיאה בקביעת התור. אנא נסו שנית.');
       }
       setIsSubmitting(false);
     }
@@ -276,6 +276,13 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         !isAppointmentInPast(a) &&
         a.customer_phone.replace(/\D/g, '') === cleanPhone
     );
+
+    // הגבלה של עד 3 תורים עצמאיים במקביל (מעבר ל-3 תורים יש לפנות למנהלת אלכס ביטון)
+    if (!isAdmin && existingActive.length >= 3) {
+      setExistingBookingsForUser(existingActive);
+      setShowExistingChoiceModal(true);
+      return;
+    }
 
     if (existingActive.length > 0 && !confirmedAdditionalBooking) {
       setExistingBookingsForUser(existingActive);
@@ -482,7 +489,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                     onClick={() => setStep('day')}
                     className="px-4 py-2 bg-purple-600 text-white rounded-xl font-bold text-xs cursor-pointer shadow-xs"
                   >
-                    בחרי יום אחר
+                    בחירת יום אחר
                   </button>
                 </div>
               ) : (
@@ -498,12 +505,12 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                         onClick={() => setStep('day')}
                         className="underline text-purple-700 font-black cursor-pointer hover:text-purple-900"
                       >
-                        בחרי יום אחר
+                        בחירת יום אחר
                       </button>
                     </div>
                   ) : (
                     <div className="flex items-center justify-between text-xs text-slate-500 font-medium px-1">
-                      <span>בחרי שעה פנויה לקביעת התור:</span>
+                      <span>בחירת שעה פנויה לקביעת התור:</span>
                       <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 text-[11px]">
                         {effectiveAvailableSlotsCount} תורים פנויים
                       </span>
@@ -947,11 +954,14 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         onClose={() => setShowExistingChoiceModal(false)}
         existingAppointments={existingBookingsForUser}
         onBookAnother={() => {
+          const isAdmin = currentUser?.isAdmin === true;
+          if (!isAdmin && existingBookingsForUser.length >= 3) {
+            return;
+          }
           setShowExistingChoiceModal(false);
           setConfirmedAdditionalBooking(true);
           const cleanName = customerName.trim();
           const cleanPhone = customerPhone.replace(/\D/g, '');
-          const isAdmin = currentUser?.isAdmin === true;
           executeBookingSubmission(cleanName, cleanPhone, isAdmin);
         }}
         onCancelExisting={(appt) => {

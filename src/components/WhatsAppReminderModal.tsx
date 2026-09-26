@@ -1177,7 +1177,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
               {settings.provider === 'greenapi' && (
                 <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
                   <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-blue-900 leading-relaxed text-[11px]">
-                    <strong>חיבור Green-API:</strong> הירשמי ב-green-api.com, סרקי את ה-QR קוד עם הוואטסאפ של הקליניקה, והזיני את ה-Instance ID וה-API Token.
+                    <strong>חיבור Green-API:</strong> יש להירשם ב-green-api.com, לסרוק את ה-QR קוד עם הוואטסאפ של הקליניקה, ולהזין את ה-Instance ID וה-API Token.
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
@@ -1208,7 +1208,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
               {settings.provider === 'ultramsg' && (
                 <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
                   <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-blue-900 leading-relaxed text-[11px]">
-                    <strong>חיבור UltraMsg:</strong> הירשמי ב-ultramsg.com, קבלי Instance ID ו-Token.
+                    <strong>חיבור UltraMsg:</strong> יש להירשם ב-ultramsg.com, ולקבל Instance ID ו-Token.
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>

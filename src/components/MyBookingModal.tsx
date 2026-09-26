@@ -359,7 +359,7 @@ export const MyBookingModal: React.FC<MyBookingModalProps> = ({
                               }}
                               className="text-purple-700 hover:text-purple-900 font-bold underline cursor-pointer"
                             >
-                              קבעי שוב
+                              קביעה מחדש
                             </button>
                           )}
                         </div>

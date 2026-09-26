@@ -101,10 +101,10 @@ export function subscribeAppointments(
 /**
  * Save new appointment to Firestore
  */
-/** נזרקת כששתי לקוחות ניסו לתפוס את אותה שעה בו-זמנית */
+/** נזרקת כששני לקוחות ניסו לתפוס את אותה שעה בו-זמנית */
 export class SlotTakenError extends Error {
   constructor() {
-    super('השעה הזו כבר נתפסה, בבקשה תבחרי שעה אחרת');
+    super('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
     this.name = 'SlotTakenError';
   }
 }

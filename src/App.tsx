@@ -119,7 +119,7 @@ export default function App() {
     saveUserSession(cleanSession);
     setCurrentUser(cleanSession);
     setIsAuthModalOpen(false);
-    showToast(`ברוכה הבאה, ${cleanSession.name}! כעת ניתן לקבוע תור.`);
+    showToast(`שלום ${cleanSession.name}! כעת ניתן לקבוע תור.`);
   };
 
   // Admin Login callback from dedicated /admin route

@@ -53,7 +53,7 @@ export const SERVICES: Service[] = [
 const STORAGE_KEY_SERVICES = 'alex_beauty_services_v2';
 const STORAGE_KEY_SCHEDULE_SETTINGS = 'alex_beauty_schedule_settings_v1';
 const STORAGE_KEY_APPOINTMENTS = 'alex_beauty_appointments_v5';
-const STORAGE_KEY_USER_SESSION = 'alex_beauty_user_session_v1';
+const STORAGE_KEY_USER_SESSION = 'alex_beauty_user_session_v4';
 
 export function getStoredScheduleSettings(): ScheduleSettings {
   try {
@@ -165,13 +165,20 @@ export function deleteAppointmentPermanently(appointmentId: number | string): vo
 
 export function getStoredUserSession(): UserSession | null {
   try {
+    // Clean up all legacy session keys so the app always starts clean
+    ['alex_beauty_user_session_v1', 'alex_beauty_user_session_v2', 'alex_beauty_user_session_v3'].forEach((k) => {
+      try { localStorage.removeItem(k); } catch {}
+    });
+
     const raw = localStorage.getItem(STORAGE_KEY_USER_SESSION);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (parsed && parsed.phone) {
-      // Strictly enforce admin verification solely based on authorized numbers
-      parsed.isAdmin = false;
-      return parsed;
+    if (parsed && parsed.phone && parsed.name) {
+      // Ensure session has proper structure
+      return {
+        ...parsed,
+        isAdmin: Boolean(parsed.isAdmin),
+      };
     }
     return null;
   } catch {
@@ -181,10 +188,9 @@ export function getStoredUserSession(): UserSession | null {
 
 export function saveUserSession(session: UserSession): void {
   try {
-    const isAdmin = false;
     const sessionToSave: UserSession = {
       ...session,
-      isAdmin,
+      isAdmin: Boolean(session.isAdmin),
       name: (session.name || '').trim(),
       phone: (session.phone || '').trim(),
       loggedInAt: session.loggedInAt || new Date().toISOString(),
@@ -198,6 +204,10 @@ export function saveUserSession(session: UserSession): void {
 export function clearUserSession(): void {
   try {
     localStorage.removeItem(STORAGE_KEY_USER_SESSION);
+    localStorage.removeItem('alex_admin_session_token');
+    localStorage.removeItem('alex_beauty_user_session_v1');
+    localStorage.removeItem('alex_beauty_user_session_v2');
+    localStorage.removeItem('alex_beauty_user_session_v3');
   } catch {
     // Ignore
   }

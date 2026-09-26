@@ -76,14 +76,16 @@ export const SlotSelector: React.FC<SlotSelectorProps> = ({
             : 'bg-white hover:bg-purple-50/70 text-slate-800 border-slate-200 hover:border-purple-300 shadow-xs cursor-pointer hover:-translate-y-0.5 hover:shadow-md'
         }`}
       >
-        <div className="flex items-center justify-between w-full">
+        <div className="flex items-center justify-between w-full relative z-10">
           <div className="flex items-center gap-1.5">
             <div className={`w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 ${
               isSelected ? 'bg-purple-600 text-white shadow-xs' : 'bg-slate-100 text-slate-600'
             }`}>
               <Clock className="w-3.5 h-3.5" />
             </div>
-            <span className="font-['Rubik',sans-serif] text-base font-black tracking-tight">
+            <span className={`font-['Rubik',sans-serif] text-base font-black tracking-tight ${
+              isBooked ? 'line-through decoration-red-500 decoration-2 text-slate-400' : inPast ? 'line-through decoration-slate-400 text-slate-400' : ''
+            }`}>
               {slot}
             </span>
           </div>
@@ -96,8 +98,8 @@ export const SlotSelector: React.FC<SlotSelectorProps> = ({
           )}
 
           {isBooked && (
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 flex items-center gap-1">
-              <Lock className="w-2.5 h-2.5" />
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-1 shadow-2xs">
+              <Lock className="w-2.5 h-2.5 text-red-600" />
               <span>תפוס</span>
             </span>
           )}

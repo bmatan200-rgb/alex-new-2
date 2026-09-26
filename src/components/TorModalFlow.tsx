@@ -13,6 +13,7 @@ import {
   Sun,
   Sunset,
   Moon,
+  Lock,
 } from 'lucide-react';
 import { Appointment, DayInfo, ScheduleSettings, Service, UserSession } from '../types';
 import {
@@ -23,6 +24,8 @@ import {
   toShortIsraeliDateString,
   toIsraeliDateString,
   calculateAvailableSlots,
+  getDailySlotsOccupancy,
+  SlotOccupancy,
   minutesToTime,
   timeToMinutes,
   formatDurationMinutes,
@@ -141,7 +144,23 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     return slots.filter((slotTime) => !isSlotInPast(dateIso, slotTime));
   };
 
-  const currentAvailableSlots = selectedDate ? getEffectiveAvailableSlots(selectedDate) : [];
+  // Full occupancy of all standard slots for selected date (including occupied, blocked, and free)
+  const currentSlotsOccupancy: SlotOccupancy[] = useMemo(() => {
+    if (!selectedDate) return [];
+    return getDailySlotsOccupancy(
+      selectedDate,
+      appointments,
+      durationMinutes,
+      businessOpen,
+      businessClose,
+      FRIDAY_CLOSE
+    );
+  }, [selectedDate, appointments, durationMinutes, businessOpen, businessClose]);
+
+  const effectiveAvailableSlotsCount = useMemo(() => {
+    if (!selectedDate) return 0;
+    return currentSlotsOccupancy.filter((s) => s.isAvailable && !isSlotInPast(selectedDate, s.time)).length;
+  }, [currentSlotsOccupancy, selectedDate]);
 
   const handleSelectService = (service: Service) => {
     setSelectedService(service);
@@ -150,9 +169,6 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
 
   const handleSelectDay = (day: DayInfo) => {
     if (day.isClosed) return;
-    const avail = getEffectiveAvailableSlots(day.iso);
-    if (avail.length === 0) return;
-
     setSelectedDate(day.iso);
     setSelectedSlot('');
     setStep('slot');
@@ -457,116 +473,324 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                 </span>
               </div>
 
-              {currentAvailableSlots.length === 0 ? (
+              {currentSlotsOccupancy.length === 0 ? (
                 <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200 text-slate-600 text-sm space-y-3">
                   <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
-                  <p className="font-bold">אין שעות פנויות ביום זה</p>
+                  <p className="font-bold">אין שעות פעילות ביום זה</p>
                   <button
                     type="button"
                     onClick={() => setStep('day')}
-                    className="px-4 py-2 bg-purple-600 text-white rounded-xl font-bold text-xs"
+                    className="px-4 py-2 bg-purple-600 text-white rounded-xl font-bold text-xs cursor-pointer shadow-xs"
                   >
                     בחרי יום אחר
                   </button>
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <p className="text-xs text-slate-500 font-medium text-center">
-                    לחצי על השעה המתאימה לך מתוך השעות הפנויות:
-                  </p>
+                  {effectiveAvailableSlotsCount === 0 ? (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-xs text-red-700 font-bold flex items-center justify-between shadow-2xs">
+                      <div className="flex items-center gap-1.5">
+                        <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                        <span>כל התורים ביום זה כבר תפוסים</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setStep('day')}
+                        className="underline text-purple-700 font-black cursor-pointer hover:text-purple-900"
+                      >
+                        בחרי יום אחר
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between text-xs text-slate-500 font-medium px-1">
+                      <span>בחרי שעה פנויה לקביעת התור:</span>
+                      <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 text-[11px]">
+                        {effectiveAvailableSlotsCount} תורים פנויים
+                      </span>
+                    </div>
+                  )}
 
                   {/* Morning Slots (before 12:00) */}
-                  {currentAvailableSlots.filter(s => timeToMinutes(s) < 720).length > 0 && (
+                  {currentSlotsOccupancy.filter((s) => timeToMinutes(s.time) < 720).length > 0 && (
                     <div className="space-y-1.5">
                       <div className="flex items-center gap-1.5 text-xs font-bold text-amber-800 bg-amber-50/90 px-3 py-1 rounded-xl border border-amber-200/80">
                         <Sun className="w-3.5 h-3.5 text-amber-600" />
                         <span>בוקר</span>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {currentAvailableSlots.filter(s => timeToMinutes(s) < 720).map((slot) => {
-                          const startMin = timeToMinutes(slot);
-                          const endMin = startMin + durationMinutes;
-                          const endTime = minutesToTime(endMin);
-                          return (
-                            <button
-                              key={slot}
-                              type="button"
-                              onClick={() => handleSelectSlot(slot)}
-                              className="p-3 rounded-2xl bg-white border-2 border-slate-200 hover:border-purple-600 hover:bg-purple-600 hover:text-white hover:shadow-md transition-all text-center group cursor-pointer"
-                            >
-                              <span className="text-lg font-black block tracking-wide group-hover:text-white text-slate-900">
-                                {slot}
-                              </span>
-                              <span className="text-[10px] text-slate-500 group-hover:text-purple-100 block font-medium">
-                                עד {endTime}
-                              </span>
-                            </button>
-                          );
-                        })}
+                        {currentSlotsOccupancy
+                          .filter((s) => timeToMinutes(s.time) < 720)
+                          .map((slot) => {
+                            const inPast = isSlotInPast(selectedDate, slot.time);
+                            const isOccupied = !slot.isAvailable;
+                            const isClickable = slot.isAvailable && !inPast;
+
+                            if (isClickable) {
+                              return (
+                                <button
+                                  key={slot.time}
+                                  type="button"
+                                  onClick={() => handleSelectSlot(slot.time)}
+                                  className="p-3 rounded-2xl bg-white border-2 border-slate-200 hover:border-purple-600 hover:bg-purple-50 text-slate-900 hover:shadow-md transition-all text-center group cursor-pointer active:scale-95"
+                                >
+                                  <div className="flex items-center justify-between gap-1 mb-1">
+                                    <span className="text-lg font-black tracking-wide group-hover:text-purple-700 text-slate-900 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                      פנוי
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-slate-500 group-hover:text-purple-700 block font-medium">
+                                    עד {slot.endTime}
+                                  </span>
+                                </button>
+                              );
+                            }
+
+                            if (isOccupied) {
+                              return (
+                                <div
+                                  key={slot.time}
+                                  className="relative p-3 rounded-2xl bg-slate-50/90 border-2 border-red-200/70 text-slate-400 select-none overflow-hidden cursor-not-allowed group shadow-2xs"
+                                  title="תור זה כבר תפוס"
+                                >
+                                  {/* Red diagonal strike line across the slot box */}
+                                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                  </div>
+
+                                  <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                    <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-red-500 decoration-2 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
+                                      <Lock className="w-2.5 h-2.5 text-red-600" />
+                                      <span>תפוס</span>
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                    <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
+                                    <span className="text-red-600 font-bold">לא פנוי</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <div
+                                key={slot.time}
+                                className="relative p-3 rounded-2xl bg-slate-50/60 border-2 border-slate-200/80 text-slate-400 select-none overflow-hidden cursor-not-allowed opacity-60"
+                                title="שעה זו עברה"
+                              >
+                                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                </div>
+
+                                <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                  <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-slate-400 decoration-1 font-['Rubik',sans-serif]">
+                                    {slot.time}
+                                  </span>
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+                                    עבר
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 block font-medium relative z-10">
+                                  עד {slot.endTime}
+                                </span>
+                              </div>
+                            );
+                          })}
                       </div>
                     </div>
                   )}
 
                   {/* Afternoon Slots (12:00 - 16:30) */}
-                  {currentAvailableSlots.filter(s => timeToMinutes(s) >= 720 && timeToMinutes(s) < 990).length > 0 && (
+                  {currentSlotsOccupancy.filter(
+                    (s) => timeToMinutes(s.time) >= 720 && timeToMinutes(s.time) < 990
+                  ).length > 0 && (
                     <div className="space-y-1.5">
                       <div className="flex items-center gap-1.5 text-xs font-bold text-orange-800 bg-orange-50/90 px-3 py-1 rounded-xl border border-orange-200/80">
                         <Sunset className="w-3.5 h-3.5 text-orange-600" />
                         <span>צהריים ואחה״צ</span>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {currentAvailableSlots.filter(s => timeToMinutes(s) >= 720 && timeToMinutes(s) < 990).map((slot) => {
-                          const startMin = timeToMinutes(slot);
-                          const endMin = startMin + durationMinutes;
-                          const endTime = minutesToTime(endMin);
-                          return (
-                            <button
-                              key={slot}
-                              type="button"
-                              onClick={() => handleSelectSlot(slot)}
-                              className="p-3 rounded-2xl bg-white border-2 border-slate-200 hover:border-purple-600 hover:bg-purple-600 hover:text-white hover:shadow-md transition-all text-center group cursor-pointer"
-                            >
-                              <span className="text-lg font-black block tracking-wide group-hover:text-white text-slate-900">
-                                {slot}
-                              </span>
-                              <span className="text-[10px] text-slate-500 group-hover:text-purple-100 block font-medium">
-                                עד {endTime}
-                              </span>
-                            </button>
-                          );
-                        })}
+                        {currentSlotsOccupancy
+                          .filter((s) => timeToMinutes(s.time) >= 720 && timeToMinutes(s.time) < 990)
+                          .map((slot) => {
+                            const inPast = isSlotInPast(selectedDate, slot.time);
+                            const isOccupied = !slot.isAvailable;
+                            const isClickable = slot.isAvailable && !inPast;
+
+                            if (isClickable) {
+                              return (
+                                <button
+                                  key={slot.time}
+                                  type="button"
+                                  onClick={() => handleSelectSlot(slot.time)}
+                                  className="p-3 rounded-2xl bg-white border-2 border-slate-200 hover:border-purple-600 hover:bg-purple-50 text-slate-900 hover:shadow-md transition-all text-center group cursor-pointer active:scale-95"
+                                >
+                                  <div className="flex items-center justify-between gap-1 mb-1">
+                                    <span className="text-lg font-black tracking-wide group-hover:text-purple-700 text-slate-900 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                      פנוי
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-slate-500 group-hover:text-purple-700 block font-medium">
+                                    עד {slot.endTime}
+                                  </span>
+                                </button>
+                              );
+                            }
+
+                            if (isOccupied) {
+                              return (
+                                <div
+                                  key={slot.time}
+                                  className="relative p-3 rounded-2xl bg-slate-50/90 border-2 border-red-200/70 text-slate-400 select-none overflow-hidden cursor-not-allowed group shadow-2xs"
+                                  title="תור זה כבר תפוס"
+                                >
+                                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                  </div>
+
+                                  <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                    <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-red-500 decoration-2 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
+                                      <Lock className="w-2.5 h-2.5 text-red-600" />
+                                      <span>תפוס</span>
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                    <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
+                                    <span className="text-red-600 font-bold">לא פנוי</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <div
+                                key={slot.time}
+                                className="relative p-3 rounded-2xl bg-slate-50/60 border-2 border-slate-200/80 text-slate-400 select-none overflow-hidden cursor-not-allowed opacity-60"
+                                title="שעה זו עברה"
+                              >
+                                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                </div>
+
+                                <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                  <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-slate-400 decoration-1 font-['Rubik',sans-serif]">
+                                    {slot.time}
+                                  </span>
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+                                    עבר
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 block font-medium relative z-10">
+                                  עד {slot.endTime}
+                                </span>
+                              </div>
+                            );
+                          })}
                       </div>
                     </div>
                   )}
 
                   {/* Evening Slots (16:30+) */}
-                  {currentAvailableSlots.filter(s => timeToMinutes(s) >= 990).length > 0 && (
+                  {currentSlotsOccupancy.filter((s) => timeToMinutes(s.time) >= 990).length > 0 && (
                     <div className="space-y-1.5">
                       <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-800 bg-indigo-50/90 px-3 py-1 rounded-xl border border-indigo-200/80">
                         <Moon className="w-3.5 h-3.5 text-indigo-600" />
                         <span>ערב</span>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {currentAvailableSlots.filter(s => timeToMinutes(s) >= 990).map((slot) => {
-                          const startMin = timeToMinutes(slot);
-                          const endMin = startMin + durationMinutes;
-                          const endTime = minutesToTime(endMin);
-                          return (
-                            <button
-                              key={slot}
-                              type="button"
-                              onClick={() => handleSelectSlot(slot)}
-                              className="p-3 rounded-2xl bg-white border-2 border-slate-200 hover:border-purple-600 hover:bg-purple-600 hover:text-white hover:shadow-md transition-all text-center group cursor-pointer"
-                            >
-                              <span className="text-lg font-black block tracking-wide group-hover:text-white text-slate-900">
-                                {slot}
-                              </span>
-                              <span className="text-[10px] text-slate-500 group-hover:text-purple-100 block font-medium">
-                                עד {endTime}
-                              </span>
-                            </button>
-                          );
-                        })}
+                        {currentSlotsOccupancy
+                          .filter((s) => timeToMinutes(s.time) >= 990)
+                          .map((slot) => {
+                            const inPast = isSlotInPast(selectedDate, slot.time);
+                            const isOccupied = !slot.isAvailable;
+                            const isClickable = slot.isAvailable && !inPast;
+
+                            if (isClickable) {
+                              return (
+                                <button
+                                  key={slot.time}
+                                  type="button"
+                                  onClick={() => handleSelectSlot(slot.time)}
+                                  className="p-3 rounded-2xl bg-white border-2 border-slate-200 hover:border-purple-600 hover:bg-purple-50 text-slate-900 hover:shadow-md transition-all text-center group cursor-pointer active:scale-95"
+                                >
+                                  <div className="flex items-center justify-between gap-1 mb-1">
+                                    <span className="text-lg font-black tracking-wide group-hover:text-purple-700 text-slate-900 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                      פנוי
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-slate-500 group-hover:text-purple-700 block font-medium">
+                                    עד {slot.endTime}
+                                  </span>
+                                </button>
+                              );
+                            }
+
+                            if (isOccupied) {
+                              return (
+                                <div
+                                  key={slot.time}
+                                  className="relative p-3 rounded-2xl bg-slate-50/90 border-2 border-red-200/70 text-slate-400 select-none overflow-hidden cursor-not-allowed group shadow-2xs"
+                                  title="תור זה כבר תפוס"
+                                >
+                                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                  </div>
+
+                                  <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                    <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-red-500 decoration-2 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
+                                      <Lock className="w-2.5 h-2.5 text-red-600" />
+                                      <span>תפוס</span>
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                    <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
+                                    <span className="text-red-600 font-bold">לא פנוי</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <div
+                                key={slot.time}
+                                className="relative p-3 rounded-2xl bg-slate-50/60 border-2 border-slate-200/80 text-slate-400 select-none overflow-hidden cursor-not-allowed opacity-60"
+                                title="שעה זו עברה"
+                              >
+                                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                </div>
+
+                                <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                  <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-slate-400 decoration-1 font-['Rubik',sans-serif]">
+                                    {slot.time}
+                                  </span>
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+                                    עבר
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 block font-medium relative z-10">
+                                  עד {slot.endTime}
+                                </span>
+                              </div>
+                            );
+                          })}
                       </div>
                     </div>
                   )}

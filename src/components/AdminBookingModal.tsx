@@ -2,35 +2,41 @@ import React, { useState, useMemo, useEffect } from 'react';
 import {
   X,
   ChevronRight,
-  Calendar,
   Clock,
+  Calendar,
   Sparkles,
   User,
   Phone,
-  FileText,
-  Check,
+  MessageSquare,
   CheckCircle2,
+  AlertCircle,
   Sun,
   Sunset,
   Moon,
-  AlertCircle,
-  CalendarPlus,
+  Lock,
+  Palmtree,
+  Coffee,
   Search,
-  ArrowLeft,
-  ChevronLeft,
+  Check,
+  Tag,
+  ShieldCheck,
 } from 'lucide-react';
-import { Appointment, Service, ScheduleSettings, DayInfo } from '../types';
+import { Appointment, DayInfo, ScheduleSettings, Service } from '../types';
 import {
+  BUSINESS_OPEN,
+  BUSINESS_CLOSE,
+  FRIDAY_CLOSE,
   buildNextDays,
-  calculateAvailableSlots,
-  toIsraeliDateString,
   toShortIsraeliDateString,
-  formatHebrewFullDate,
-  formatILS,
-  formatDurationMinutes,
-  isSlotInPast,
-  timeToMinutes,
+  toIsraeliDateString,
+  calculateAvailableSlots,
+  getDailySlotsOccupancy,
+  SlotOccupancy,
   minutesToTime,
+  timeToMinutes,
+  formatDurationMinutes,
+  formatILS,
+  isSlotInPast,
 } from '../utils/dateUtils';
 import { upsertCustomerToFirestore } from '../lib/firebase';
 
@@ -46,10 +52,17 @@ interface AdminBookingModalProps {
   initialCustomerName?: string;
   initialCustomerPhone?: string;
   initialNotes?: string;
-  onShowToast: (message: string, type?: 'success' | 'error') => void;
+  initialMode?: 'client' | 'block';
+  onShowToast: (msg: string, type?: 'success' | 'error') => void;
 }
 
 type Step = 'treatment' | 'day' | 'slot' | 'details';
+
+const BLOCK_PRESETS = [
+  { id: -101, name: 'תפיסת שעה (ללא לקוח)', icon: Lock, reason: 'תור תפוס', desc: 'תפיסת תור פנוי סתם ללא סיבה / סגירה ללקוחות' },
+  { id: -102, name: 'חופש / יום חופשי', icon: Palmtree, reason: 'חופש', desc: 'סגירת שעה או יום שלם עבור חופש ומנוחה' },
+  { id: -103, name: 'הפסקה / עניין אישי', icon: Coffee, reason: 'הפסקה', desc: 'חסימת שעה עבור הפסקה או סידורים' },
+];
 
 export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   isOpen,
@@ -63,9 +76,14 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   initialCustomerName = '',
   initialCustomerPhone = '',
   initialNotes = '',
+  initialMode = 'client',
   onShowToast,
 }) => {
   const [step, setStep] = useState<Step>('treatment');
+  const [isBlockAction, setIsBlockAction] = useState<boolean>(initialMode === 'block');
+  const [blockReason, setBlockReason] = useState<string>('תור תפוס');
+  const [blockWholeDay, setBlockWholeDay] = useState<boolean>(false);
+
   const [selectedService, setSelectedService] = useState<Service>(services[0] || {
     id: 1,
     name: "לק ג'ל",
@@ -76,77 +94,21 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [selectedSlot, setSelectedSlot] = useState<string>('');
-  const [customerName, setCustomerName] = useState<string>('');
-  const [customerPhone, setCustomerPhone] = useState<string>('');
-  const [notes, setNotes] = useState<string>('');
-  const [customerSearchQuery, setCustomerSearchQuery] = useState<string>('');
+  const [customerName, setCustomerName] = useState<string>(initialCustomerName);
+  const [customerPhone, setCustomerPhone] = useState<string>(initialCustomerPhone);
+  const [notes, setNotes] = useState<string>(initialNotes);
+  const [customerSearchQuery, setCustomerSearchQuery] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
-  // Extract unique customers from existing appointments for quick autocomplete
-  const existingCustomers = useMemo(() => {
-    const map = new Map<string, { name: string; phone: string }>();
-    appointments.forEach((a) => {
-      const cleanPhone = (a.customer_phone || '').replace(/\D/g, '');
-      const cleanName = (a.customer_name || '').trim();
-      if (cleanName && cleanPhone && cleanPhone.length >= 7 && !cleanName.includes('חסום')) {
-        if (!map.has(cleanPhone)) {
-          map.set(cleanPhone, { name: cleanName, phone: a.customer_phone });
-        }
-      }
-    });
-    return Array.from(map.values());
-  }, [appointments]);
-
-  // Filtered customer suggestions
-  const customerSuggestions = useMemo(() => {
-    if (!customerSearchQuery.trim()) return [];
-    const q = customerSearchQuery.trim().toLowerCase();
-    const cleanQ = q.replace(/\D/g, '');
-    return existingCustomers
-      .filter((c) => {
-        const matchesName = c.name.toLowerCase().includes(q);
-        const matchesPhone = cleanQ.length >= 3 && c.phone.replace(/\D/g, '').includes(cleanQ);
-        return matchesName || matchesPhone;
-      })
-      .slice(0, 5);
-  }, [customerSearchQuery, existingCustomers]);
-
-  // Initialize or reset when modal opens
-  useEffect(() => {
-    if (isOpen) {
-      setErrorMessage('');
-      setIsSubmitting(false);
-      setCustomerSearchQuery('');
-      setCustomerName(initialCustomerName || '');
-      setCustomerPhone(initialCustomerPhone || '');
-      setNotes(initialNotes || '');
-
-      if (initialDate && initialSlot) {
-        // Pre-filled from specific slot
-        setSelectedDate(initialDate);
-        setSelectedSlot(initialSlot);
-        setStep('details');
-      } else if (initialDate) {
-        setSelectedDate(initialDate);
-        setSelectedSlot('');
-        setStep('slot');
-      } else {
-        setSelectedDate('');
-        setSelectedSlot('');
-        setStep('treatment');
-      }
-    }
-  }, [isOpen, initialDate, initialSlot, initialCustomerName, initialCustomerPhone, initialNotes]);
-
-  // Next 30 days for scheduling
+  // 30 days for admin booking calendar
   const days: DayInfo[] = useMemo(() => buildNextDays(30), []);
 
-  const durationMinutes = selectedService?.duration_minutes || 90;
-  const businessOpen = scheduleSettings?.businessOpen || '09:20';
-  const businessClose = scheduleSettings?.businessClose || '20:30';
+  const durationMinutes = selectedService?.duration_minutes || scheduleSettings?.durationMinutes || 90;
+  const businessOpen = scheduleSettings?.businessOpen || BUSINESS_OPEN;
+  const businessClose = scheduleSettings?.businessClose || BUSINESS_CLOSE;
 
-  // Calculate available slots for day
+  // Calculate available slots helper for day list
   const getSlotsForDay = (dateIso: string) => {
     return calculateAvailableSlots({
       durationMinutes,
@@ -163,13 +125,110 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
     return slots.filter((slotTime) => !isSlotInPast(dateIso, slotTime));
   };
 
-  const currentAvailableSlots = selectedDate ? getEffectiveAvailableSlots(selectedDate) : [];
-  const selectedDayInfo = days.find((d) => d.iso === selectedDate);
+  // Full occupancy of all standard slots for selected date (including occupied, blocked, and free)
+  const currentSlotsOccupancy: SlotOccupancy[] = useMemo(() => {
+    if (!selectedDate) return [];
+    return getDailySlotsOccupancy(
+      selectedDate,
+      appointments,
+      durationMinutes,
+      businessOpen,
+      businessClose,
+      FRIDAY_CLOSE
+    );
+  }, [selectedDate, appointments, durationMinutes, businessOpen, businessClose]);
+
+  const effectiveAvailableSlotsCount = useMemo(() => {
+    if (!selectedDate) return 0;
+    return currentSlotsOccupancy.filter((s) => s.isAvailable && !isSlotInPast(selectedDate, s.time)).length;
+  }, [currentSlotsOccupancy, selectedDate]);
+
+  // Existing customers for quick search / autocomplete
+  const existingCustomers = useMemo(() => {
+    const map = new Map<string, { name: string; phone: string }>();
+    appointments.forEach((a) => {
+      const cleanPhone = a.customer_phone ? a.customer_phone.replace(/\D/g, '') : '';
+      if (
+        cleanPhone.length >= 7 &&
+        a.customer_name &&
+        !a.customer_name.includes('חסימה') &&
+        !a.customer_name.includes('🔒') &&
+        !a.customer_name.includes('חופש')
+      ) {
+        if (!map.has(cleanPhone)) {
+          map.set(cleanPhone, { name: a.customer_name, phone: a.customer_phone });
+        }
+      }
+    });
+    return Array.from(map.values());
+  }, [appointments]);
+
+  const customerSuggestions = useMemo(() => {
+    const q = customerSearchQuery.trim().toLowerCase();
+    if (!q || q.length < 2) return [];
+    return existingCustomers.filter((c) =>
+      c.name.toLowerCase().includes(q) || c.phone.includes(q)
+    ).slice(0, 5);
+  }, [customerSearchQuery, existingCustomers]);
+
+  // Initialize or reset when opened
+  useEffect(() => {
+    if (isOpen) {
+      const modeIsBlock = initialMode === 'block';
+      setIsBlockAction(modeIsBlock);
+      setBlockReason(modeIsBlock ? 'תור תפוס' : '');
+      setBlockWholeDay(false);
+      setCustomerName(initialCustomerName || '');
+      setCustomerPhone(initialCustomerPhone || '');
+      setNotes(initialNotes || '');
+      setCustomerSearchQuery('');
+      setErrorMessage('');
+      setIsSubmitting(false);
+
+      if (initialDate && initialSlot) {
+        setSelectedDate(initialDate);
+        setSelectedSlot(initialSlot);
+        setStep('details');
+      } else if (initialDate) {
+        setSelectedDate(initialDate);
+        setSelectedSlot('');
+        setStep('slot');
+      } else {
+        setSelectedDate('');
+        setSelectedSlot('');
+        setStep('treatment');
+      }
+
+      if (services.length > 0) {
+        setSelectedService(services[0]);
+      }
+    }
+  }, [isOpen, initialDate, initialSlot, initialCustomerName, initialCustomerPhone, initialNotes, initialMode, services]);
 
   if (!isOpen) return null;
 
   const handleSelectService = (service: Service) => {
+    setIsBlockAction(false);
     setSelectedService(service);
+    if (!selectedDate) {
+      setStep('day');
+    } else if (!selectedSlot) {
+      setStep('slot');
+    } else {
+      setStep('details');
+    }
+  };
+
+  const handleSelectBlockPreset = (preset: typeof BLOCK_PRESETS[0]) => {
+    setIsBlockAction(true);
+    setBlockReason(preset.reason);
+    setSelectedService({
+      id: preset.id,
+      name: preset.name,
+      description: preset.desc,
+      duration_minutes: durationMinutes,
+      price: 0,
+    });
     if (!selectedDate) {
       setStep('day');
     } else if (!selectedSlot) {
@@ -181,9 +240,6 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
   const handleSelectDay = (day: DayInfo) => {
     if (day.isClosed) return;
-    const avail = getEffectiveAvailableSlots(day.iso);
-    if (avail.length === 0) return;
-
     setSelectedDate(day.iso);
     setSelectedSlot('');
     setStep('slot');
@@ -196,359 +252,368 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
   const handleBack = () => {
     setErrorMessage('');
-    if (step === 'details') setStep('slot');
-    else if (step === 'slot') setStep('day');
-    else if (step === 'day') setStep('treatment');
-  };
-
-  const handleSelectExistingCustomer = (c: { name: string; phone: string }) => {
-    setCustomerName(c.name);
-    setCustomerPhone(c.phone);
-    setCustomerSearchQuery('');
+    if (step === 'details') {
+      if (blockWholeDay) setStep('day');
+      else setStep('slot');
+    } else if (step === 'slot') {
+      setStep('day');
+    } else if (step === 'day') {
+      setStep('treatment');
+    }
   };
 
   const handleSubmitBooking = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
 
-    const cleanName = customerName.trim();
-    const cleanPhone = customerPhone.trim();
-
-    if (!cleanName) {
-      setErrorMessage('נא להזין שם לקוח/ה');
+    if (!selectedDate) {
+      setErrorMessage('נא לבחור יום מהיומן');
       return;
     }
 
-    if (!selectedDate || !selectedSlot) {
-      setErrorMessage('נא לבחור תאריך ושעה לתור');
-      return;
-    }
+    if (!isBlockAction) {
+      // Regular client booking
+      const cleanName = customerName.trim();
+      const cleanPhone = customerPhone.trim();
 
-    setIsSubmitting(true);
-
-    try {
-      const startMin = timeToMinutes(selectedSlot);
-      const endMin = startMin + durationMinutes;
-      const endTimeStr = minutesToTime(endMin);
-
-      const newAppt: Omit<Appointment, 'id'> = {
-        customer_name: cleanName,
-        customer_phone: cleanPhone || 'שריון יזום',
-        service_id: selectedService.id,
-        service_name: selectedService.name,
-        appointment_date: selectedDate,
-        start_time: selectedSlot,
-        end_time: endTimeStr,
-        price: selectedService.price,
-        status: 'confirmed',
-        created_at: new Date().toISOString(),
-        notes: notes.trim() || undefined,
-      };
-
-      // Save customer in Firestore if valid phone provided
-      if (cleanPhone && cleanPhone !== 'שריון יזום') {
-        upsertCustomerToFirestore({
-          full_name: cleanName,
-          phone: cleanPhone,
-          notes: notes.trim() || undefined,
-        }).catch((err) => {
-          console.warn('[Admin Booking] customer upsert notice:', err);
-        });
+      if (!cleanName || cleanName.length < 2) {
+        setErrorMessage('נא להזין שם לקוח/ה תקין (לפחות 2 אותיות)');
+        return;
       }
 
-      await onAddAppointment(newAppt);
+      if (!selectedSlot) {
+        setErrorMessage('נא לבחור שעה לתור');
+        return;
+      }
 
-      onShowToast(
-        `התור של ${cleanName} ל-${selectedService.name} נקבע בהצלחה בתאריך ${toIsraeliDateString(selectedDate)} בשעה ${selectedSlot}! 🌸`,
-        'success'
-      );
-      onClose();
-    } catch (err: any) {
-      console.error('Error submitting admin booking:', err);
-      setErrorMessage('שגיאה בשמירת התור: ' + (err?.message || 'אנא נסי שוב'));
-    } finally {
-      setIsSubmitting(false);
+      setIsSubmitting(true);
+      try {
+        const startMin = timeToMinutes(selectedSlot);
+        const endMin = startMin + durationMinutes;
+        const endTimeStr = minutesToTime(endMin);
+
+        const newAppt: Omit<Appointment, 'id'> = {
+          customer_name: cleanName,
+          customer_phone: cleanPhone || 'שריון יזום',
+          service_id: selectedService.id,
+          service_name: selectedService.name,
+          appointment_date: selectedDate,
+          start_time: selectedSlot,
+          end_time: endTimeStr,
+          price: selectedService.price,
+          status: 'confirmed',
+          created_at: new Date().toISOString(),
+          notes: notes.trim() || undefined,
+        };
+
+        if (cleanPhone && cleanPhone !== 'שריון יזום') {
+          upsertCustomerToFirestore({
+            full_name: cleanName,
+            phone: cleanPhone,
+            notes: notes.trim() || undefined,
+          }).catch((err) => console.warn('[Admin Booking] upsertCustomer notice:', err));
+        }
+
+        await onAddAppointment(newAppt);
+        onShowToast(`התור של ${cleanName} נקבע בהצלחה לשעה ${selectedSlot} (${toIsraeliDateString(selectedDate)})! 🌸`, 'success');
+        onClose();
+      } catch (err: any) {
+        console.error('Error submitting appointment:', err);
+        setErrorMessage('שגיאה בשמירת התור: ' + (err?.message || 'אנא נסי שוב'));
+      } finally {
+        setIsSubmitting(false);
+      }
+    } else {
+      // BLOCK / SEIZE ACTION (NO CLIENT DETAILS REQUIRED)
+      const reasonText = blockReason.trim() || 'תור תפוס';
+
+      if (blockWholeDay) {
+        // Block entire day's free slots
+        const freeSlots = currentSlotsOccupancy.filter((s) => s.isAvailable);
+        if (freeSlots.length === 0) {
+          setErrorMessage('אין שעות פנויות ביום זה לתפיסה');
+          return;
+        }
+
+        setIsSubmitting(true);
+        try {
+          for (const s of freeSlots) {
+            const startMin = timeToMinutes(s.time);
+            const endMin = startMin + durationMinutes;
+            const endTimeStr = minutesToTime(endMin);
+
+            const blockAppt: Omit<Appointment, 'id'> = {
+              customer_name: `🔒 ${reasonText}`,
+              customer_phone: 'חסימת יומן',
+              service_id: 1,
+              service_name: reasonText,
+              appointment_date: selectedDate,
+              start_time: s.time,
+              end_time: endTimeStr,
+              price: 0,
+              status: 'confirmed',
+              created_at: new Date().toISOString(),
+              notes: notes.trim() || reasonText,
+            };
+            await onAddAppointment(blockAppt);
+          }
+
+          onShowToast(`כל השעות הפנויות ב-${toIsraeliDateString(selectedDate)} נתפסו בהצלחה (${reasonText}) 🔒`, 'success');
+          onClose();
+        } catch (err: any) {
+          console.error('Error blocking day:', err);
+          setErrorMessage('שגיאה בתפיסת השעות: ' + (err?.message || 'אנא נסי שוב'));
+        } finally {
+          setIsSubmitting(false);
+        }
+      } else {
+        // Single slot block
+        if (!selectedSlot) {
+          setErrorMessage('נא לבחור שעה לתפיסה');
+          return;
+        }
+
+        setIsSubmitting(true);
+        try {
+          const startMin = timeToMinutes(selectedSlot);
+          const endMin = startMin + durationMinutes;
+          const endTimeStr = minutesToTime(endMin);
+
+          const blockAppt: Omit<Appointment, 'id'> = {
+            customer_name: `🔒 ${reasonText}`,
+            customer_phone: 'חסימת יומן',
+            service_id: 1,
+            service_name: reasonText,
+            appointment_date: selectedDate,
+            start_time: selectedSlot,
+            end_time: endTimeStr,
+            price: 0,
+            status: 'confirmed',
+            created_at: new Date().toISOString(),
+            notes: notes.trim() || reasonText,
+          };
+
+          await onAddAppointment(blockAppt);
+          onShowToast(`השעה ${selectedSlot} נתפסה בהצלחה ביומן (${reasonText}) 🔒`, 'success');
+          onClose();
+        } catch (err: any) {
+          console.error('Error blocking slot:', err);
+          setErrorMessage('שגיאה בתפיסת השעה: ' + (err?.message || 'אנא נסי שוב'));
+        } finally {
+          setIsSubmitting(false);
+        }
+      }
     }
   };
 
+  const selectedDayInfo = days.find((d) => d.iso === selectedDate);
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200"
-      dir="rtl"
-    >
-      <div
-        className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] relative text-slate-900 animate-in zoom-in-95 duration-200"
-        role="dialog"
-        aria-modal="true"
-      >
-        {/* Top Header Bar */}
-        <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/90 sticky top-0 z-10">
-          <div className="flex items-center gap-2.5">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200" dir="rtl">
+      <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] relative text-slate-900 animate-in zoom-in-95 duration-200">
+        
+        {/* Modal Top Bar - Identical to TorModalFlow */}
+        <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/90 sticky top-0 z-20">
+          <div className="flex items-center gap-2">
             {step !== 'treatment' ? (
               <button
                 type="button"
                 onClick={handleBack}
-                className="w-9 h-9 rounded-full bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 flex items-center justify-center transition cursor-pointer active:scale-95 shadow-2xs"
+                className="w-8 h-8 rounded-full bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 flex items-center justify-center transition cursor-pointer active:scale-95 shadow-2xs"
                 title="חזרה לשלב הקודם"
               >
                 <ChevronRight className="w-5 h-5" />
               </button>
             ) : (
-              <div className="w-9 h-9 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center shadow-xs">
-                <CalendarPlus className="w-5 h-5 text-purple-700" />
+              <div className="w-8 h-8 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center">
+                <ShieldCheck className="w-4 h-4" />
               </div>
             )}
-
+            
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-lg sm:text-xl font-black text-slate-950 font-['Rubik',sans-serif]">
-                  {step === 'treatment' && 'בחירת טיפול ללקוח/ה'}
+                  {step === 'treatment' && 'בחירת טיפול או חופש'}
                   {step === 'day' && 'בחירת יום ביומן'}
-                  {step === 'slot' && 'בחירת שעה פנויה'}
-                  {step === 'details' && 'פרטי הלקוח/ה ואישור'}
+                  {step === 'slot' && 'בחירת שעה'}
+                  {step === 'details' && (isBlockAction ? 'אישור תפיסת שעה / חופש' : 'פרטי הלקוח/ה ואישור')}
                 </h2>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200 hidden sm:inline-block">
-                  ממשק מנהלת
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">
+                  ניהול
                 </span>
               </div>
-              <p className="text-xs text-slate-500 font-medium">
-                {step === 'treatment' && 'שלב 1 מתוך 4'}
-                {step === 'day' && `שלב 2 מתוך 4 • ${selectedService.name}`}
-                {step === 'slot' && `שלב 3 מתוך 4 • ${selectedDayInfo ? `יום ${selectedDayInfo.weekday}, ${toIsraeliDateString(selectedDate)}` : selectedDate}`}
-                {step === 'details' && 'שלב 4 מתוך 4 • סיום ושריון'}
-              </p>
             </div>
           </div>
 
           <button
             type="button"
             onClick={onClose}
-            className="w-9 h-9 rounded-full bg-white border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition cursor-pointer active:scale-95 shadow-2xs"
+            className="w-8 h-8 rounded-full bg-white border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition cursor-pointer active:scale-95 shadow-2xs"
             title="סגירה"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Stepper Progress Bar */}
-        <div className="grid grid-cols-4 gap-1 p-2 bg-slate-100/70 border-b border-slate-200 text-[11px] font-bold text-center">
-          <button
-            type="button"
-            onClick={() => setStep('treatment')}
-            className={`py-1 rounded-lg transition cursor-pointer ${
-              step === 'treatment'
-                ? 'bg-purple-600 text-white shadow-xs'
-                : 'text-slate-600 hover:bg-white'
-            }`}
-          >
-            1. טיפול
-          </button>
-          <button
-            type="button"
-            onClick={() => setStep('day')}
-            className={`py-1 rounded-lg transition cursor-pointer ${
-              step === 'day'
-                ? 'bg-purple-600 text-white shadow-xs'
-                : selectedDate
-                ? 'text-purple-700 hover:bg-white font-black'
-                : 'text-slate-400 cursor-not-allowed'
-            }`}
-          >
-            2. יום
-          </button>
-          <button
-            type="button"
-            onClick={() => selectedDate && setStep('slot')}
-            disabled={!selectedDate}
-            className={`py-1 rounded-lg transition ${
-              step === 'slot'
-                ? 'bg-purple-600 text-white shadow-xs'
-                : selectedSlot
-                ? 'text-purple-700 hover:bg-white font-black cursor-pointer'
-                : 'text-slate-400 cursor-not-allowed'
-            }`}
-          >
-            3. שעה
-          </button>
-          <button
-            type="button"
-            onClick={() => selectedDate && selectedSlot && setStep('details')}
-            disabled={!selectedDate || !selectedSlot}
-            className={`py-1 rounded-lg transition ${
-              step === 'details'
-                ? 'bg-purple-600 text-white shadow-xs'
-                : 'text-slate-400 cursor-not-allowed'
-            }`}
-          >
-            4. לקוח/ה
-          </button>
-        </div>
-
         {/* Modal Scrollable Body */}
         <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-4">
           
-          {/* STEP 1: בחירת טיפול */}
+          {/* STEP 1: בחירת טיפול או תפיסת שעה/חופש */}
           {step === 'treatment' && (
-            <div className="space-y-3.5 py-1">
-              <div className="text-right space-y-1">
-                <span className="text-xs font-bold text-purple-700 uppercase tracking-wide">
-                  סוג הטיפול המבוקש
-                </span>
+            <div className="space-y-4 py-2">
+              <div className="text-center space-y-1 pb-1">
                 <p className="text-xs text-slate-500 font-medium">
-                  בחרי את השירות עבור הלקוח/ה לקביעת משך הטיפול ביומן:
+                  בחרו טיפול לקביעת תור ללקוח/ה, או תפסו שעה / חופש ללא לקוח
                 </p>
               </div>
 
-              <div className="space-y-2.5">
-                {services.map((service) => {
-                  const duration = service.duration_minutes || 90;
-                  const isSelected = selectedService.id === service.id;
-                  return (
-                    <button
-                      key={service.id}
-                      type="button"
-                      onClick={() => handleSelectService(service)}
-                      className={`w-full relative group p-4 sm:p-4.5 rounded-2xl border-2 transition-all text-right cursor-pointer flex items-center justify-between ${
-                        isSelected
-                          ? 'border-purple-600 bg-purple-50/70 shadow-md ring-2 ring-purple-500/20'
-                          : 'border-slate-200 bg-white hover:border-purple-400 hover:bg-purple-50/30 hover:shadow-xs'
-                      }`}
-                    >
-                      <span
-                        className={`absolute -top-2.5 right-5 px-2.5 py-0.5 rounded-full text-[11px] font-black border transition ${
-                          isSelected
-                            ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
-                            : 'bg-slate-100 text-slate-700 border-slate-300 group-hover:bg-purple-100 group-hover:text-purple-900'
-                        }`}
-                      >
-                        {duration} דק׳
-                      </span>
-
-                      <div className="space-y-1 pr-1">
-                        <div className="flex items-center gap-2">
-                          <h3
-                            className={`text-base font-black transition ${
-                              isSelected ? 'text-purple-950' : 'text-slate-900 group-hover:text-purple-700'
-                            }`}
-                          >
-                            {service.name}
-                          </h3>
-                          {isSelected && (
-                            <span className="w-2 h-2 rounded-full bg-purple-600 shrink-0" />
-                          )}
-                        </div>
-                        {service.description && (
-                          <p className="text-xs text-slate-500 line-clamp-1">
-                            {service.description}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="text-left shrink-0 mr-3">
-                        <span
-                          className={`text-base font-black font-['Rubik',sans-serif] ${
-                            isSelected ? 'text-purple-700' : 'text-slate-900'
-                          }`}
-                        >
-                          {formatILS(service.price)}
-                        </span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* STEP 2: בחירת יום ביומן */}
-          {step === 'day' && (
-            <div className="space-y-3 py-1">
-              <div className="flex items-center justify-between bg-purple-50/80 p-3 rounded-2xl border border-purple-200 text-xs">
-                <span className="text-slate-700 font-medium">
-                  טיפול נבחר: <strong className="text-purple-900 font-bold">{selectedService.name}</strong>
-                </span>
-                <span className="font-bold text-purple-700">
-                  {formatDurationMinutes(durationMinutes)}
-                </span>
-              </div>
-
+              {/* Quick Admin Actions (Vacation / Seize slot / Break) */}
               <div className="space-y-2">
-                <span className="text-xs font-bold text-slate-700 block">
-                  בחרי יום מתוך 30 הימים הקרובים:
-                </span>
+                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                  <Lock className="w-3.5 h-3.5 text-purple-600" />
+                  <span>תפיסת תור פנוי / חופש (ללא לקוח):</span>
+                </div>
 
-                <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-0.5">
-                  {days.map((day) => {
-                    const availSlots = getEffectiveAvailableSlots(day.iso);
-                    const isAvailable = !day.isClosed && availSlots.length > 0;
-                    const shortDate = toShortIsraeliDateString(day.iso);
-                    const isSelected = selectedDate === day.iso;
-
-                    const dayLabel = day.isToday
-                      ? `היום, ${shortDate}`
-                      : `יום ${day.weekday}, ${shortDate}`;
-
+                <div className="grid grid-cols-1 gap-2.5">
+                  {BLOCK_PRESETS.map((preset) => {
+                    const Icon = preset.icon;
                     return (
                       <button
-                        key={day.iso}
+                        key={preset.id}
                         type="button"
-                        disabled={!isAvailable}
-                        onClick={() => handleSelectDay(day)}
-                        className={`w-full py-3 px-4 rounded-2xl border text-center font-bold text-sm transition-all flex items-center justify-between ${
-                          isSelected
-                            ? 'bg-purple-600 text-white border-purple-600 shadow-md ring-2 ring-purple-500/20'
-                            : isAvailable
-                            ? 'bg-white border-slate-200 hover:border-purple-600 hover:bg-purple-50/40 hover:shadow-xs text-slate-900 cursor-pointer'
-                            : day.isClosed
-                            ? 'bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed opacity-60'
-                            : 'bg-red-50/60 border-red-200 text-red-600 cursor-not-allowed font-medium'
-                        }`}
+                        onClick={() => handleSelectBlockPreset(preset)}
+                        className="w-full relative group p-3.5 rounded-2xl bg-gradient-to-r from-slate-900 to-slate-950 text-white border-2 border-slate-800 hover:border-purple-500 hover:shadow-lg transition-all text-right cursor-pointer flex items-center justify-between shadow-xs active:scale-98"
                       >
-                        <span
-                          className={`${
-                            isSelected
-                              ? 'text-white font-black'
-                              : isAvailable
-                              ? 'text-slate-900 font-black'
-                              : !day.isClosed
-                              ? 'text-red-600 font-bold'
-                              : 'text-slate-400'
-                          }`}
-                        >
-                          {dayLabel}
-                        </span>
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center text-purple-300">
+                            <Icon className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <h3 className="text-sm sm:text-base font-black text-white group-hover:text-purple-300 transition">
+                              {preset.name}
+                            </h3>
+                            <p className="text-[11px] text-slate-400 line-clamp-1">
+                              {preset.desc}
+                            </p>
+                          </div>
+                        </div>
 
-                        {isSelected ? (
-                          <span className="text-[11px] px-2.5 py-1 rounded-full bg-white/20 text-white font-black">
-                            נבחר ✓
-                          </span>
-                        ) : isAvailable ? (
-                          <span className="text-[11px] px-2.5 py-1 rounded-full bg-purple-50 text-purple-700 font-black border border-purple-200">
-                            {availSlots.length} פנויים
-                          </span>
-                        ) : day.isClosed ? (
-                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 font-medium">
-                            שבת סגור
-                          </span>
-                        ) : (
-                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold">
-                            מלא
-                          </span>
-                        )}
+                        <span className="text-xs font-bold px-2.5 py-1 rounded-xl bg-purple-500/20 text-purple-200 border border-purple-400/30">
+                          תפיסה 🔒
+                        </span>
                       </button>
                     );
                   })}
                 </div>
               </div>
 
-              <div className="pt-1 text-center text-xs text-slate-500 font-medium">
+              {/* Client Treatments List */}
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                  <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                  <span>קביעת תור ללקוח/ה:</span>
+                </div>
+
+                <div className="space-y-3">
+                  {services.map((service) => {
+                    const duration = service.duration_minutes || 90;
+                    return (
+                      <button
+                        key={service.id}
+                        type="button"
+                        onClick={() => handleSelectService(service)}
+                        className="w-full relative group p-4 sm:p-5 rounded-2xl bg-white border-2 border-slate-200 hover:border-purple-600 hover:shadow-lg transition-all text-right cursor-pointer flex items-center justify-between active:scale-98"
+                      >
+                        {/* Duration Floating Badge */}
+                        <span className="absolute -top-3 right-5 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[11px] font-black border border-slate-300 shadow-xs group-hover:bg-purple-600 group-hover:text-white group-hover:border-purple-600 transition">
+                          {duration} דק׳
+                        </span>
+
+                        <div className="space-y-1">
+                          <h3 className="text-base sm:text-lg font-black text-slate-900 group-hover:text-purple-700 transition">
+                            {service.name}
+                          </h3>
+                          <p className="text-xs text-slate-500 line-clamp-1">
+                            {service.description || 'מניקור מכשירי יסודי ומקצועי'}
+                          </p>
+                        </div>
+
+                        <div className="text-left shrink-0 mr-3">
+                          <span className="text-base sm:text-lg font-black text-slate-900 group-hover:text-purple-700">
+                            {formatILS(service.price)}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* STEP 2: בחירת יום - Identical to TorModalFlow */}
+          {step === 'day' && (
+            <div className="space-y-3 py-1">
+              <div className="flex items-center justify-between px-1 text-xs text-slate-500 font-medium">
+                <span>מטרה: <strong className={isBlockAction ? "text-slate-950 font-bold" : "text-purple-700 font-bold"}>{selectedService.name}</strong></span>
+                <span>{formatDurationMinutes(durationMinutes)}</span>
+              </div>
+
+              {/* Vertical Day Buttons list */}
+              <div className="space-y-2.5">
+                {days.map((day) => {
+                  const availSlots = getEffectiveAvailableSlots(day.iso);
+                  const isAvailable = !day.isClosed && availSlots.length > 0;
+                  const shortDate = toShortIsraeliDateString(day.iso);
+
+                  const dayLabel = day.isToday
+                    ? `היום, ${shortDate}`
+                    : `יום ${day.weekday}, ${shortDate}`;
+
+                  return (
+                    <button
+                      key={day.iso}
+                      type="button"
+                      disabled={day.isClosed}
+                      onClick={() => handleSelectDay(day)}
+                      className={`w-full py-3.5 px-5 rounded-2xl border text-center font-bold text-sm sm:text-base transition-all flex items-center justify-between ${
+                        isAvailable
+                          ? 'bg-white border-slate-200 hover:border-purple-600 hover:bg-purple-50/50 hover:shadow-md text-slate-900 cursor-pointer active:scale-98'
+                          : day.isClosed
+                          ? 'bg-slate-50/80 border-slate-200 text-slate-400 cursor-not-allowed opacity-75'
+                          : 'bg-red-50/60 border-red-200 text-red-600 cursor-pointer hover:bg-red-50 font-medium'
+                      }`}
+                    >
+                      <span className={`${isAvailable ? 'text-slate-900 font-black' : !day.isClosed ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
+                        {dayLabel}
+                      </span>
+
+                      {isAvailable ? (
+                        <span className="text-[11px] px-2.5 py-1 rounded-full bg-purple-50 text-purple-700 font-black border border-purple-200">
+                          {availSlots.length} פנויים
+                        </span>
+                      ) : day.isClosed ? (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 font-medium">
+                          שבת סגור
+                        </span>
+                      ) : (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold">
+                          מלא
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="pt-2 text-center text-xs text-slate-400 font-medium">
                 <span>* ימים ללא תורים פנויים מסומנים ב</span>
                 <span className="text-red-600 font-bold">אדום</span>
               </div>
             </div>
           )}
 
-          {/* STEP 3: בחירת שעה פנויה */}
+          {/* STEP 3: בחירת שעה - Identical to TorModalFlow with Strikethrough & 'תפוס' */}
           {step === 'slot' && (
             <div className="space-y-4 py-1">
               <div className="bg-purple-50 rounded-2xl p-3 border border-purple-200 flex items-center justify-between text-xs">
@@ -562,10 +627,31 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                 </span>
               </div>
 
-              {currentAvailableSlots.length === 0 ? (
+              {/* If Admin is in Block mode, give option for full day block right here */}
+              {isBlockAction && (
+                <div className="p-3 bg-slate-900 text-white rounded-2xl flex items-center justify-between text-xs shadow-sm">
+                  <div className="flex items-center gap-2">
+                    <Palmtree className="w-4 h-4 text-purple-300 shrink-0" />
+                    <span>רוצה לחסום את <strong>כל היום</strong> לחופש?</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBlockWholeDay(true);
+                      setSelectedSlot('');
+                      setStep('details');
+                    }}
+                    className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold cursor-pointer transition active:scale-95 shadow-xs"
+                  >
+                    תפיסת כל היום 🌴
+                  </button>
+                </div>
+              )}
+
+              {currentSlotsOccupancy.length === 0 ? (
                 <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200 text-slate-600 text-sm space-y-3">
                   <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
-                  <p className="font-bold">אין שעות פנויות ביום זה</p>
+                  <p className="font-bold">אין שעות פעילות ביום זה</p>
                   <button
                     type="button"
                     onClick={() => setStep('day')}
@@ -576,51 +662,117 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <p className="text-xs text-slate-500 font-medium text-center">
-                    לחצי על השעה המתאימה מתוך השעות הפנויות:
-                  </p>
+                  {effectiveAvailableSlotsCount === 0 ? (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-xs text-red-700 font-bold flex items-center justify-between shadow-2xs">
+                      <div className="flex items-center gap-1.5">
+                        <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                        <span>כל התורים ביום זה כבר תפוסים</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setStep('day')}
+                        className="underline text-purple-700 font-black cursor-pointer hover:text-purple-900"
+                      >
+                        בחרי יום אחר
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between text-xs text-slate-500 font-medium px-1">
+                      <span>{isBlockAction ? 'בחרי שעה לתפיסה / חופש:' : 'בחרי שעה פנויה לקביעת התור:'}</span>
+                      <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 text-[11px]">
+                        {effectiveAvailableSlotsCount} תורים פנויים
+                      </span>
+                    </div>
+                  )}
 
                   {/* Morning Slots (before 12:00) */}
-                  {currentAvailableSlots.filter((s) => timeToMinutes(s) < 720).length > 0 && (
+                  {currentSlotsOccupancy.filter((s) => timeToMinutes(s.time) < 720).length > 0 && (
                     <div className="space-y-1.5">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-amber-900 bg-amber-50 px-3 py-1 rounded-xl border border-amber-200">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-amber-800 bg-amber-50/90 px-3 py-1 rounded-xl border border-amber-200/80">
                         <Sun className="w-3.5 h-3.5 text-amber-600" />
                         <span>בוקר</span>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {currentAvailableSlots
-                          .filter((s) => timeToMinutes(s) < 720)
+                        {currentSlotsOccupancy
+                          .filter((s) => timeToMinutes(s.time) < 720)
                           .map((slot) => {
-                            const startMin = timeToMinutes(slot);
-                            const endMin = startMin + durationMinutes;
-                            const endTime = minutesToTime(endMin);
-                            const isSelected = selectedSlot === slot;
+                            const inPast = isSlotInPast(selectedDate, slot.time);
+                            const isOccupied = !slot.isAvailable;
+                            const isClickable = slot.isAvailable && !inPast;
+
+                            if (isClickable) {
+                              return (
+                                <button
+                                  key={slot.time}
+                                  type="button"
+                                  onClick={() => handleSelectSlot(slot.time)}
+                                  className="p-3 rounded-2xl bg-white border-2 border-slate-200 hover:border-purple-600 hover:bg-purple-50 text-slate-900 hover:shadow-md transition-all text-center group cursor-pointer active:scale-95"
+                                >
+                                  <div className="flex items-center justify-between gap-1 mb-1">
+                                    <span className="text-lg font-black tracking-wide group-hover:text-purple-700 text-slate-900 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                      פנוי
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-slate-500 group-hover:text-purple-700 block font-medium">
+                                    עד {slot.endTime}
+                                  </span>
+                                </button>
+                              );
+                            }
+
+                            if (isOccupied) {
+                              return (
+                                <div
+                                  key={slot.time}
+                                  className="relative p-3 rounded-2xl bg-slate-50/90 border-2 border-red-200/70 text-slate-400 select-none overflow-hidden cursor-not-allowed group shadow-2xs"
+                                  title="תור זה כבר תפוס"
+                                >
+                                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                  </div>
+
+                                  <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                    <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-red-500 decoration-2 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
+                                      <Lock className="w-2.5 h-2.5 text-red-600" />
+                                      <span>תפוס</span>
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                    <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
+                                    <span className="text-red-600 font-bold">לא פנוי</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+
                             return (
-                              <button
-                                key={slot}
-                                type="button"
-                                onClick={() => handleSelectSlot(slot)}
-                                className={`p-3 rounded-2xl border-2 transition-all text-center group cursor-pointer ${
-                                  isSelected
-                                    ? 'bg-purple-600 text-white border-purple-600 shadow-md ring-2 ring-purple-500/20'
-                                    : 'bg-white border-slate-200 hover:border-purple-600 hover:bg-purple-50 text-slate-900'
-                                }`}
+                              <div
+                                key={slot.time}
+                                className="relative p-3 rounded-2xl bg-slate-50/60 border-2 border-slate-200/80 text-slate-400 select-none overflow-hidden cursor-not-allowed opacity-60"
+                                title="שעה זו עברה"
                               >
-                                <span
-                                  className={`text-lg font-black block tracking-wide ${
-                                    isSelected ? 'text-white' : 'text-slate-900 group-hover:text-purple-700'
-                                  }`}
-                                >
-                                  {slot}
+                                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                </div>
+
+                                <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                  <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-slate-400 decoration-1 font-['Rubik',sans-serif]">
+                                    {slot.time}
+                                  </span>
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+                                    עבר
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 block font-medium relative z-10">
+                                  עד {slot.endTime}
                                 </span>
-                                <span
-                                  className={`text-[10px] block font-medium ${
-                                    isSelected ? 'text-purple-100' : 'text-slate-500 group-hover:text-purple-700'
-                                  }`}
-                                >
-                                  עד {endTime}
-                                </span>
-                              </button>
+                              </div>
                             );
                           })}
                       </div>
@@ -628,48 +780,95 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                   )}
 
                   {/* Afternoon Slots (12:00 - 16:30) */}
-                  {currentAvailableSlots.filter(
-                    (s) => timeToMinutes(s) >= 720 && timeToMinutes(s) < 990
+                  {currentSlotsOccupancy.filter(
+                    (s) => timeToMinutes(s.time) >= 720 && timeToMinutes(s.time) < 990
                   ).length > 0 && (
                     <div className="space-y-1.5">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-orange-900 bg-orange-50 px-3 py-1 rounded-xl border border-orange-200">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-orange-800 bg-orange-50/90 px-3 py-1 rounded-xl border border-orange-200/80">
                         <Sunset className="w-3.5 h-3.5 text-orange-600" />
                         <span>צהריים ואחה״צ</span>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {currentAvailableSlots
-                          .filter((s) => timeToMinutes(s) >= 720 && timeToMinutes(s) < 990)
+                        {currentSlotsOccupancy
+                          .filter((s) => timeToMinutes(s.time) >= 720 && timeToMinutes(s.time) < 990)
                           .map((slot) => {
-                            const startMin = timeToMinutes(slot);
-                            const endMin = startMin + durationMinutes;
-                            const endTime = minutesToTime(endMin);
-                            const isSelected = selectedSlot === slot;
+                            const inPast = isSlotInPast(selectedDate, slot.time);
+                            const isOccupied = !slot.isAvailable;
+                            const isClickable = slot.isAvailable && !inPast;
+
+                            if (isClickable) {
+                              return (
+                                <button
+                                  key={slot.time}
+                                  type="button"
+                                  onClick={() => handleSelectSlot(slot.time)}
+                                  className="p-3 rounded-2xl bg-white border-2 border-slate-200 hover:border-purple-600 hover:bg-purple-50 text-slate-900 hover:shadow-md transition-all text-center group cursor-pointer active:scale-95"
+                                >
+                                  <div className="flex items-center justify-between gap-1 mb-1">
+                                    <span className="text-lg font-black tracking-wide group-hover:text-purple-700 text-slate-900 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                      פנוי
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-slate-500 group-hover:text-purple-700 block font-medium">
+                                    עד {slot.endTime}
+                                  </span>
+                                </button>
+                              );
+                            }
+
+                            if (isOccupied) {
+                              return (
+                                <div
+                                  key={slot.time}
+                                  className="relative p-3 rounded-2xl bg-slate-50/90 border-2 border-red-200/70 text-slate-400 select-none overflow-hidden cursor-not-allowed group shadow-2xs"
+                                  title="תור זה כבר תפוס"
+                                >
+                                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                  </div>
+
+                                  <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                    <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-red-500 decoration-2 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
+                                      <Lock className="w-2.5 h-2.5 text-red-600" />
+                                      <span>תפוס</span>
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                    <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
+                                    <span className="text-red-600 font-bold">לא פנוי</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+
                             return (
-                              <button
-                                key={slot}
-                                type="button"
-                                onClick={() => handleSelectSlot(slot)}
-                                className={`p-3 rounded-2xl border-2 transition-all text-center group cursor-pointer ${
-                                  isSelected
-                                    ? 'bg-purple-600 text-white border-purple-600 shadow-md ring-2 ring-purple-500/20'
-                                    : 'bg-white border-slate-200 hover:border-purple-600 hover:bg-purple-50 text-slate-900'
-                                }`}
+                              <div
+                                key={slot.time}
+                                className="relative p-3 rounded-2xl bg-slate-50/60 border-2 border-slate-200/80 text-slate-400 select-none overflow-hidden cursor-not-allowed opacity-60"
+                                title="שעה זו עברה"
                               >
-                                <span
-                                  className={`text-lg font-black block tracking-wide ${
-                                    isSelected ? 'text-white' : 'text-slate-900 group-hover:text-purple-700'
-                                  }`}
-                                >
-                                  {slot}
+                                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                </div>
+
+                                <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                  <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-slate-400 decoration-1 font-['Rubik',sans-serif]">
+                                    {slot.time}
+                                  </span>
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+                                    עבר
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 block font-medium relative z-10">
+                                  עד {slot.endTime}
                                 </span>
-                                <span
-                                  className={`text-[10px] block font-medium ${
-                                    isSelected ? 'text-purple-100' : 'text-slate-500 group-hover:text-purple-700'
-                                  }`}
-                                >
-                                  עד {endTime}
-                                </span>
-                              </button>
+                              </div>
                             );
                           })}
                       </div>
@@ -677,46 +876,93 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                   )}
 
                   {/* Evening Slots (16:30+) */}
-                  {currentAvailableSlots.filter((s) => timeToMinutes(s) >= 990).length > 0 && (
+                  {currentSlotsOccupancy.filter((s) => timeToMinutes(s.time) >= 990).length > 0 && (
                     <div className="space-y-1.5">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-900 bg-indigo-50 px-3 py-1 rounded-xl border border-indigo-200">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-800 bg-indigo-50/90 px-3 py-1 rounded-xl border border-indigo-200/80">
                         <Moon className="w-3.5 h-3.5 text-indigo-600" />
                         <span>ערב</span>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {currentAvailableSlots
-                          .filter((s) => timeToMinutes(s) >= 990)
+                        {currentSlotsOccupancy
+                          .filter((s) => timeToMinutes(s.time) >= 990)
                           .map((slot) => {
-                            const startMin = timeToMinutes(slot);
-                            const endMin = startMin + durationMinutes;
-                            const endTime = minutesToTime(endMin);
-                            const isSelected = selectedSlot === slot;
+                            const inPast = isSlotInPast(selectedDate, slot.time);
+                            const isOccupied = !slot.isAvailable;
+                            const isClickable = slot.isAvailable && !inPast;
+
+                            if (isClickable) {
+                              return (
+                                <button
+                                  key={slot.time}
+                                  type="button"
+                                  onClick={() => handleSelectSlot(slot.time)}
+                                  className="p-3 rounded-2xl bg-white border-2 border-slate-200 hover:border-purple-600 hover:bg-purple-50 text-slate-900 hover:shadow-md transition-all text-center group cursor-pointer active:scale-95"
+                                >
+                                  <div className="flex items-center justify-between gap-1 mb-1">
+                                    <span className="text-lg font-black tracking-wide group-hover:text-purple-700 text-slate-900 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                      פנוי
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-slate-500 group-hover:text-purple-700 block font-medium">
+                                    עד {slot.endTime}
+                                  </span>
+                                </button>
+                              );
+                            }
+
+                            if (isOccupied) {
+                              return (
+                                <div
+                                  key={slot.time}
+                                  className="relative p-3 rounded-2xl bg-slate-50/90 border-2 border-red-200/70 text-slate-400 select-none overflow-hidden cursor-not-allowed group shadow-2xs"
+                                  title="תור זה כבר תפוס"
+                                >
+                                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                    <div className="w-[125%] h-[2px] bg-red-400/80 -rotate-12 transform origin-center shadow-xs" />
+                                  </div>
+
+                                  <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                    <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-red-500 decoration-2 font-['Rubik',sans-serif]">
+                                      {slot.time}
+                                    </span>
+                                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
+                                      <Lock className="w-2.5 h-2.5 text-red-600" />
+                                      <span>תפוס</span>
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 relative z-10">
+                                    <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
+                                    <span className="text-red-600 font-bold">לא פנוי</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+
                             return (
-                              <button
-                                key={slot}
-                                type="button"
-                                onClick={() => handleSelectSlot(slot)}
-                                className={`p-3 rounded-2xl border-2 transition-all text-center group cursor-pointer ${
-                                  isSelected
-                                    ? 'bg-purple-600 text-white border-purple-600 shadow-md ring-2 ring-purple-500/20'
-                                    : 'bg-white border-slate-200 hover:border-purple-600 hover:bg-purple-50 text-slate-900'
-                                }`}
+                              <div
+                                key={slot.time}
+                                className="relative p-3 rounded-2xl bg-slate-50/60 border-2 border-slate-200/80 text-slate-400 select-none overflow-hidden cursor-not-allowed opacity-60"
+                                title="שעה זו עברה"
                               >
-                                <span
-                                  className={`text-lg font-black block tracking-wide ${
-                                    isSelected ? 'text-white' : 'text-slate-900 group-hover:text-purple-700'
-                                  }`}
-                                >
-                                  {slot}
+                                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                                  <div className="w-[125%] h-[1.5px] bg-slate-300 -rotate-12 transform origin-center" />
+                                </div>
+
+                                <div className="flex items-center justify-between gap-1 mb-1 relative z-10">
+                                  <span className="text-lg font-black tracking-wide text-slate-400 line-through decoration-slate-400 decoration-1 font-['Rubik',sans-serif]">
+                                    {slot.time}
+                                  </span>
+                                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+                                    עבר
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 block font-medium relative z-10">
+                                  עד {slot.endTime}
                                 </span>
-                                <span
-                                  className={`text-[10px] block font-medium ${
-                                    isSelected ? 'text-purple-100' : 'text-slate-500 group-hover:text-purple-700'
-                                  }`}
-                                >
-                                  עד {endTime}
-                                </span>
-                              </button>
+                              </div>
                             );
                           })}
                       </div>
@@ -727,194 +973,211 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
             </div>
           )}
 
-          {/* STEP 4: פרטי הלקוח/ה ואישור שריון */}
+          {/* STEP 4: פרטי הלקוח/ה או אישור תפיסת שעה / חופש */}
           {step === 'details' && (
-            <form onSubmit={handleSubmitBooking} className="space-y-4 py-1 text-right">
-              {/* Summary Card with edit buttons */}
-              <div className="bg-purple-50/80 rounded-2xl p-4 border border-purple-200 space-y-3 shadow-2xs">
-                <div className="flex items-center justify-between pb-2 border-b border-purple-200">
-                  <div>
-                    <span className="text-[11px] text-purple-700 font-bold block">טיפול נבחר</span>
-                    <span className="font-black text-sm text-slate-900">{selectedService.name}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm font-black text-purple-900">
-                      {formatILS(selectedService.price)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setStep('treatment')}
-                      className="text-xs text-purple-700 underline font-bold hover:text-purple-900 cursor-pointer"
-                    >
-                      שינוי
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="flex items-center justify-between p-2 bg-white rounded-xl border border-purple-100">
-                    <div className="flex items-center gap-1.5">
-                      <Calendar className="w-3.5 h-3.5 text-purple-600" />
-                      <div>
-                        <span className="text-[10px] text-slate-400 block font-bold">תאריך</span>
-                        <span className="font-bold text-slate-900 font-mono text-[11px]">
-                          {toIsraeliDateString(selectedDate)}
-                        </span>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setStep('day')}
-                      className="text-[11px] text-purple-700 underline font-bold cursor-pointer"
-                    >
-                      עריכה
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between p-2 bg-white rounded-xl border border-purple-100">
-                    <div className="flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-purple-600" />
-                      <div>
-                        <span className="text-[10px] text-slate-400 block font-bold">שעה</span>
-                        <span className="font-bold text-slate-900 font-mono text-[11px]">
-                          {selectedSlot} - {minutesToTime(timeToMinutes(selectedSlot) + durationMinutes)}
-                        </span>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setStep('slot')}
-                      className="text-[11px] text-purple-700 underline font-bold cursor-pointer"
-                    >
-                      עריכה
-                    </button>
-                  </div>
-                </div>
-
-                {selectedDate && (
-                  <div className="text-[11px] text-purple-900 font-medium">
-                    {formatHebrewFullDate(selectedDate)}
-                  </div>
-                )}
-              </div>
-
-              {/* Quick Customer Search Autocomplete */}
-              {existingCustomers.length > 0 && (
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-bold text-slate-700">
-                    חיפוש לקוח/ה קיים/ת (בחירה מהירה):
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      placeholder="הקלידי שם או טלפון לחיפוש מהיר ברשימת הלקוחות..."
-                      value={customerSearchQuery}
-                      onChange={(e) => setCustomerSearchQuery(e.target.value)}
-                      className="w-full pl-4 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:bg-white focus:border-purple-600 outline-none text-right transition"
-                    />
-                    <Search className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
-                  </div>
-
-                  {customerSuggestions.length > 0 && (
-                    <div className="p-1 bg-white rounded-xl border border-purple-200 shadow-md space-y-1 animate-in fade-in">
-                      {customerSuggestions.map((c) => (
-                        <button
-                          key={c.phone}
-                          type="button"
-                          onClick={() => handleSelectExistingCustomer(c)}
-                          className="w-full p-2 hover:bg-purple-50 rounded-lg flex items-center justify-between text-xs text-right transition cursor-pointer"
-                        >
-                          <span className="font-bold text-slate-900">{c.name}</span>
-                          <span className="font-mono text-purple-700 font-bold" dir="ltr">
-                            {c.phone}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+            <form onSubmit={handleSubmitBooking} className="space-y-4 py-1">
+              {/* Summary Card */}
+              <div className="bg-purple-50/90 rounded-2xl p-3.5 border border-purple-200 space-y-2 text-xs">
+                <div className="flex items-center justify-between font-bold text-purple-950">
+                  <span>{selectedService.name}</span>
+                  {!isBlockAction && (
+                    <span className="text-purple-700 font-black">{formatILS(selectedService.price)}</span>
                   )}
                 </div>
-              )}
-
-              {/* Customer Name & Phone Fields */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                <div className="space-y-1.5">
-                  <label htmlFor="admin-cust-name" className="block text-slate-700 font-bold">
-                    שם הלקוח/ה <span className="text-purple-600">*</span>
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="admin-cust-name"
-                      type="text"
-                      required
-                      placeholder="שם מלא של הלקוח/ה"
-                      value={customerName}
-                      onChange={(e) => setCustomerName(e.target.value)}
-                      className="w-full pl-4 pr-9 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 text-xs focus:bg-white focus:border-purple-600 outline-none text-right transition"
-                    />
-                    <User className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
+                <div className="flex items-center justify-between text-slate-600 pt-1 border-t border-purple-200/60">
+                  <div className="flex items-center gap-1">
+                    <Calendar className="w-3.5 h-3.5 text-purple-600" />
+                    <span>{toIsraeliDateString(selectedDate)}</span>
                   </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label htmlFor="admin-cust-phone" className="block text-slate-700 font-bold">
-                    טלפון נייד
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="admin-cust-phone"
-                      type="tel"
-                      placeholder="050-0000000"
-                      value={customerPhone}
-                      onChange={(e) => setCustomerPhone(e.target.value)}
-                      dir="ltr"
-                      className="w-full pl-4 pr-9 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-slate-900 text-xs focus:bg-white focus:border-purple-600 outline-none text-right transition"
-                    />
-                    <Phone className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
+                  <div className="flex items-center gap-1 font-bold">
+                    <Clock className="w-3.5 h-3.5 text-purple-600" />
+                    <span>{blockWholeDay ? 'כל היום (חופש מלא)' : `שעה: ${selectedSlot}`}</span>
                   </div>
                 </div>
               </div>
 
-              {/* Notes */}
-              <div className="space-y-1.5 text-xs">
-                <label htmlFor="admin-appt-notes" className="block text-slate-700 font-bold">
-                  הערות לתור (אופציונלי):
-                </label>
-                <div className="relative">
-                  <input
-                    id="admin-appt-notes"
-                    type="text"
-                    placeholder="לדוגמה: מבנה אנטומי, הסרת לק ישן, בקשות מיוחדות..."
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    className="w-full pl-4 pr-9 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 text-xs focus:bg-white focus:border-purple-600 outline-none text-right transition"
-                  />
-                  <FileText className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
-                </div>
-              </div>
-
+              {/* Error Box */}
               {errorMessage && (
-                <div className="p-3 bg-red-50 text-red-700 text-xs font-bold rounded-xl border border-red-200 flex items-center gap-2">
+                <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-xs text-red-700 font-bold flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
                   <span>{errorMessage}</span>
                 </div>
               )}
 
+              {/* IF ADMIN ACTION (SEIZE / VACATION) -> NO CUSTOMER DETAILS NEEDED */}
+              {isBlockAction ? (
+                <div className="space-y-3 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
+                    <Lock className="w-4 h-4 text-purple-600" />
+                    <span>הגדרת תפיסת התור ביומן:</span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-bold text-slate-600 block">
+                      סיבת התפיסה (מוצג ביומן בלבד):
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {['תור תפוס', 'חופש', 'הפסקה', 'עניין אישי'].map((r) => (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => setBlockReason(r)}
+                          className={`py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                            blockReason === r
+                              ? 'bg-purple-600 text-white shadow-xs'
+                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {r === 'חופש' && <Palmtree className="w-3 h-3" />}
+                          {r === 'תור תפוס' && <Lock className="w-3 h-3" />}
+                          {r === 'הפסקה' && <Coffee className="w-3 h-3" />}
+                          {r === 'עניין אישי' && <Tag className="w-3 h-3" />}
+                          <span>{r}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 text-xs pt-1">
+                    <label htmlFor="admin-block-notes" className="block text-slate-700 font-bold">
+                      הערה פנימית (אופציונלי):
+                    </label>
+                    <input
+                      id="admin-block-notes"
+                      type="text"
+                      placeholder="הערה פרטית שתופיע ביומן..."
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-900 text-xs focus:border-purple-600 outline-none text-right transition"
+                    />
+                  </div>
+
+                  <div className="p-2.5 bg-purple-50 rounded-xl border border-purple-200 text-[11px] text-purple-900 flex items-center gap-2">
+                    <Sparkles className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                    <span>אין צורך להזין פרטי לקוח/ה. השעה תינעל מיידית ותסומן כ"תפוס" בלוח הלקוחות.</span>
+                  </div>
+                </div>
+              ) : (
+                /* REGULAR CLIENT BOOKING FIELDS */
+                <div className="space-y-3">
+                  {/* Autocomplete Customer Search */}
+                  {existingCustomers.length > 0 && (
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-bold text-slate-600 block">
+                        חיפוש לקוח/ה קודמת למילוי מהיר:
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="הקלידי שם או טלפון לחיפוש..."
+                          value={customerSearchQuery}
+                          onChange={(e) => setCustomerSearchQuery(e.target.value)}
+                          className="w-full pl-4 pr-9 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:bg-white focus:border-purple-600 outline-none text-right transition"
+                        />
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-2.5" />
+                      </div>
+
+                      {customerSuggestions.length > 0 && (
+                        <div className="p-1 bg-white rounded-xl border border-purple-200 shadow-md space-y-1 animate-in fade-in">
+                          {customerSuggestions.map((c) => (
+                            <button
+                              key={c.phone}
+                              type="button"
+                              onClick={() => {
+                                setCustomerName(c.name);
+                                setCustomerPhone(c.phone);
+                                setCustomerSearchQuery('');
+                              }}
+                              className="w-full p-2 hover:bg-purple-50 rounded-lg flex items-center justify-between text-xs text-right transition cursor-pointer"
+                            >
+                              <span className="font-bold text-slate-900">{c.name}</span>
+                              <span className="font-mono text-purple-700 font-bold" dir="ltr">
+                                {c.phone}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="space-y-1 text-xs">
+                    <label htmlFor="admin-client-name" className="block text-slate-800 font-bold">
+                      שם מלא של הלקוח/ה <span className="text-purple-600">*</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="admin-client-name"
+                        type="text"
+                        required
+                        placeholder="שם מלא"
+                        value={customerName}
+                        onChange={(e) => setCustomerName(e.target.value)}
+                        className="w-full pl-3 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 text-xs focus:bg-white focus:border-purple-600 outline-none text-right transition"
+                      />
+                      <User className="w-4 h-4 text-slate-400 absolute right-2.5 top-3" />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 text-xs">
+                    <label htmlFor="admin-client-phone" className="block text-slate-800 font-bold">
+                      טלפון נייד
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="admin-client-phone"
+                        type="tel"
+                        placeholder="050-0000000"
+                        value={customerPhone}
+                        onChange={(e) => setCustomerPhone(e.target.value)}
+                        dir="ltr"
+                        className="w-full pl-3 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-slate-900 text-xs focus:bg-white focus:border-purple-600 outline-none text-right transition"
+                      />
+                      <Phone className="w-4 h-4 text-slate-400 absolute right-2.5 top-3" />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 text-xs">
+                    <label htmlFor="admin-client-notes" className="block text-slate-700 font-bold">
+                      הערות לטיפול (אופציונלי):
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="admin-client-notes"
+                        type="text"
+                        placeholder="למשל: ביקשה קישוט פרח, מגיעה עם לק ישן..."
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        className="w-full pl-3 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-xs focus:bg-white focus:border-purple-600 outline-none text-right transition"
+                      />
+                      <MessageSquare className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-2.5" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Submit Button */}
-              <div className="pt-2">
+              <div className="pt-2 sticky bottom-0 bg-white/95 backdrop-blur-xs pb-1">
                 <button
                   type="submit"
-                  disabled={isSubmitting}
-                  className="w-full py-3.5 px-4 bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white font-bold rounded-2xl text-sm shadow-md shadow-purple-600/25 active:scale-[0.99] transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  disabled={isSubmitting || (!isBlockAction && !customerName.trim())}
+                  className={`w-full py-3.5 rounded-2xl font-bold text-sm transition shadow-md flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50 disabled:cursor-not-allowed ${
+                    isBlockAction
+                      ? 'bg-slate-950 hover:bg-black text-white border border-purple-500/40 shadow-slate-900/30'
+                      : 'bg-purple-600 hover:bg-purple-700 text-white shadow-purple-600/25'
+                  }`}
                 >
                   {isSubmitting ? (
-                    <span className="flex items-center gap-2">
-                      <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      <span>שומר תור ביומן...</span>
-                    </span>
+                    <span>שומר ביומן...</span>
+                  ) : isBlockAction ? (
+                    <>
+                      <Lock className="w-4 h-4 text-purple-400" />
+                      <span>{blockWholeDay ? 'תפיסת כל שעות היום (חופש מלא) 🔒' : `תפיסת שעה ${selectedSlot} ביומן 🔒`}</span>
+                    </>
                   ) : (
                     <>
-                      <CalendarPlus className="w-4 h-4" />
-                      <span>אישור וקביעת תור ביומן ללקוח/ה</span>
+                      <Check className="w-4 h-4 stroke-[3]" />
+                      <span>קביעת תור ללקוח/ה ביומן ✨</span>
                     </>
                   )}
                 </button>

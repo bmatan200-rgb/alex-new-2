@@ -127,6 +127,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     customerName?: string;
     customerPhone?: string;
     notes?: string;
+    mode?: 'client' | 'block';
   }>({});
 
   const openAdminBooking = (prefill?: {
@@ -135,8 +136,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     customerName?: string;
     customerPhone?: string;
     notes?: string;
+    mode?: 'client' | 'block';
   }) => {
-    setAdminBookingPrefill(prefill || { date: selectedDate });
+    setAdminBookingPrefill(prefill || { date: selectedDate, mode: 'client' });
     setIsAdminBookingOpen(true);
   };
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
@@ -242,25 +244,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [manualNotes, setManualNotes] = useState('');
 
   // Daily slots for current selected date
-  const currentService = services[0] || { duration_minutes: 110, price: 150 };
+  const currentService = services[0] || { duration_minutes: 90, price: 150 };
+  const effectiveDuration = scheduleSettings?.durationMinutes || currentService.duration_minutes || 90;
+  const businessOpen = scheduleSettings?.businessOpen || '09:20';
+  const businessClose = scheduleSettings?.businessClose || '20:30';
+
   const dailySlotsOccupancy = getDailySlotsOccupancy(
     selectedDate,
     appointments,
-    currentService.duration_minutes || 110
+    effectiveDuration,
+    businessOpen,
+    businessClose,
+    FRIDAY_CLOSE
   );
 
   // Slots for the blocking modal date
   const blockDateOccupancy = getDailySlotsOccupancy(
     blockDate,
     appointments,
-    currentService.duration_minutes || 110
+    effectiveDuration,
+    businessOpen,
+    businessClose,
+    FRIDAY_CLOSE
   );
 
   // Slots for manual client modal date
   const manualDateOccupancy = getDailySlotsOccupancy(
     manualDate,
     appointments,
-    currentService.duration_minutes || 110
+    effectiveDuration,
+    businessOpen,
+    businessClose,
+    FRIDAY_CLOSE
   );
 
   // Client appointments on blockDate (to prevent accidental full-day blocking or override)
@@ -584,22 +599,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           <button
             type="button"
-            onClick={() => {
-              setActionTab('block');
-              setBlockDate(selectedDate);
-              const firstFree = blockDateOccupancy.find((s) => s.isAvailable);
-              if (firstFree) setBlockStartTime(firstFree.time);
-              setIsAddingManual(true);
-            }}
-            className="px-4 py-2.5 bg-slate-950 hover:bg-black text-white border border-purple-500/40 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-[0_0_12px_rgba(168,85,247,0.25)]"
+            onClick={() => openAdminBooking({ date: selectedDate, mode: 'block' })}
+            className="px-4 py-2.5 bg-slate-950 hover:bg-black text-white border border-purple-500/40 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-[0_0_12px_rgba(168,85,247,0.25)] active:scale-95"
+            title="תפיסת שעות פנויות או יום חופש מלא"
           >
             <Lock className="w-4 h-4 text-purple-400" />
-            <span>חסימת שעה / חופש</span>
+            <span>תפיסת תור / חופש 🔒</span>
           </button>
 
           <button
             type="button"
-            onClick={() => openAdminBooking({ date: selectedDate })}
+            onClick={() => openAdminBooking({ date: selectedDate, mode: 'client' })}
             className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-xs active:scale-95"
           >
             <PlusCircle className="w-4 h-4" />
@@ -742,6 +752,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         initialCustomerName={adminBookingPrefill.customerName}
         initialCustomerPhone={adminBookingPrefill.customerPhone}
         initialNotes={adminBookingPrefill.notes}
+        initialMode={adminBookingPrefill.mode}
         onShowToast={(msg, type) => showToast(msg, type || 'success')}
       />
 
@@ -1316,11 +1327,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <>
                           <button
                             type="button"
-                            onClick={() => handleQuickBlockSlot(slot.time, selectedDate)}
-                            className="flex-1 py-1.5 px-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold rounded-xl transition flex items-center justify-center gap-1 cursor-pointer"
+                            onClick={() => {
+                              openAdminBooking({
+                                date: selectedDate,
+                                slot: slot.time,
+                                mode: 'block',
+                              });
+                            }}
+                            className="flex-1 py-2 px-2.5 bg-slate-900 hover:bg-black text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs active:scale-95 border border-purple-500/30"
+                            title="תפיסת שעה זו לחופש או סתם ללא סיבה"
                           >
-                            <Lock className="w-3.5 h-3.5 text-purple-600" />
-                            <span>חסימה מהירה</span>
+                            <Lock className="w-3.5 h-3.5 text-purple-400" />
+                            <span>תפוס שעה זו (חופש) 🔒</span>
                           </button>
 
                           <button
@@ -1329,12 +1347,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               openAdminBooking({
                                 date: selectedDate,
                                 slot: slot.time,
+                                mode: 'client',
                               });
                             }}
-                            className="flex-1 py-1.5 px-2.5 bg-purple-50 hover:bg-purple-100 text-purple-900 text-xs font-bold rounded-xl transition flex items-center justify-center gap-1 cursor-pointer border border-purple-200"
+                            className="flex-1 py-2 px-2.5 bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
                           >
-                            <PlusCircle className="w-3.5 h-3.5 text-purple-700" />
-                            <span>קביעת תור לשעה זו ✨</span>
+                            <PlusCircle className="w-3.5 h-3.5" />
+                            <span>קביעת תור ללקוח/ה ✨</span>
                           </button>
                         </>
                       ) : isClient && slot.appointment ? (
@@ -1386,14 +1405,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </button>
                         </>
                       ) : isBlock && slot.appointment ? (
-                        <button
-                          type="button"
-                          onClick={() => onCancelAppointment(slot.appointment!.id)}
-                          className="w-full py-1.5 px-3 bg-purple-900/60 hover:bg-purple-800 text-purple-200 text-xs font-bold rounded-xl border border-purple-500/40 transition flex items-center justify-center gap-1 cursor-pointer"
-                        >
-                          <Unlock className="w-3.5 h-3.5 text-purple-400" />
-                          <span>שחרור חסימה (פתיחה ללקוחות)</span>
-                        </button>
+                        <div className="w-full flex items-center justify-between gap-2 flex-wrap">
+                          <div className="text-xs text-purple-200 font-bold flex items-center gap-1.5">
+                            <Lock className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                            <span>{slot.appointment.customer_name}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onCancelAppointment(slot.appointment!.id);
+                              showToast('השעה שוחררה בהצלחה וחזרה להיות פנויה ללקוחות! 🌸', 'success');
+                            }}
+                            className="py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+                          >
+                            <Unlock className="w-3.5 h-3.5" />
+                            <span>שחרור תור (פתח ללקוחות)</span>
+                          </button>
+                        </div>
                       ) : null}
                     </div>
                   </div>

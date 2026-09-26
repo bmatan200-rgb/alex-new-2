@@ -427,12 +427,14 @@ interface ServerAppointment {
 
 let serverAppointments: ServerAppointment[] = [];
 
-// Default settings configured for same-day 08:00 AM sharp customer reminder
+// Default settings configured for automatic reminders:
+// - Same-day morning reminder at 08:00 AM (Asia/Jerusalem)
+// - 1-Day before evening reminder at 20:00 (8:00 PM) (Asia/Jerusalem)
 const DEFAULT_SERVER_SETTINGS = {
   enabled: true,
   notifyCustomerToday: true, // Same-day morning reminder at 08:00 AM
   morningReminderTime: '08:00', // 08:00 AM sharp (Asia/Jerusalem)
-  notifyCustomer1DayBefore: false, // Default off: reminder sent specifically on appointment day at 08:00
+  notifyCustomer1DayBefore: true, // Evening 1-day before reminder at 20:00 (8:00 PM)
   eveningReminderTime: '20:00',
   autoSendEnabled: true,
   provider: process.env.WHATSAPP_PROVIDER || (process.env.TELNYX_API_KEY ? 'telnyx' : 'webhook'),
@@ -584,29 +586,75 @@ export async function sendTelnyxSMS(
       client = typeof Telnyx === 'function' ? Telnyx(apiKey.trim()) : new Telnyx(apiKey.trim());
     }
 
-    const payload: {
-      from: string;
-      to: string;
-      text: string;
-      messaging_profile_id?: string;
-    } = {
-      from: fromNumber.trim(),
-      to: formattedTo,
-      text: message,
-    };
+    // בדיקת תקינות UUID עבור messaging_profile_id
+    const isUuid = (val?: string) =>
+      Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim()));
 
-    if (messagingProfileId && messagingProfileId.trim()) {
-      payload.messaging_profile_id = messagingProfileId.trim();
-    }
+    const cleanProfileId = messagingProfileId && isUuid(messagingProfileId) ? messagingProfileId.trim() : undefined;
 
     // תמיכה במתודת send (הגרסה העדכנית) או create (גרסאות ישנות יותר)
     const sendMethod = client.messages?.send || client.messages?.create;
-    if (!sendMethod) {
-      throw new Error('מתודת שליחת הודעות (send/create) לא נמצאה ב-Telnyx SDK');
-    }
+
+    // פונקציית עזר לשליחה עם או בלי פרופיל
+    const executeSend = async (useProfile: boolean) => {
+      const payload: {
+        from?: string;
+        to: string;
+        text: string;
+        messaging_profile_id?: string;
+      } = {
+        from: fromNumber.trim(),
+        to: formattedTo,
+        text: message,
+      };
+
+      if (useProfile && cleanProfileId) {
+        payload.messaging_profile_id = cleanProfileId;
+      }
+
+      if (sendMethod) {
+        return await sendMethod.call(client.messages, payload);
+      }
+
+      // גיבוי ישיר ב-REST API
+      const restRes = await fetch('https://api.telnyx.com/v2/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey.trim()}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      const restData = await restRes.json();
+      if (!restRes.ok) {
+        const err: any = new Error(restData?.errors?.[0]?.detail || 'Telnyx REST error');
+        err.errors = restData?.errors;
+        err.statusCode = restRes.status;
+        throw err;
+      }
+      return restData;
+    };
 
     console.log(`[Telnyx Gateway] שולח SMS אל ${formattedTo} מאת ${fromNumber}...`);
-    const response = await sendMethod.call(client.messages, payload);
+    
+    let response: any;
+    try {
+      // נסיון שליחה ראשון (ללא profile_id אם אינו נדרש, כדי למנוע שגיאת 10015)
+      response = await executeSend(Boolean(cleanProfileId && !fromNumber));
+    } catch (firstAttemptErr: any) {
+      const isProfileErr =
+        JSON.stringify(firstAttemptErr).includes('10015') ||
+        firstAttemptErr?.message?.includes('messaging profile') ||
+        firstAttemptErr?.errors?.some((e: any) => e.code === '10015');
+
+      if (isProfileErr) {
+        console.warn('[Telnyx Gateway] ⚠️ messaging_profile_id שגוי/לא תואם - מנסה שליחה חוזרת באמצעות from בלבד...');
+        response = await executeSend(false);
+      } else {
+        throw firstAttemptErr;
+      }
+    }
+
     const responseData = response?.data || response;
 
     if (responseData?.errors && Array.isArray(responseData.errors) && responseData.errors.length > 0) {
@@ -936,7 +984,7 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 }
 
 // ----------------------------------------------------------------------
-// Initialize Node-Cron Jobs
+// Initialize Node-Cron Jobs & Continuous Catch-up Worker
 // ----------------------------------------------------------------------
 function initCronSchedulers() {
   console.log('[CRON Service] מאתחל משימות תזכורת אוטומטיות (Timezone: Asia/Jerusalem)...');
@@ -974,6 +1022,56 @@ function initCronSchedulers() {
     }
   );
   console.log('[CRON Service] ✅ קרון ערב (תורי מחר) הוגדר בהצלחה לשעה 20:00 (Asia/Jerusalem).');
+
+  /**
+   * 3. מנגנון השלמה ובדיקה מתמשכת (Continuous Catch-up Runner)
+   * רץ כל 2 דקות ברקע כדי לוודא שאף תזכורת לא מתפספסת במידה והשרת אותחל או הוקפא בדיוק בדקת הקרון.
+   * המנגנון מוגן על ידי נעילות Firestore (reminder_locks) המונעות כפילות באופן מוחלט.
+   */
+  const runScheduledCheck = async () => {
+    try {
+      if (activeServerSettings?.enabled === false || activeServerSettings?.autoSendEnabled === false) {
+        return;
+      }
+
+      const { dateIso, tomorrowIso, hour, minute } = getIsraelTime();
+      const currentTotalMinutes = hour * 60 + minute;
+
+      // בדיקת תזכורת בוקר (תורי היום) בין השעה המוגדרת ל-20:00
+      const morningTimeStr = activeServerSettings?.morningReminderTime || '08:00';
+      const [mH, mM] = morningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
+      const morningTotalMinutes = mH * 60 + mM;
+
+      if (currentTotalMinutes >= morningTotalMinutes && currentTotalMinutes < 20 * 60) {
+        if (activeServerSettings?.notifyCustomerToday !== false) {
+          await sendRemindersForDate(dateIso, 'today');
+        }
+      }
+
+      // בדיקת תזכורת ערב (תורי מחר) בין 20:00 לחצות (23:59)
+      const eveningTimeStr = activeServerSettings?.eveningReminderTime || '20:00';
+      const [eH, eM] = eveningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
+      const eveningTotalMinutes = eH * 60 + eM;
+
+      if (currentTotalMinutes >= eveningTotalMinutes && currentTotalMinutes < 24 * 60) {
+        if (activeServerSettings?.notifyCustomer1DayBefore !== false) {
+          await sendRemindersForDate(tomorrowIso, '1day');
+        }
+      }
+    } catch (err) {
+      console.warn('[Catch-up Scheduler Warning]:', err);
+    }
+  };
+
+  // הפעלה ראשונית 5 שניות לאחר עליית השרת
+  setTimeout(() => {
+    runScheduledCheck().catch(() => {});
+  }, 5000);
+
+  // בדיקה חוזרת כל 2 דקות
+  setInterval(() => {
+    runScheduledCheck().catch(() => {});
+  }, 2 * 60 * 1000);
 }
 
 // הפעלת משימות הקרון

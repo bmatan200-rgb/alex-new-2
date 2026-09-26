@@ -10,7 +10,7 @@ export const DEFAULT_REMINDER_SETTINGS: WhatsAppReminderSettings = {
   enabled: true,
   notifyCustomerOnBookingDay: false,
   notifyCustomerToday: true, // Same-day morning reminder at 08:00 AM sharp
-  notifyCustomer1DayBefore: false, // Turned off - reminder is scheduled specifically for appointment day at 08:00 AM
+  notifyCustomer1DayBefore: true, // Evening 1-day before reminder at 20:00 (8:00 PM)
   notifyCustomer2HoursBefore: false,
   notifyAlexOnBooking: false,
   notifyAlex1DayBefore: false,
@@ -83,6 +83,12 @@ export function getStoredReminderSettings(): WhatsAppReminderSettings {
     }
     if (parsed.notifyCustomerToday === undefined) {
       parsed.notifyCustomerToday = true;
+    }
+    if (parsed.notifyCustomer1DayBefore === undefined) {
+      parsed.notifyCustomer1DayBefore = true;
+    }
+    if (!parsed.eveningReminderTime) {
+      parsed.eveningReminderTime = '20:00';
     }
 
     return { ...DEFAULT_REMINDER_SETTINGS, ...parsed };
@@ -218,16 +224,17 @@ export function isAppointmentIn1DayReminderWindow(appointment: Appointment): boo
     return false;
   }
 
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowIso = toISODateString(tomorrow);
+  const now = new Date();
+  const israelDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
+  israelDate.setDate(israelDate.getDate() + 1);
+  const tomorrowIso = toISODateString(israelDate);
 
   if (appointment.appointment_date === tomorrowIso) {
     return true;
   }
 
   const mins = getMinutesUntilAppointment(appointment.appointment_date, appointment.start_time);
-  return mins >= 14 * 60 && mins <= 36 * 60;
+  return mins >= 12 * 60 && mins <= 36 * 60;
 }
 
 /**
@@ -243,7 +250,9 @@ export function isAppointmentToday(appointment: Appointment): boolean {
   ) {
     return false;
   }
-  const todayIso = toISODateString(new Date());
+  const now = new Date();
+  const israelDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
+  const todayIso = toISODateString(israelDate);
   return appointment.appointment_date === todayIso;
 }
 
@@ -772,13 +781,13 @@ export async function autoDispatchAllPendingReminders(appointments: Appointment[
   const morningTimeStr = settings.morningReminderTime || '08:00';
   const [mornH, mornM] = morningTimeStr.split(':').map((v) => parseInt(v, 10) || 0);
   const targetMornTotalMinutes = mornH * 60 + mornM;
-  const isMorningDue = totalMinutes >= targetMornTotalMinutes && totalMinutes <= targetMornTotalMinutes + 45;
+  const isMorningDue = totalMinutes >= targetMornTotalMinutes && totalMinutes < 20 * 60;
 
-  // 2. Parse Evening Reminder Target Time (default 20:56)
-  const eveningTimeStr = settings.eveningReminderTime || '20:56';
+  // 2. Parse Evening Reminder Target Time (default 20:00)
+  const eveningTimeStr = settings.eveningReminderTime || '20:00';
   const [eveH, eveM] = eveningTimeStr.split(':').map((v) => parseInt(v, 10) || 0);
   const targetEveTotalMinutes = eveH * 60 + eveM;
-  const isEveningDue = totalMinutes >= targetEveTotalMinutes && totalMinutes <= targetEveTotalMinutes + 45;
+  const isEveningDue = totalMinutes >= targetEveTotalMinutes && totalMinutes < 24 * 60;
 
   // Group confirmed client appointments by phone
   const clientAppts = appointments.filter(

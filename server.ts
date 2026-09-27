@@ -1167,9 +1167,13 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
       }
 
       console.log(`[CRON] שולח תזכורת ללקוח/ה: ${firstAppt.customer_name} (${firstAppt.customer_phone}) עבור ${appts.length} תורים...`);
+      // Customer appointment reminders are SMS. The manual send path explicitly
+      // selects Telnyx; keep the scheduled path on the same SMS provider instead
+      // of inheriting a global WhatsApp provider (Green API/Twilio WhatsApp).
       const res = await sendWhatsAppViaProvider({
         phone: firstAppt.customer_phone,
         message: messageText,
+        provider: 'telnyx',
       });
 
       if (res.success) {

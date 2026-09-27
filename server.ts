@@ -1467,19 +1467,36 @@ app.post('/api/whatsapp/sync-settings', requireAdmin, async (req: Request, res: 
     const { settings } = req.body;
     if (settings && typeof settings === 'object') {
       const sanitizedSettings = { ...settings };
-      activeServerSettings = { ...activeServerSettings, ...sanitizedSettings };
+      for (const timeField of ['morningReminderTime', 'eveningReminderTime']) {
+        if (sanitizedSettings[timeField] !== undefined &&
+            !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(sanitizedSettings[timeField]))) {
+          return res.status(400).json({ success: false, error: `שעה לא תקינה בשדה ${timeField}` });
+        }
+      }
 
-      // Immediately update cron jobs with the new hours
-      scheduleOrUpdateCronJobs();
+      // Settings returned to the browser mask secrets. Never overwrite the real
+      // credentials with those display-only masked values during a time edit.
+      for (const secretField of ['telnyxApiKey', 'twilioAuthToken', 'apiKey']) {
+        const value = sanitizedSettings[secretField];
+        if (typeof value !== 'string' || !value.trim() || value.includes('•')) {
+          delete sanitizedSettings[secretField];
+        }
+      }
 
-      // Persist to Firestore so hours and settings survive server restarts and reboots
+      // Persist first. Only report success after the admin UI's times are safely
+      // stored so startup and the live scheduler use the same values.
       try {
         if (!adminFirestore) throw new Error('Firebase Admin Firestore is unavailable');
         await adminFirestore.collection('settings').doc('reminders').set(sanitizedSettings, { merge: true });
         console.log('[Server Settings] הגדרות תזכורות נשמרו ב-Firestore בהצלחה');
       } catch (fsErr) {
         console.warn('[Server Settings] אזהרה: שמירה ב-Firestore נכשלה:', fsErr);
+        return res.status(503).json({ success: false, error: 'לא הצלחתי לשמור את הגדרות התזמון ב-Firestore; השעה לא עודכנה.' });
       }
+
+      activeServerSettings = { ...activeServerSettings, ...sanitizedSettings };
+      // Reschedule immediately using the exact values saved by the admin UI.
+      scheduleOrUpdateCronJobs();
 
       console.log('[Server Settings] Messaging settings synced & rescheduled:', {
         morningReminderTime: activeServerSettings.morningReminderTime,
@@ -1720,8 +1737,8 @@ app.get('/api/whatsapp/status', (req: Request, res: Response) => {
     status: 'online',
     israelTime,
     schedules: {
-      morningSameDay: '08:00 (באותו יום של התור בבוקר - Asia/Jerusalem)',
-      evening1DayBefore: '20:00 (יום לפני התור בשעה 20:00 בערב - Asia/Jerusalem)',
+      morningSameDay: `${activeServerSettings?.morningReminderTime || '08:00'} (באותו יום של התור - Asia/Jerusalem)`,
+      evening1DayBefore: `${activeServerSettings?.eveningReminderTime || '20:00'} (יום לפני התור - Asia/Jerusalem)`,
     },
     syncedAppointmentsCount: serverAppointments.length,
     sentRemindersCount: Object.keys(sentHistory).length,

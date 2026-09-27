@@ -5,6 +5,7 @@ import { toIsraeliDateString, toISODateString } from './dateUtils';
 
 const STORAGE_KEY_SETTINGS = 'alex_whatsapp_reminder_settings_v1';
 const STORAGE_KEY_SENT_LOG = 'alex_whatsapp_sent_reminders_log_v1';
+let reminderSettingsSaveQueue: Promise<unknown> = Promise.resolve();
 
 export const DEFAULT_REMINDER_SETTINGS: WhatsAppReminderSettings = {
   enabled: true,
@@ -97,24 +98,31 @@ export function getStoredReminderSettings(): WhatsAppReminderSettings {
   }
 }
 
-export async function saveReminderSettings(settings: WhatsAppReminderSettings): Promise<void> {
+export async function saveReminderSettings(settings: WhatsAppReminderSettings): Promise<boolean> {
   try {
     localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
-    const token = auth.currentUser ? await auth.currentUser.getIdToken() : '';
-    const response = await fetch('/api/whatsapp/sync-settings', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
-      },
-      body: JSON.stringify({ settings }),
-    });
-    if (!response.ok) {
+    const saveRequest = reminderSettingsSaveQueue.then(async () => {
+      const token = auth.currentUser ? await auth.currentUser.getIdToken() : '';
+      const response = await fetch('/api/whatsapp/sync-settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-request': 'true',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ settings }),
+      });
       const result = await response.json().catch(() => ({}));
-      throw new Error(result.error || `Settings sync failed (${response.status})`);
-    }
+      if (!response.ok || result.success === false) {
+        throw new Error(result.error || `Settings sync failed (${response.status})`);
+      }
+    });
+    reminderSettingsSaveQueue = saveRequest.catch(() => undefined);
+    await saveRequest;
+    return true;
   } catch (err) {
     console.error('Failed to save reminder settings:', err);
+    return false;
   }
 }
 

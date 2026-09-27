@@ -75,6 +75,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
   });
   const [diagnostics, setDiagnostics] = useState<any>(null);
   const [isDiagnosing, setIsDiagnosing] = useState(false);
+  const [settingsSaveState, setSettingsSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -190,9 +191,15 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
   );
   const alexPreviewText = buildAlex1DayReminderText(demoAppt, settings.alexTemplate);
 
-  const handleSave = () => {
-    saveReminderSettings(settings);
-    onClose();
+  const persistSettings = async (nextSettings: WhatsAppReminderSettings) => {
+    setSettingsSaveState('saving');
+    const saved = await saveReminderSettings(nextSettings);
+    setSettingsSaveState(saved ? 'saved' : 'error');
+    return saved;
+  };
+
+  const handleSave = async () => {
+    if (await persistSettings(settings)) onClose();
   };
 
   const handleCopy = (text: string, field: string) => {
@@ -208,11 +215,11 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
   const handleRequestPushPermission = async () => {
     const granted = await triggerBrowserPushNotification(
       '🔔 בדיקת התראה - Alex טיפוח ויופי',
-      `התראות הדפדפן מופעלות בהצלחה! תקבלי תזכורות אוטומטיות יום לפני ב-20:00 ובבוקר התור ב-08:00.`
+      `התראות הדפדפן מופעלות בהצלחה! תקבלי תזכורות אוטומטיות יום לפני ב-${settings.eveningReminderTime || '20:00'} ובבוקר התור ב-${settings.morningReminderTime || '08:00'}.`
     );
     if (granted) {
       setSettings((prev) => ({ ...prev, browserNotificationsEnabled: true }));
-      saveReminderSettings({ ...settings, browserNotificationsEnabled: true });
+      void persistSettings({ ...settings, browserNotificationsEnabled: true });
     }
   };
 
@@ -364,7 +371,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
               <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
                 <span>ניהול תזכורות SMS (הודעות ללקוחות)</span>
                 <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold border border-emerald-300">
-                  קרון אוטומטי פעיל (08:00 ו-20:00)
+                  תזכורות אוטומטיות ({settings.morningReminderTime || '08:00'} ו-{settings.eveningReminderTime || '20:00'})
                 </span>
               </h2>
               <p className="text-xs text-slate-500">
@@ -518,7 +525,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                         <span>נוסח תזכורת ערב (יום לפני התור):</span>
                       </label>
                       <span className="text-[11px] bg-indigo-100 text-indigo-900 px-2 py-0.5 rounded-md font-bold">
-                        נשלחת אוטומטית ב-20:00
+                        נשלחת אוטומטית ב-{settings.eveningReminderTime || '20:00'}
                       </span>
                     </div>
 
@@ -581,7 +588,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
 
                   {/* Message Preview */}
                   <div className="p-3.5 bg-indigo-50/60 border border-indigo-200 rounded-2xl text-[11px] text-slate-700 space-y-1.5">
-                    <span className="font-bold text-indigo-950 block">תצוגה מקדימה של הודעת הערב (20:00):</span>
+                    <span className="font-bold text-indigo-950 block">תצוגה מקדימה של הודעת הערב ({settings.eveningReminderTime || '20:00'}):</span>
                     <div className="bg-white p-3 rounded-xl border border-indigo-200/80 shadow-xs whitespace-pre-line leading-relaxed">
                       {customer1DayPreviewText}
                     </div>
@@ -599,7 +606,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                         <span>נוסח תזכורת בוקר (יום התור):</span>
                       </label>
                       <span className="text-[11px] bg-amber-100 text-amber-900 px-2 py-0.5 rounded-md font-bold">
-                        נשלחת אוטומטית ב-08:00
+                        נשלחת אוטומטית ב-{settings.morningReminderTime || '08:00'}
                       </span>
                     </div>
 
@@ -662,7 +669,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
 
                   {/* Message Preview */}
                   <div className="p-3.5 bg-amber-50/60 border border-amber-200 rounded-2xl text-[11px] text-slate-700 space-y-1.5">
-                    <span className="font-bold text-amber-950 block">תצוגה מקדימה של הודעת הבוקר (08:00):</span>
+                    <span className="font-bold text-amber-950 block">תצוגה מקדימה של הודעת הבוקר ({settings.morningReminderTime || '08:00'}):</span>
                     <div className="bg-white p-3 rounded-xl border border-amber-200/80 shadow-xs whitespace-pre-line leading-relaxed">
                       {customerTodayPreviewText}
                     </div>
@@ -994,6 +1001,14 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                   </span>
                 </div>
 
+                {settingsSaveState !== 'idle' && (
+                  <div className={`text-[11px] font-bold ${settingsSaveState === 'error' ? 'text-red-700' : settingsSaveState === 'saved' ? 'text-emerald-700' : 'text-amber-800'}`}>
+                    {settingsSaveState === 'saving' && 'שומרת את השעה ומעדכנת את תזמון השרת…'}
+                    {settingsSaveState === 'saved' && 'השעות נשמרו והשרת תוזמן מחדש לפי הבחירה שלך.'}
+                    {settingsSaveState === 'error' && 'שמירת השעה נכשלה. בדקי התחברות לשרת ונסי שוב.'}
+                  </div>
+                )}
+
                 {/* Option 1: Same day at 08:00 AM */}
                 <div className="p-3 bg-white/90 rounded-xl border border-amber-100 flex items-start justify-between gap-3">
                   <div className="space-y-1">
@@ -1017,7 +1032,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                         onChange={(e) => {
                           const updated = { ...settings, morningReminderTime: e.target.value };
                           setSettings(updated);
-                          saveReminderSettings(updated);
+                          void persistSettings(updated);
                         }}
                         className="px-2 py-1 rounded-lg border border-amber-200 bg-white text-xs font-bold text-slate-900 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 outline-none cursor-pointer"
                         dir="ltr"
@@ -1031,7 +1046,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                       onChange={(e) => {
                         const updated = { ...settings, notifyCustomerToday: e.target.checked };
                         setSettings(updated);
-                        saveReminderSettings(updated);
+                        void persistSettings(updated);
                       }}
                       className="sr-only peer"
                     />
@@ -1062,7 +1077,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                         onChange={(e) => {
                           const updated = { ...settings, eveningReminderTime: e.target.value };
                           setSettings(updated);
-                          saveReminderSettings(updated);
+                          void persistSettings(updated);
                         }}
                         className="px-2 py-1 rounded-lg border border-indigo-200 bg-white text-xs font-bold text-slate-900 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none cursor-pointer"
                         dir="ltr"
@@ -1076,7 +1091,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                       onChange={(e) => {
                         const updated = { ...settings, notifyCustomer1DayBefore: e.target.checked };
                         setSettings(updated);
-                        saveReminderSettings(updated);
+                        void persistSettings(updated);
                       }}
                       className="sr-only peer"
                     />

@@ -1169,6 +1169,12 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                             {' · '}בדיקת רקע אחרונה: {diagnostics.scheduler?.lastCheckAt ? new Date(diagnostics.scheduler.lastCheckAt).toLocaleString('he-IL') : 'טרם בוצעה'}
                           </div>
                           <div className="text-indigo-900">
+                            הגדרות לוח זמנים נטענו: {diagnostics.scheduler?.scheduleSettingsLastLoadedAt ? new Date(diagnostics.scheduler.scheduleSettingsLastLoadedAt).toLocaleString('he-IL') : 'טרם נטענו'}
+                          </div>
+                          <div className={diagnostics.scheduler?.externalSchedulerLastCallAt ? 'text-emerald-800' : 'text-amber-800'}>
+                            שעון חיצוני: {diagnostics.scheduler?.externalSchedulerLastCallAt ? `התקבל פינג ${new Date(diagnostics.scheduler.externalSchedulerLastCallAt).toLocaleString('he-IL')}` : 'לא הוגדר/לא התקבל פינג מ-Cloud Scheduler'}
+                          </div>
+                          <div className="text-indigo-900">
                             ניסיון שליחה אחרון: {diagnostics.scheduler?.lastReminderAttempt ? `${diagnostics.scheduler.lastReminderAttempt.type === 'today' ? 'תורי היום' : 'תורי מחר'} · ${new Date(diagnostics.scheduler.lastReminderAttempt.attemptedAt).toLocaleString('he-IL')} · נשלחו ${diagnostics.scheduler.lastReminderAttempt.sentCount ?? 0}, נכשלו ${diagnostics.scheduler.lastReminderAttempt.failedCount ?? 0}` : 'טרם בוצע'}
                           </div>
                           {diagnostics.scheduler?.lastReminderAttempt?.error && (
@@ -1177,8 +1183,8 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                           {diagnostics.scheduler?.lastCheckError && (
                             <div className="text-red-700 font-semibold">שגיאת תזמון: {diagnostics.scheduler.lastCheckError}</div>
                           )}
-                          {(diagnostics.scheduler?.processUptimeSeconds ?? 0) < 180 && (
-                            <div className="text-amber-800">השרת הופעל לאחרונה; תזמון פנימי דורש שהשרת יישאר פעיל.</div>
+                          {!diagnostics.scheduler?.externalSchedulerConfigured && (diagnostics.scheduler?.processUptimeSeconds ?? 0) < 180 && (
+                            <div className="text-amber-800">מצב פיתוח: השעון הפנימי פעיל רק כל עוד השרת פועל.</div>
                           )}
                         </div>
                         <div className="grid grid-cols-2 gap-2">

@@ -1,7 +1,8 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { getDoc, doc, setDoc, runTransaction, deleteDoc, collection, getDocs } from 'firebase/firestore';
+import { timingSafeEqual } from 'node:crypto';
+import { getDoc, getDocFromServer, doc, setDoc, runTransaction, deleteDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from './src/lib/firebase';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
@@ -1234,14 +1235,12 @@ let eveningCronTask: any = null;
 let schedulerLastCheckAt: string | null = null;
 let schedulerLastCheckError: string | null = null;
 let schedulerLastReminderAttempt: { type: 'today' | '1day'; targetDate: string; attemptedAt: string; sentCount?: number; failedCount?: number; error?: string } | null = null;
+let runScheduledCheckForCurrentWindow: (() => Promise<void>) | null = null;
+let schedulerInitializationPromise: Promise<void> = Promise.resolve();
+let externalSchedulerLastCallAt: string | null = null;
+let scheduleSettingsLastLoadedAt: string | null = null;
 
 function scheduleOrUpdateCronJobs() {
-  const morningTime = activeServerSettings?.morningReminderTime || '08:00';
-  const eveningTime = activeServerSettings?.eveningReminderTime || '20:00';
-
-  const [mH, mM] = morningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
-  const [eH, eM] = eveningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
-
   // Stop previously scheduled tasks if any
   if (morningCronTask) {
     morningCronTask.stop();
@@ -1251,6 +1250,20 @@ function scheduleOrUpdateCronJobs() {
     eveningCronTask.stop();
     eveningCronTask = null;
   }
+
+  // In production, Cloud Scheduler is the single source of execution. A
+  // Cloud Run instance can retain an old in-memory cron after an admin changes
+  // the time, so do not run local cron tasks alongside the external trigger.
+  if (process.env.REMINDER_CRON_SECRET) {
+    console.log('[CRON Service] External scheduler configured; in-process cron tasks are disabled.');
+    return;
+  }
+
+  const morningTime = activeServerSettings?.morningReminderTime || '08:00';
+  const eveningTime = activeServerSettings?.eveningReminderTime || '20:00';
+
+  const [mH, mM] = morningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
+  const [eH, eM] = eveningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
 
   // 1. קרון בוקר דינמי: רץ כל יום בשעה שהוגדרה באפליקציה (שעון ישראל)
   const morningCronExpr = `${mM} ${mH} * * *`;
@@ -1297,19 +1310,7 @@ async function loadPersistedReminderSettings() {
   }
 
   try {
-    const scheduleSnap = await getDoc(doc(db, 'settings', 'schedule_settings'));
-    if (scheduleSnap.exists()) {
-      const schedule = scheduleSnap.data();
-      activeServerSettings = {
-        ...activeServerSettings,
-        morningReminderTime: schedule.morningReminderTime || activeServerSettings.morningReminderTime,
-        eveningReminderTime: schedule.eveningReminderTime || activeServerSettings.eveningReminderTime,
-        notifyCustomerToday: schedule.notifyCustomerToday ?? activeServerSettings.notifyCustomerToday,
-        notifyCustomer1DayBefore: schedule.notifyCustomer1DayBefore ?? activeServerSettings.notifyCustomer1DayBefore,
-        autoSendEnabled: schedule.autoSendEnabled ?? activeServerSettings.autoSendEnabled,
-        enabled: schedule.enabled ?? activeServerSettings.enabled,
-      };
-    }
+    await refreshPersistedScheduleSettings();
     console.log('[Server Settings] הגדרות תזמון פעילות:', {
       morningReminderTime: activeServerSettings.morningReminderTime,
       eveningReminderTime: activeServerSettings.eveningReminderTime,
@@ -1319,6 +1320,25 @@ async function loadPersistedReminderSettings() {
   } catch (err) {
     console.warn('[Server Settings] הגדרות תזמון לא נטענו מ-Firestore:', err);
   }
+}
+
+async function refreshPersistedScheduleSettings() {
+  // Bypass any local SDK cache: separate Cloud Run instances must each read
+  // the latest manager-saved schedule before deciding whether an SMS is due.
+  const scheduleSnap = await getDocFromServer(doc(db, 'settings', 'schedule_settings'));
+  scheduleSettingsLastLoadedAt = new Date().toISOString();
+  if (!scheduleSnap.exists()) return;
+
+  const schedule = scheduleSnap.data();
+  activeServerSettings = {
+    ...activeServerSettings,
+    morningReminderTime: schedule.morningReminderTime || activeServerSettings.morningReminderTime,
+    eveningReminderTime: schedule.eveningReminderTime || activeServerSettings.eveningReminderTime,
+    notifyCustomerToday: schedule.notifyCustomerToday ?? activeServerSettings.notifyCustomerToday,
+    notifyCustomer1DayBefore: schedule.notifyCustomer1DayBefore ?? activeServerSettings.notifyCustomer1DayBefore,
+    autoSendEnabled: schedule.autoSendEnabled ?? activeServerSettings.autoSendEnabled,
+    enabled: schedule.enabled ?? activeServerSettings.enabled,
+  };
 }
 
 async function initCronSchedulers() {
@@ -1335,10 +1355,14 @@ async function initCronSchedulers() {
    * רץ כל 2 דקות ברקע כדי לוודא שאף תזכורת לא מתפספסת במידה והשרת אותחל או הוקפא בדיוק בדקת הקרון.
    * המנגנון מוגן על ידי נעילות Firestore (reminder_locks) המונעות כפילות באופן מוחלט.
    */
-  const runScheduledCheck = async () => {
+  runScheduledCheckForCurrentWindow = async () => {
     try {
       schedulerLastCheckAt = new Date().toISOString();
       schedulerLastCheckError = null;
+      // Cloud Run may route each scheduler request to a different instance.
+      // Refresh the manager's saved values on every invocation so no instance
+      // can dispatch using a stale in-memory reminder time.
+      await refreshPersistedScheduleSettings();
       if (activeServerSettings?.enabled === false || activeServerSettings?.autoSendEnabled === false) {
         return;
       }
@@ -1373,19 +1397,55 @@ async function initCronSchedulers() {
     }
   };
 
-  // הפעלה ראשונית 5 שניות לאחר עליית השרת
-  setTimeout(() => {
-    runScheduledCheck().catch(() => {});
-  }, 5000);
-
-  // בדיקה חוזרת כל 2 דקות
-  setInterval(() => {
-    runScheduledCheck().catch(() => {});
-  }, 2 * 60 * 1000);
+  if (!process.env.REMINDER_CRON_SECRET) {
+    // Local development fallback only; production uses Cloud Scheduler.
+    setTimeout(() => {
+      runScheduledCheckForCurrentWindow?.().catch(() => {});
+    }, 5000);
+    setInterval(() => {
+      runScheduledCheckForCurrentWindow?.().catch(() => {});
+    }, 2 * 60 * 1000);
+  } else {
+    console.log('[CRON Service] External scheduler is active; background catch-up timer is disabled.');
+  }
 }
 
 // הפעלת משימות הקרון
-initCronSchedulers();
+schedulerInitializationPromise = initCronSchedulers();
+
+// A durable external scheduler (Cloud Scheduler) calls this endpoint every
+// minute. This is the reliable production trigger when the web service scales
+// down or pauses background timers between requests.
+app.post('/api/cron/reminders', async (req: Request, res: Response) => {
+  const configuredSecret = process.env.REMINDER_CRON_SECRET || '';
+  const suppliedSecret = String(req.header('x-reminder-cron-secret') || '');
+  const expected = Buffer.from(configuredSecret);
+  const supplied = Buffer.from(suppliedSecret);
+  if (expected.length < 32) {
+    return res.status(503).json({ success: false, error: 'REMINDER_CRON_SECRET must be configured with at least 32 characters' });
+  }
+  if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) {
+    return res.status(401).json({ success: false, error: 'Unauthorized scheduler request' });
+  }
+
+  try {
+    await schedulerInitializationPromise;
+    const startedAt = Date.now();
+    externalSchedulerLastCallAt = new Date(startedAt).toISOString();
+    await runScheduledCheckForCurrentWindow?.();
+    if (schedulerLastCheckError) {
+      return res.status(500).json({ success: false, error: schedulerLastCheckError });
+    }
+    const attempt = schedulerLastReminderAttempt;
+    if (attempt && Date.parse(attempt.attemptedAt) >= startedAt && (attempt.failedCount || 0) > 0) {
+      return res.status(502).json({ success: false, error: attempt.error || 'One or more reminder SMS messages failed' });
+    }
+    return res.json({ success: true, israelTime: getIsraelTime(), lastReminderAttempt: attempt });
+  } catch (error: any) {
+    console.error('[External Reminder Scheduler] run failed:', error);
+    return res.status(500).json({ success: false, error: error?.message || 'Reminder scheduler failed' });
+  }
+});
 
 /**
  * מנסה "לתפוס" תזכורת. מחזיר true רק אם זו הפעם הראשונה
@@ -1808,6 +1868,8 @@ app.get('/api/whatsapp/diagnose', requireAdmin, async (req: Request, res: Respon
     israelTime: getIsraelTime(),
     scheduler: {
       processUptimeSeconds: Math.floor(process.uptime()),
+      externalSchedulerConfigured: Boolean(process.env.REMINDER_CRON_SECRET),
+      externalSchedulerLastCallAt,
       autoSendEnabled: activeServerSettings?.enabled !== false && activeServerSettings?.autoSendEnabled !== false,
       morningReminderTime: activeServerSettings?.morningReminderTime || '08:00',
       eveningReminderTime: activeServerSettings?.eveningReminderTime || '20:00',
@@ -1815,6 +1877,7 @@ app.get('/api/whatsapp/diagnose', requireAdmin, async (req: Request, res: Respon
       notifyCustomer1DayBefore: activeServerSettings?.notifyCustomer1DayBefore === true,
       lastCheckAt: schedulerLastCheckAt,
       lastCheckError: schedulerLastCheckError,
+      scheduleSettingsLastLoadedAt,
       lastReminderAttempt: schedulerLastReminderAttempt,
       appointmentCacheCount: serverAppointments.length,
     },

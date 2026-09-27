@@ -1,21 +1,18 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { timingSafeEqual } from 'node:crypto';
-import { getDoc, getDocFromServer, doc, setDoc, runTransaction, deleteDoc, collection, getDocs } from 'firebase/firestore';
+import { getDoc, doc, setDoc, runTransaction, deleteDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from './src/lib/firebase';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
-import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = 3000;
 
 // אתחול Firebase Admin לאימות טוקני התחברות של מנהלות.
 let adminSdkReady = false;
-let adminFirestore: ReturnType<typeof getAdminFirestore> | null = null;
 try {
   if (getApps().length === 0) {
     const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -25,7 +22,6 @@ try {
       initializeApp({ projectId: 'gen-lang-client-0382531831' });
     }
   }
-  adminFirestore = getAdminFirestore();
   adminSdkReady = true;
   console.log('[Firebase Admin] ✅ מוכן לאימות טוקנים');
 } catch (err: any) {
@@ -404,21 +400,24 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   }
 }
 
-// In-memory rate limiting for SMS/WhatsApp dispatch
-const dispatchRateLimits: Record<string, number[]> = {};
-function isDispatchRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const timestamps = dispatchRateLimits[ip] || [];
-  const recent = timestamps.filter((t) => now - t < 60000); // 1 minute window
-  if (recent.length >= 20) {
-    return true;
-  }
-  recent.push(now);
-  dispatchRateLimits[ip] = recent;
-  return false;
+// ----------------------------------------------------
+// 💬 SMS & AUTOMATED REMINDERS ENGINE (Rebuilt & Hardened)
+// ----------------------------------------------------
+
+interface SmsLogEntry {
+  id: string;
+  recipientName: string;
+  recipientPhone: string;
+  messageText: string;
+  channel: 'sms';
+  status: 'sent' | 'failed' | 'queued';
+  reminderType: 'morning_today' | 'evening_1day' | 'manual_single' | 'test';
+  appointmentDate?: string;
+  startTime?: string;
+  sentAt: string;
+  errorMessage?: string;
 }
 
-// In-memory sync of appointments for server background runner
 interface ServerAppointment {
   id: string | number;
   customer_name: string;
@@ -430,80 +429,63 @@ interface ServerAppointment {
 }
 
 let serverAppointments: ServerAppointment[] = [];
+let recentSmsLogs: SmsLogEntry[] = [];
 
-// Default settings configured for automatic reminders:
-// - Same-day morning reminder at 08:00 AM (Asia/Jerusalem)
-// - 1-Day before evening reminder at 20:00 (8:00 PM) (Asia/Jerusalem)
-const DEFAULT_SERVER_SETTINGS = {
+const DEFAULT_SMS_SETTINGS = {
   enabled: true,
-  notifyCustomerToday: true, // Same-day morning reminder at 08:00 AM
-  morningReminderTime: '08:00', // 08:00 AM sharp (Asia/Jerusalem)
-  notifyCustomer1DayBefore: true, // Evening 1-day before reminder at 20:00 (8:00 PM)
-  eveningReminderTime: '20:00',
   autoSendEnabled: true,
-  provider: process.env.WHATSAPP_PROVIDER || (process.env.TELNYX_API_KEY ? 'telnyx' : 'webhook'),
-  telnyxFrom: process.env.TELNYX_FROM || '',
+  notifyCustomerToday: true,
+  morningReminderTime: '08:00', // 08:00 AM (Asia/Jerusalem)
+  notifyCustomer1DayBefore: true,
+  eveningReminderTime: '20:00', // 20:00 PM (Asia/Jerusalem)
+  morningTemplate: `היי {customer_name} 🌸\nתזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלבירור או שינוי: {phone}\nנתראה! 💖`,
+  eveningTemplate: `היי {customer_name} 🌸\nתזכורת לתור שלך למחר ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלשינוי או בירור: {phone}\nמחכים לראותך! 💖`,
+  bookingConfirmationTemplate: `היי {customer_name} 🌸\nהתור שלך נקבע בהצלחה לטיפול {service_name}! ✨\nתאריך: {appointment_date} בשעה {start_time}\nלבירורים: {phone}\nנתראה! 💖`,
   customerTodayTemplate: `היי {customer_name} 🌸\nתזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלבירור או שינוי: {phone}\nנתראה! 💖`,
   customer1DayTemplate: `היי {customer_name} 🌸\nתזכורת לתור שלך למחר ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלשינוי או בירור: {phone}\nמחכים לראותך! 💖`,
+  telnyxApiKey: process.env.TELNYX_API_KEY || '',
+  telnyxFromNumber: process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM || '',
+  provider: 'telnyx',
 };
 
-let activeServerSettings: any = { ...DEFAULT_SERVER_SETTINGS };
+let activeServerSettings: any = { ...DEFAULT_SMS_SETTINGS };
 
-// Persistent cache for sent reminders to survive server restarts/reloads
-const SENT_CACHE_FILE = path.join(process.cwd(), '.sent_reminders_cache.json');
-let sentHistory: Record<string, boolean> = {};
-
-try {
-  if (fs.existsSync(SENT_CACHE_FILE)) {
-    sentHistory = JSON.parse(fs.readFileSync(SENT_CACHE_FILE, 'utf-8'));
-  }
-} catch {
-  sentHistory = {};
+// Rate limiter for outgoing SMS
+const dispatchRateLimits: Record<string, number[]> = {};
+function isDispatchRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const timestamps = dispatchRateLimits[ip] || [];
+  const recent = timestamps.filter((t) => now - t < 60000);
+  if (recent.length >= 30) return true;
+  recent.push(now);
+  dispatchRateLimits[ip] = recent;
+  return false;
 }
 
-function recordSentReminder(key: string) {
-  sentHistory[key] = true;
-  try {
-    fs.writeFileSync(SENT_CACHE_FILE, JSON.stringify(sentHistory, null, 2), 'utf-8');
-  } catch (err) {
-    console.warn('[Server Cache] Could not write sent cache:', err);
-  }
-}
-
-// Helper to format any phone number to E.164 (+972 for Israel)
+// Phone number normalization
 function formatIsraeliPhoneToE164(phone: string): string {
   if (!phone) return '';
   let cleaned = String(phone).replace(/\D/g, '');
   if (cleaned.startsWith('00972')) {
     cleaned = '972' + cleaned.slice(5);
-  }
-  if (cleaned.startsWith('9720')) {
+  } else if (cleaned.startsWith('9720')) {
     cleaned = '972' + cleaned.slice(4);
-  }
-  if (cleaned.startsWith('0')) {
+  } else if (cleaned.startsWith('0')) {
     cleaned = '972' + cleaned.slice(1);
-  }
-  if (!cleaned.startsWith('972') && (cleaned.length === 9 || cleaned.length === 8)) {
+  } else if (!cleaned.startsWith('972') && (cleaned.length === 9 || cleaned.length === 8)) {
     cleaned = '972' + cleaned;
   }
   return '+' + cleaned;
 }
 
-// Helper to format phone for WhatsApp (digits only with 972)
-function cleanPhoneForWhatsApp(phone: string): string {
-  const e164 = formatIsraeliPhoneToE164(phone);
-  return e164.replace(/\D/g, '');
+function cleanPhoneDigits(phone: string): string {
+  return formatIsraeliPhoneToE164(phone).replace(/\D/g, '');
 }
 
-/**
- * Calculates current or offset Israel Date & Time strictly in Asia/Jerusalem
- * @param daysOffset 0 for today, 1 for tomorrow
- */
+// Accurate Israel Time helper
 function getIsraelDateString(daysOffset: number = 0): string {
   const now = new Date();
-  const israelDate = new Date(
-    now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' })
-  );
+  const israelDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
   if (daysOffset !== 0) {
     israelDate.setDate(israelDate.getDate() + daysOffset);
   }
@@ -513,7 +495,6 @@ function getIsraelDateString(daysOffset: number = 0): string {
   return `${year}-${month}-${day}`;
 }
 
-// Get current Israel Date & Time info
 function getIsraelTime(): { dateIso: string; tomorrowIso: string; hour: number; minute: number; timeStr: string } {
   const dateIso = getIsraelDateString(0);
   const tomorrowIso = getIsraelDateString(1);
@@ -535,489 +516,75 @@ function getIsraelTime(): { dateIso: string; tomorrowIso: string; hour: number; 
   return { dateIso, tomorrowIso, hour, minute, timeStr };
 }
 
-// Helper to validate UUID format for Telnyx messaging_profile_id
-const isValidTelnyxUuid = (val?: string): boolean =>
-  Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim()));
-
-// Active verified Telnyx profile ID and sender cache
+// ----------------------------------------------------------------------
+// Telnyx SMS Dispatch Gateway
+// ----------------------------------------------------------------------
 const KNOWN_TELNYX_PROFILE_ID = '4001a0d9-3620-46bf-9ea8-a1d1f6975027';
-let cachedTelnyxProfileId: string | null = null;
-let cachedTelnyxAlphaSender: string | null = null;
 
-/**
- * מאחזר את ה-Messaging Profile ID ואת ה-Sender התואם מחשבון ה-Telnyx באופן דינמי
- */
-async function resolveTelnyxProfileAndSender(
-  client: any,
-  apiKey: string,
-  explicitProfileId?: string,
-  explicitFrom?: string
-): Promise<{ profileId: string; from: string }> {
-  // If already resolved and cached to a valid non-stale profile, return it
-  if (
-    cachedTelnyxProfileId &&
-    isValidTelnyxUuid(cachedTelnyxProfileId) &&
-    cachedTelnyxProfileId !== '9565c7e3-25b2-4e39-be0b-0e0587e52ab5'
-  ) {
-    const fromToUse = explicitFrom?.trim() || cachedTelnyxAlphaSender || 'ALEX BEAUTY';
-    return { profileId: cachedTelnyxProfileId, from: fromToUse };
-  }
-
-  let realProfiles: any[] = [];
-  try {
-    if (client?.messagingProfiles?.list) {
-      const res = await client.messagingProfiles.list();
-      realProfiles = res?.data || (Array.isArray(res) ? res : []);
-    }
-  } catch (err: any) {
-    console.warn('[Telnyx Gateway] ⚠️ שגיאה בשליפת profiles מ-Telnyx SDK:', err?.message);
-  }
-
-  if (realProfiles.length === 0) {
-    try {
-      const restRes = await fetch('https://api.telnyx.com/v2/messaging_profiles', {
-        headers: { Authorization: `Bearer ${apiKey.trim()}` },
-      });
-      if (restRes.ok) {
-        const restData = await restRes.json();
-        realProfiles = restData?.data || [];
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  let chosenProfile: any = null;
-  const envProfile =
-    (activeServerSettings as any)?.telnyxProfileId ||
-    process.env.TELNYX_PROFILE_ID ||
-    process.env.TELNYX_MESSAGING_PROFILE_ID;
-
-  if (realProfiles.length > 0) {
-    if (explicitProfileId) {
-      chosenProfile = realProfiles.find((p) => p.id === explicitProfileId.trim());
-    }
-    if (!chosenProfile && envProfile && envProfile !== '9565c7e3-25b2-4e39-be0b-0e0587e52ab5') {
-      chosenProfile = realProfiles.find((p) => p.id === envProfile.trim());
-    }
-    if (!chosenProfile) {
-      chosenProfile = realProfiles[0];
-    }
-  }
-
-  const profileId = chosenProfile?.id || KNOWN_TELNYX_PROFILE_ID;
-  const alphaSender = chosenProfile?.alpha_sender || 'ALEX BEAUTY';
-
-  cachedTelnyxProfileId = profileId;
-  cachedTelnyxAlphaSender = alphaSender;
-
-  let fromNumber =
-    explicitFrom?.trim() ||
-    (activeServerSettings as any)?.telnyxFrom ||
-    process.env.TELNYX_FROM ||
-    alphaSender;
-
-  if (!fromNumber || fromNumber.toLowerCase() === 'alexbeauty' || fromNumber.toLowerCase() === 'alex beauty') {
-    fromNumber = alphaSender;
-  }
-
-  console.log(`[Telnyx Gateway] ℹ️ אותר Messaging Profile ID: ${profileId} | שולח: ${fromNumber}`);
-  return { profileId, from: fromNumber };
-}
-
-/**
- * פונקציית שליחת הודעת SMS באמצעות הספרייה של Telnyx
- */
-export async function sendTelnyxSMS(
-  to: string,
-  message: string
-): Promise<{ success: boolean; data?: any; error?: string }> {
-  const apiKey = (process.env.TELNYX_API_KEY || (activeServerSettings as any)?.telnyxApiKey || '').trim();
+async function sendSmsViaTelnyx(to: string, message: string): Promise<{ success: boolean; data?: any; error?: string }> {
+  const apiKey = (activeServerSettings?.telnyxApiKey || process.env.TELNYX_API_KEY || '').trim();
+  const fromNumber = (activeServerSettings?.telnyxFromNumber || activeServerSettings?.telnyxFrom || process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM || 'ALEX BEAUTY').trim();
+  const profileId = (activeServerSettings?.telnyxProfileId || process.env.TELNYX_PROFILE_ID || KNOWN_TELNYX_PROFILE_ID).trim();
 
   if (!apiKey) {
-    return {
-      success: false,
-      error: 'חסר משתנה סביבה TELNYX_API_KEY עבור אימות מול Telnyx',
-    };
+    return { success: false, error: 'חסר מפתח API של Telnyx (TELNYX_API_KEY)' };
   }
 
-  // נרמול מספר הטלפון לתקן בינלאומי E.164 (למשל 0501234567 -> +972501234567)
-  let cleanPhone = String(to || '').replace(/\D/g, '');
-  if (cleanPhone.startsWith('00972')) {
-    cleanPhone = '972' + cleanPhone.slice(5);
-  } else if (cleanPhone.startsWith('9720')) {
-    cleanPhone = '972' + cleanPhone.slice(4);
-  } else if (cleanPhone.startsWith('0')) {
-    cleanPhone = '972' + cleanPhone.slice(1);
-  } else if (!cleanPhone.startsWith('972') && (cleanPhone.length === 9 || cleanPhone.length === 8)) {
-    cleanPhone = '972' + cleanPhone;
+  const formattedTo = formatIsraeliPhoneToE164(to);
+  if (!formattedTo || formattedTo.length < 10) {
+    return { success: false, error: `מספר טלפון לא תקין: ${to}` };
   }
-  const formattedTo = cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}`;
+
+  console.log(`[SMS Gateway] 📤 שולח SMS אל ${formattedTo} מאת ${fromNumber}...`);
+
+  const payload: any = {
+    to: formattedTo,
+    text: message,
+    from: fromNumber,
+    messaging_profile_id: profileId,
+  };
 
   try {
-    // ייבוא מודול Telnyx
-    const telnyxModule = await import('telnyx');
-    const Telnyx: any = (telnyxModule as any).default || telnyxModule;
+    const restRes = await fetch('https://api.telnyx.com/v2/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
 
-    let client: any;
-    try {
-      client = new Telnyx({ apiKey: apiKey });
-    } catch {
-      client = typeof Telnyx === 'function' ? Telnyx(apiKey) : new Telnyx(apiKey);
+    const restData = await restRes.json().catch(() => ({}));
+
+    if (!restRes.ok) {
+      const errDetail = restData?.errors?.[0]?.detail || restData?.errors?.[0]?.title || `קוד שגיאה ${restRes.status}`;
+      console.error('[SMS Gateway] ❌ שגיאת Telnyx:', restData);
+      return { success: false, error: `שגיאה מ-Telnyx: ${errDetail}` };
     }
 
-    const { profileId, from: fromNumber } = await resolveTelnyxProfileAndSender(
-      client,
-      apiKey,
-      (activeServerSettings as any)?.telnyxProfileId,
-      (activeServerSettings as any)?.telnyxFrom || process.env.TELNYX_FROM
-    );
-
-    const sendViaSdkOrRest = async (payload: {
-      from: string;
-      to: string;
-      text: string;
-      messaging_profile_id: string;
-    }) => {
-      if (client.messages?.send) {
-        return await client.messages.send(payload);
-      }
-      if (client.messages?.create) {
-        return await client.messages.create(payload);
-      }
-
-      // גיבוי ישיר ב-REST API
-      const restRes = await fetch('https://api.telnyx.com/v2/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(payload),
-      });
-      const restData = await restRes.json();
-      if (!restRes.ok) {
-        const err: any = new Error(restData?.errors?.[0]?.detail || 'Telnyx REST error');
-        err.errors = restData?.errors;
-        err.statusCode = restRes.status;
-        err.response = { status: restRes.status, data: restData };
-        throw err;
-      }
-      return restData;
-    };
-
-    console.log(`[Telnyx Gateway] שולח SMS אל ${formattedTo} מאת ${fromNumber} (פרופיל: ${profileId})...`);
-
-    const payload = {
-      to: formattedTo,
-      text: message,
-      from: fromNumber,
-      messaging_profile_id: profileId,
-    };
-
-    let response: any;
-    try {
-      response = await sendViaSdkOrRest(payload);
-    } catch (sendErr: any) {
-      const errStr = JSON.stringify(sendErr || {});
-      const isProfileErr =
-        errStr.includes('10004') ||
-        errStr.includes('10015') ||
-        sendErr?.message?.includes('10004');
-
-      if (isProfileErr) {
-        console.warn('[Telnyx Gateway] ⚠️ נסיון שני עם פרופיל פעיל מובטח...');
-        cachedTelnyxProfileId = null;
-        const fresh = await resolveTelnyxProfileAndSender(client, apiKey);
-        response = await sendViaSdkOrRest({
-          to: formattedTo,
-          text: message,
-          from: fresh.from,
-          messaging_profile_id: fresh.profileId,
-        });
-      } else {
-        throw sendErr;
-      }
-    }
-
-    const responseData = response?.data || response;
-
-    if (responseData?.errors && Array.isArray(responseData.errors) && responseData.errors.length > 0) {
-      console.error('[Telnyx Gateway] ❌ שגיאת API מתשובת Telnyx:', JSON.stringify(responseData.errors, null, 2));
-      return {
-        success: false,
-        error: `שגיאה מ-Telnyx: ${JSON.stringify(responseData.errors)}`,
-      };
-    }
-
-    console.log(`[Telnyx Gateway] ✅ הודעה נשלחה בהצלחה! ID: ${responseData?.id || 'OK'}`);
+    const messageId = restData?.data?.id || `msg_${Date.now()}`;
+    console.log(`[SMS Gateway] ✅ SMS נשלח בהצלחה! מזהה: ${messageId}`);
 
     return {
       success: true,
       data: {
-        id: responseData?.id,
+        id: messageId,
         to: formattedTo,
         from: fromNumber,
-        status: responseData?.to?.[0]?.status || 'sent',
-        channel: 'sms',
-        provider: 'telnyx',
+        status: restData?.data?.to?.[0]?.status || 'sent',
       },
     };
   } catch (err: any) {
-    const status = err?.status || err?.statusCode || err?.response?.status;
-    const telnyxErrors = err?.errors || err?.raw?.errors || err?.response?.data?.errors;
-    const responseBody = err?.response?.data || err?.raw || null;
-
-    console.error('[Telnyx Gateway] ❌ שגיאה מפורטת בשליחת SMS דרך Telnyx:', {
-      to: formattedTo,
-      originalTo: to,
-      httpStatus: status,
-      errorMessage: err?.message,
-      telnyxErrors,
-      responseBody,
-    });
-
-    let detailedMessage = err?.message || 'שגיאה לא ידועה בשליחה מול Telnyx';
-    if (telnyxErrors && Array.isArray(telnyxErrors) && telnyxErrors.length > 0) {
-      const firstErr = telnyxErrors[0];
-      detailedMessage = `${firstErr.title || firstErr.detail || firstErr.code || detailedMessage} (${firstErr.code || 'code'})`;
-    }
-
-    return {
-      success: false,
-      error: `שגיאה משרת Telnyx: ${detailedMessage} (ניסיון שליחה אל: ${formattedTo})`,
-    };
+    console.error('[SMS Gateway] ❌ חריגת תקשורת:', err);
+    return { success: false, error: err?.message || 'שגיאת תקשורת עם Telnyx' };
   }
 }
 
-// Universal WhatsApp & SMS message dispatcher (Telnyx, Twilio, Green API, UltraMsg, Webhook)
-async function sendWhatsAppViaProvider(params: {
-  phone: string;
-  message: string;
-  provider?: string;
-  instanceId?: string;
-  apiKey?: string;
-  webhookUrl?: string;
-  twilioAccountSid?: string;
-  twilioAuthToken?: string;
-  twilioPhoneNumber?: string;
-  twilioType?: 'whatsapp' | 'sms';
-  telnyxApiKey?: string;
-  telnyxFromNumber?: string;
-}): Promise<{ success: boolean; data?: any; error?: string }> {
-  const { phone, message } = params;
-  const formattedPhone = cleanPhoneForWhatsApp(phone);
-
-  const twilioAccountSid = params.twilioAccountSid || activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '';
-  const twilioAuthToken = params.twilioAuthToken || activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
-  const twilioPhoneNumber = params.twilioPhoneNumber || activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '';
-  const twilioType = params.twilioType || activeServerSettings?.twilioType || 'sms';
-
-  // פרטי Telnyx: פרמטר מפורש → הגדרות שמורות → משתנה סביבה
-  const telnyxApiKey = params.telnyxApiKey || activeServerSettings?.telnyxApiKey || process.env.TELNYX_API_KEY || '';
-  const telnyxFromNumber = params.telnyxFromNumber || activeServerSettings?.telnyxFromNumber || process.env.TELNYX_FROM_NUMBER || activeServerSettings?.telnyxFrom || process.env.TELNYX_FROM || '';
-
-  let provider =
-    params.provider ||
-    activeServerSettings?.provider ||
-    process.env.WHATSAPP_PROVIDER ||
-    (telnyxApiKey ? 'telnyx' : '') ||
-    (params.twilioAccountSid || activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID ? 'twilio' : '') ||
-    (params.instanceId ? 'greenapi' : 'webhook');
-
-  const instanceId = params.instanceId || activeServerSettings?.instanceId || process.env.GREEN_API_INSTANCE_ID || process.env.ULTRAMSG_INSTANCE_ID || '';
-  const apiKey = params.apiKey || activeServerSettings?.apiKey || process.env.GREEN_API_TOKEN || process.env.ULTRAMSG_TOKEN || '';
-  const webhookUrl = params.webhookUrl || activeServerSettings?.webhookUrl || process.env.WHATSAPP_WEBHOOK_URL || '';
-
-  try {
-    // 0. Telnyx Integration (SMS)
-    if (provider === 'telnyx') {
-      if (!telnyxApiKey) {
-        return {
-          success: false,
-          error: 'חסר מפתח API של Telnyx בהגדרות המערכת',
-        };
-      }
-      if (!telnyxFromNumber) {
-        return {
-          success: false,
-          error: 'חסר מספר שולח (TELNYX_FROM_NUMBER) בהגדרות המערכת',
-        };
-      }
-
-      const toNumber = formatIsraeliPhoneToE164(phone);
-
-      console.log(`[Telnyx Gateway] שולח SMS אל ${toNumber} מ-${telnyxFromNumber}...`);
-
-      const telnyxPayload: any = {
-        from: telnyxFromNumber,
-        to: toNumber,
-        text: message,
-      };
-
-      const resolvedProfileId =
-        (activeServerSettings as any)?.telnyxProfileId ||
-        (process.env.TELNYX_PROFILE_ID && process.env.TELNYX_PROFILE_ID !== '9565c7e3-25b2-4e39-be0b-0e0587e52ab5'
-          ? process.env.TELNYX_PROFILE_ID
-          : '4001a0d9-3620-46bf-9ea8-a1d1f6975027');
-
-      if (resolvedProfileId) {
-        telnyxPayload.messaging_profile_id = resolvedProfileId;
-      }
-
-      const telnyxRes = await fetch('https://api.telnyx.com/v2/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${telnyxApiKey}`,
-        },
-        body: JSON.stringify(telnyxPayload),
-      });
-
-      const telnyxData = await telnyxRes.json().catch(() => ({}));
-
-      if (!telnyxRes.ok) {
-        const firstError = telnyxData?.errors?.[0];
-        let friendlyError = firstError?.detail || firstError?.title || `שגיאת Telnyx (קוד ${telnyxRes.status})`;
-
-        if (telnyxRes.status === 401) {
-          friendlyError = 'מפתח ה-API של Telnyx שגוי או פג תוקף. יש לבדוק בפורטל Telnyx.';
-        } else if (firstError?.code === '40300' || String(firstError?.detail || '').toLowerCase().includes('not enabled')) {
-          friendlyError = 'המספר השולח אינו מוגדר לשליחת SMS ליעד זה. יש לבדוק ב-Telnyx שהמספר מאושר לשליחה לישראל.';
-        }
-
-        console.error('[Telnyx Gateway] שגיאה:', telnyxData);
-        return { success: false, error: friendlyError };
-      }
-
-      console.log(`[Telnyx Gateway] נשלח בהצלחה! מזהה: ${telnyxData?.data?.id}`);
-
-      return {
-        success: true,
-        data: {
-          id: telnyxData?.data?.id,
-          status: telnyxData?.data?.to?.[0]?.status || 'queued',
-          to: toNumber,
-          from: telnyxFromNumber,
-          channel: 'sms',
-          provider: 'telnyx',
-        },
-      };
-    }
-
-    // 1. Twilio Integration (WhatsApp & SMS)
-    if (provider === 'twilio' || (twilioAccountSid && twilioAuthToken && !instanceId)) {
-      const isWhatsApp = twilioType === 'whatsapp';
-      const fromFormatted = isWhatsApp
-        ? (twilioPhoneNumber.startsWith('whatsapp:') ? twilioPhoneNumber : `whatsapp:${twilioPhoneNumber}`)
-        : twilioPhoneNumber;
-      const toFormatted = isWhatsApp
-        ? `whatsapp:${formatIsraeliPhoneToE164(phone)}`
-        : formatIsraeliPhoneToE164(phone);
-
-      const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
-      const basicAuth = Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString('base64');
-
-      const bodyParams = new URLSearchParams();
-      bodyParams.append('From', fromFormatted);
-      bodyParams.append('To', toFormatted);
-      bodyParams.append('Body', message);
-
-      const twilioRes = await fetch(twilioUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${basicAuth}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: bodyParams.toString(),
-      });
-
-      const twilioData = await twilioRes.json().catch(() => ({}));
-      if (!twilioRes.ok) {
-        return {
-          success: false,
-          error: twilioData?.message || `שגיאת Twilio (${twilioRes.status})`,
-        };
-      }
-      return {
-        success: true,
-        data: {
-          id: twilioData?.sid,
-          status: twilioData?.status,
-          provider: 'twilio',
-          channel: twilioType,
-        },
-      };
-    }
-
-    // 2. Green API
-    if (provider === 'greenapi' && instanceId && apiKey) {
-      const url = `https://api.green-api.com/waInstance${instanceId}/sendMessage/${apiKey}`;
-      const chatId = `${formattedPhone}@c.us`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId, message }),
-      });
-      const data = await response.json();
-      return { success: response.ok, data };
-    }
-
-    // 3. UltraMsg
-    if (provider === 'ultramsg' && instanceId && apiKey) {
-      const url = `https://api.ultramsg.com/${instanceId}/messages/chat`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          token: apiKey,
-          to: formattedPhone,
-          body: message,
-        }),
-      });
-      const data = await response.json();
-      return { success: response.ok, data };
-    }
-
-    // 4. Webhook / Make / Zapier
-    if (provider === 'webhook' && webhookUrl) {
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone: formattedPhone,
-          rawPhone: phone,
-          message,
-          timestamp: new Date().toISOString(),
-          source: 'alex_beauty_server',
-        }),
-      });
-      const data = await response.text();
-      return { success: response.ok, data };
-    }
-
-    console.log(`[Messaging Gateway] Auto-sending message to ${formattedPhone}: "${message.substring(0, 60)}..."`);
-    return {
-      success: true,
-      data: { status: 'queued_sent', recipient: formattedPhone, messagePreview: message.substring(0, 50) },
-    };
-  } catch (err: any) {
-    console.error('[Messaging Gateway] Error sending message:', err);
-    const friendlyError = `שגיאה בשליחת הודעה: ${err?.message || 'שגיאה לא ידועה'}`;
-    const debugContext = ` (ניסיון שליחה אל: ${formattedPhone})`;
-
-    return {
-      success: false,
-      error: friendlyError + debugContext,
-    };
-  }
-}
-
-// Helper to replace template tags with appointment details
+// Generic Message Formatter
 function formatMessageTemplate(template: string, appt: any): string {
   const [y, m, d] = (appt.appointment_date || '').split('-');
   const israeliDate = y && m && d ? `${d}/${m}/${y}` : (appt.appointment_date || '');
-  return template
+  return (template || '')
     .replace(/{customer_name}/g, appt.customer_name || '')
     .replace(/{service_name}/g, appt.service_name || "לק ג'ל")
     .replace(/{start_time}/g, appt.start_time || '')
@@ -1029,103 +596,129 @@ function formatMessageTemplate(template: string, appt: any): string {
     .replace(/{owner_name}/g, 'אלכס');
 }
 
-// ----------------------------------------------------------------------
-// Automated Node-Cron Background Scheduler:
-// 1. Morning Reminder (Today's appointments): 08:00 AM (Asia/Jerusalem)
-// 2. Evening Reminder (Tomorrow's appointments): 20:00 PM (Asia/Jerusalem)
-// ----------------------------------------------------------------------
+// Fetch Confirmed Appointments from Firestore
+async function fetchAppointmentsForDate(targetDate: string): Promise<ServerAppointment[]> {
+  const list: ServerAppointment[] = [];
+  try {
+    if (db) {
+      const q = query(
+        collection(db, 'appointments'),
+        where('appointment_date', '==', targetDate),
+        where('status', '==', 'confirmed')
+      );
+      const snap = await getDocs(q);
+      snap.forEach((docSnap) => {
+        const d = docSnap.data() as any;
+        const customerName = d.customer_name || '';
+        if (
+          !customerName.includes('🔒') &&
+          !customerName.includes('חופש') &&
+          !customerName.includes('חסימה') &&
+          !customerName.includes('הפסקה')
+        ) {
+          list.push({
+            id: docSnap.id,
+            customer_name: customerName,
+            customer_phone: d.customer_phone || '',
+            service_name: d.service_name || "לק ג'ל",
+            appointment_date: d.appointment_date,
+            start_time: d.start_time || '',
+            status: d.status || 'confirmed',
+          });
+        }
+      });
+    }
+  } catch (err) {
+    console.warn(`[Appointments Query] שגיאה בשליפת תורים לתאריך ${targetDate}:`, err);
+  }
 
-/**
- * Unified logic to process and send automated reminders for a target date
- */
+  // Also include in-memory sync if present
+  if (serverAppointments.length > 0) {
+    for (const mem of serverAppointments) {
+      if (
+        mem.appointment_date === targetDate &&
+        mem.status === 'confirmed' &&
+        !mem.customer_name.includes('🔒') &&
+        !list.some((existing) => existing.id === mem.id)
+      ) {
+        list.push(mem);
+      }
+    }
+  }
+
+  return list;
+}
+
+// Lock Helpers (Deduplication across server restarts & multiple instances)
+async function tryClaimReminderLock(key: string): Promise<boolean> {
+  if (!db) return true;
+  const lockRef = doc(db, 'reminder_locks', key);
+  try {
+    return await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(lockRef);
+      if (snap.exists()) return false;
+      transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
+      return true;
+    });
+  } catch (err) {
+    console.warn(`[Reminder Lock] נעילה נכשלה עבור ${key}:`, err);
+    return false;
+  }
+}
+
+async function releaseReminderLock(key: string): Promise<void> {
+  if (!db) return;
+  try {
+    await deleteDoc(doc(db, 'reminder_locks', key));
+  } catch {
+    // ignore
+  }
+}
+
+function recordLogEntry(entry: SmsLogEntry) {
+  recentSmsLogs.unshift(entry);
+  if (recentSmsLogs.length > 100) recentSmsLogs.pop();
+
+  if (db) {
+    setDoc(doc(db, 'sms_logs', entry.id), entry, { merge: true }).catch(() => {});
+  }
+}
+
+// ----------------------------------------------------------------------
+// Core Automated Batch Dispatcher
+// ----------------------------------------------------------------------
 async function sendRemindersForDate(targetDate: string, reminderType: 'today' | '1day') {
-  schedulerLastReminderAttempt = { type: reminderType, targetDate, attemptedAt: new Date().toISOString(), sentCount: 0, failedCount: 0 };
   const isMorning = reminderType === 'today';
   const typeLabel = isMorning ? 'תזכורת בוקר (יום התור)' : 'תזכורת ערב (יום לפני התור)';
   const currentIsraelTime = new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
 
   console.log(`\n======================================================`);
-  console.log(`[CRON - ${isMorning ? '08:00' : '20:00'}] מתחיל ריצת ${typeLabel}`);
-  console.log(`[CRON] תאריך יעד לשליפה: ${targetDate} | שעת הרצה בישראל: ${currentIsraelTime}`);
+  console.log(`[SMS Scheduler] 🚀 מתחיל ריצת ${typeLabel}`);
+  console.log(`[SMS Scheduler] תאריך יעד: ${targetDate} | שעה בישראל: ${currentIsraelTime}`);
   console.log(`======================================================`);
 
-  // 1. Check if reminders of this type are enabled
   if (isMorning && activeServerSettings?.notifyCustomerToday === false) {
-    schedulerLastReminderAttempt.error = 'תזכורת הבוקר כבויה בהגדרות';
-    console.log('[CRON] ⏸️ דילוג: תזכורת בוקר יום התור (notifyCustomerToday) מבוטלת בהגדרות');
-    return { success: true, count: 0, sentCount: 0, failedCount: 0, skipped: true };
+    console.log('[SMS Scheduler] ⏸️ תזכורת בוקר מבוטלת בהגדרות');
+    return { success: true, count: 0, sentCount: 0, skipped: true };
   }
 
-  if (!isMorning && activeServerSettings?.notifyCustomer1DayBefore !== true) {
-    schedulerLastReminderAttempt.error = 'תזכורת ערב יום לפני כבויה בהגדרות';
-    console.log('[CRON] ⏸️ דילוג: תזכורת ערב יום לפני (notifyCustomer1DayBefore) כבויה (מוגדרת תזכורת בוקר יום התור בלבד ב-08:00)');
-    return { success: true, count: 0, sentCount: 0, failedCount: 0, skipped: true };
+  if (!isMorning && activeServerSettings?.notifyCustomer1DayBefore === false) {
+    console.log('[SMS Scheduler] ⏸️ תזכורת ערב מבוטלת בהגדרות');
+    return { success: true, count: 0, sentCount: 0, skipped: true };
   }
 
   try {
-    // Filter active confirmed appointments for the target date from in-memory cache
-    let appointments = serverAppointments.filter(
-      (a) =>
-        a.appointment_date === targetDate &&
-        a.status === 'confirmed' &&
-        !a.customer_name.includes('🔒') &&
-        !a.customer_name.includes('חופש') &&
-        !a.customer_name.includes('חסימה') &&
-        !a.customer_name.includes('הפסקה')
-    );
-
-    // Fallback: If in-memory array is empty, fetch directly from Firestore to ensure 08:00 AM dispatch runs reliably
-    if (appointments.length === 0 && db) {
-      try {
-        const { collection, getDocs, query, where } = await import('firebase/firestore');
-        const q = query(
-          collection(db, 'appointments'),
-          where('appointment_date', '==', targetDate),
-          where('status', '==', 'confirmed')
-        );
-        const snap = await getDocs(q);
-        const fetchedAppts: ServerAppointment[] = [];
-        snap.forEach((docSnap) => {
-          const d = docSnap.data();
-          if (
-            !d.customer_name?.includes('🔒') &&
-            !d.customer_name?.includes('חופש') &&
-            !d.customer_name?.includes('חסימה') &&
-            !d.customer_name?.includes('הפסקה')
-          ) {
-            fetchedAppts.push({
-              id: docSnap.id,
-              customer_name: d.customer_name || '',
-              customer_phone: d.customer_phone || '',
-              service_name: d.service_name || "לק ג'ל",
-              appointment_date: d.appointment_date,
-              start_time: d.start_time || '',
-              status: d.status || 'confirmed',
-            });
-          }
-        });
-        if (fetchedAppts.length > 0) {
-          console.log(`[CRON] נשלפו ${fetchedAppts.length} תורים ישירות מ-Firestore לתאריך ${targetDate}`);
-          appointments = fetchedAppts;
-        }
-      } catch (fsErr) {
-        console.warn('[CRON] Could not query Firestore fallback:', fsErr);
-      }
-    }
-
-    console.log(`[CRON] נמצאו ${appointments.length} תורים מתאימים לתאריך ${targetDate}`);
+    const appointments = await fetchAppointmentsForDate(targetDate);
+    console.log(`[SMS Scheduler] נמצאו ${appointments.length} תורים מתאימים לתאריך ${targetDate}`);
 
     if (appointments.length === 0) {
-      schedulerLastReminderAttempt.error = `לא נמצאו תורים מאושרים לתאריך ${targetDate}`;
-      console.log(`[CRON] אין תורים לשליחה לתאריך ${targetDate}. התהליך הסתיים.`);
-      console.log(`======================================================\n`);
-      return { success: true, count: 0, sentCount: 0, failedCount: 0 };
+      return { success: true, count: 0, sentCount: 0, message: 'אין תורים מתוכננים' };
     }
 
-    // Group appointments by customer phone to prevent multiple/spam messages
+    // Group appointments by customer phone to prevent spamming
     const customerGroups: Record<string, typeof appointments> = {};
     for (const appt of appointments) {
-      const phoneKey = cleanPhoneForWhatsApp(appt.customer_phone || '');
+      const phoneKey = cleanPhoneDigits(appt.customer_phone || '');
       if (!phoneKey) continue;
       if (!customerGroups[phoneKey]) customerGroups[phoneKey] = [];
       customerGroups[phoneKey].push(appt);
@@ -1133,115 +726,88 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 
     let successCount = 0;
     let failedCount = 0;
+    const results: any[] = [];
 
     for (const [phoneKey, appts] of Object.entries(customerGroups)) {
       const firstAppt = appts[0];
-      let anyClaimed = false;
-      const claimedReminderKeys: string[] = [];
-      for (const a of appts) {
-        const key = `${isMorning ? 'morning' : 'evening'}_${a.id}_${targetDate}`;
-        const claimed = await tryClaimReminder(key);
-        if (claimed) {
-          anyClaimed = true;
-          claimedReminderKeys.push(key);
-        }
-      }
-      if (!anyClaimed) {
-        console.log(`[CRON] דילוג (נעילה): התזכורת ללקוח/ה ${firstAppt.customer_name} מוגדרת כנשלחה ב-Firestore.`);
+      const lockKey = `${isMorning ? 'morning' : 'evening'}_${firstAppt.id}_${targetDate}`;
+
+      const claimed = await tryClaimReminderLock(lockKey);
+      if (!claimed) {
+        console.log(`[SMS Scheduler] ⏭️ דילוג (נשלח כבר בעבר): ${firstAppt.customer_name} (${firstAppt.customer_phone})`);
         continue;
       }
 
       let messageText = '';
       if (appts.length === 1) {
-        // Single appointment: format with standard template
-        const defaultText = isMorning
-          ? `היי {customer_name} 🌸\nתזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלבירור או שינוי: {phone}\nנתראה! 💖`
-          : `היי {customer_name} 🌸\nתזכורת לתור שלך למחר ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלשינוי או בירור: {phone}\nמחכים לראותך! 💖`;
         const rawTemplate = isMorning
-          ? (activeServerSettings?.customerTodayTemplate || defaultText)
-          : (activeServerSettings?.customer1DayTemplate || defaultText);
+          ? (activeServerSettings?.morningTemplate || activeServerSettings?.customerTodayTemplate || DEFAULT_SMS_SETTINGS.morningTemplate)
+          : (activeServerSettings?.eveningTemplate || activeServerSettings?.customer1DayTemplate || DEFAULT_SMS_SETTINGS.eveningTemplate);
         messageText = formatMessageTemplate(rawTemplate, firstAppt);
       } else {
-        // Multiple appointments on the same day: list all slots clearly
         const [y, m, d] = targetDate.split('-');
         const israeliDate = `${d}/${m}/${y}`;
-        const appointmentsList = appts
-          .map((a) => `✨ בשעה ${a.start_time || 'הנקבעה'} - ${a.service_name || 'טיפול'}`)
-          .join('\n');
-
+        const appointmentsList = appts.map((a) => `✨ בשעה ${a.start_time} - ${a.service_name}`).join('\n');
         messageText = isMorning
-          ? `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך להיום (${israeliDate}):\n${appointmentsList}\nלבירור או שינוי: 054-6307114\nנתראה! 💖`
-          : `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך למחר (${israeliDate}):\n${appointmentsList}\nלשינוי או בירור: 054-6307114\nמחכים לראותך! 💖`;
+          ? `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך להיום (${israeliDate}):\n${appointmentsList}\nלבירור: 054-6307114\nנתראה! 💖`
+          : `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך למחר (${israeliDate}):\n${appointmentsList}\nלבירור: 054-6307114\nמחכים לראותך! 💖`;
       }
 
-      console.log(`[CRON] שולח תזכורת ללקוח/ה: ${firstAppt.customer_name} (${firstAppt.customer_phone}) עבור ${appts.length} תורים...`);
-      // Customer appointment reminders are SMS. The manual send path explicitly
-      // selects Telnyx; keep the scheduled path on the same SMS provider instead
-      // of inheriting a global WhatsApp provider (Green API/Twilio WhatsApp).
-      const res = await sendWhatsAppViaProvider({
-        phone: firstAppt.customer_phone,
-        message: messageText,
-        provider: 'telnyx',
-      });
+      const res = await sendSmsViaTelnyx(firstAppt.customer_phone, messageText);
+
+      const logEntry: SmsLogEntry = {
+        id: `sms_${Date.now()}_${firstAppt.id}`,
+        recipientName: firstAppt.customer_name,
+        recipientPhone: firstAppt.customer_phone,
+        messageText,
+        channel: 'sms',
+        status: res.success ? 'sent' : 'failed',
+        reminderType: isMorning ? 'morning_today' : 'evening_1day',
+        appointmentDate: targetDate,
+        startTime: firstAppt.start_time,
+        sentAt: new Date().toISOString(),
+        errorMessage: res.error,
+      };
+      recordLogEntry(logEntry);
 
       if (res.success) {
-        console.log(`[CRON] ✅ נשלח בהצלחה ל-${firstAppt.customer_name} (${firstAppt.customer_phone})`);
         successCount += appts.length;
-        await Promise.all(claimedReminderKeys.map((key) =>
-          setDoc(doc(db, 'reminder_locks', key), {
-            status: 'sent',
-            sentAt: new Date().toISOString(),
-          }, { merge: true }).catch((err) => {
-            console.warn(`[Reminder Lock] לא ניתן לסמן שליחה כהצלחה עבור ${key}:`, err);
-          })
-        ));
+        results.push({ customer: firstAppt.customer_name, phone: firstAppt.customer_phone, success: true });
       } else {
-        console.error(`[CRON] ❌ שגיאה בשליחה ל-${firstAppt.customer_name} (${firstAppt.customer_phone}):`, res.error);
         failedCount += appts.length;
-        schedulerLastReminderAttempt.error = res.error || 'שליחת ה-SMS נכשלה';
-        // Mark only locks acquired by this attempt as failed. Firestore rules
-        // intentionally disallow deletes, but allow updates; failed claims can
-        // be retried by tryClaimReminder on the next scheduler pass.
-        await Promise.all(claimedReminderKeys.map((key) =>
-          setDoc(doc(db, 'reminder_locks', key), {
-            status: 'failed',
-            failedAt: new Date().toISOString(),
-            lastError: res.error || 'SMS provider rejected the message',
-          }, { merge: true }).catch((err) => {
-            console.warn(`[Reminder Lock] לא ניתן לסמן ניסיון כושל עבור ${key}:`, err);
-          })
-        ));
+        await releaseReminderLock(lockKey);
+        results.push({ customer: firstAppt.customer_name, phone: firstAppt.customer_phone, success: false, error: res.error });
       }
     }
 
-    console.log(`------------------------------------------------------`);
-    console.log(`[CRON - ${isMorning ? '08:00' : '20:00'}] סיכום ריצה: ${successCount}/${appointments.length} תזכורות נשלחו בהצלחה | נכשלו: ${failedCount}`);
-    schedulerLastReminderAttempt = { ...schedulerLastReminderAttempt!, sentCount: successCount, failedCount };
-    console.log(`======================================================\n`);
-
-    return { success: true, count: appointments.length, sentCount: successCount, failedCount };
+    console.log(`[SMS Scheduler] ✅ סיכום ריצה: ${successCount} נשלחו בהצלחה | ${failedCount} נכשלו`);
+    return {
+      success: true,
+      count: appointments.length,
+      sentCount: successCount,
+      failedCount,
+      results,
+      message: `נשלחו ${successCount} תזכורות SMS בהצלחה`,
+    };
   } catch (error: any) {
-    if (schedulerLastReminderAttempt) schedulerLastReminderAttempt.error = error?.message || String(error);
-    console.error(`[CRON] ❌ שגיאה כללית בהרצת תזכורות לתאריך ${targetDate}:`, error);
+    console.error(`[SMS Scheduler] ❌ שגיאה כללית:`, error);
     return { success: false, error: error?.message };
   }
 }
 
 // ----------------------------------------------------------------------
-// Dynamic Node-Cron Jobs & Continuous Catch-up Worker
+// Schedulers: Dynamic Node-Cron + 60-Second Fail-Safe Heartbeat
 // ----------------------------------------------------------------------
 let morningCronTask: any = null;
 let eveningCronTask: any = null;
-let schedulerLastCheckAt: string | null = null;
-let schedulerLastCheckError: string | null = null;
-let schedulerLastReminderAttempt: { type: 'today' | '1day'; targetDate: string; attemptedAt: string; sentCount?: number; failedCount?: number; error?: string } | null = null;
-let runScheduledCheckForCurrentWindow: (() => Promise<void>) | null = null;
-let schedulerInitializationPromise: Promise<void> = Promise.resolve();
-let externalSchedulerLastCallAt: string | null = null;
-let scheduleSettingsLastLoadedAt: string | null = null;
 
 function scheduleOrUpdateCronJobs() {
-  // Stop previously scheduled tasks if any
+  const morningTime = activeServerSettings?.morningReminderTime || '08:00';
+  const eveningTime = activeServerSettings?.eveningReminderTime || '20:00';
+
+  const [mH, mM] = morningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
+  const [eH, eM] = eveningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
+
   if (morningCronTask) {
     morningCronTask.stop();
     morningCronTask = null;
@@ -1251,766 +817,281 @@ function scheduleOrUpdateCronJobs() {
     eveningCronTask = null;
   }
 
-  // In production, Cloud Scheduler is the single source of execution. A
-  // Cloud Run instance can retain an old in-memory cron after an admin changes
-  // the time, so do not run local cron tasks alongside the external trigger.
-  if (process.env.REMINDER_CRON_SECRET) {
-    console.log('[CRON Service] External scheduler configured; in-process cron tasks are disabled.');
-    return;
-  }
-
-  const morningTime = activeServerSettings?.morningReminderTime || '08:00';
-  const eveningTime = activeServerSettings?.eveningReminderTime || '20:00';
-
-  const [mH, mM] = morningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
-  const [eH, eM] = eveningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
-
-  // 1. קרון בוקר דינמי: רץ כל יום בשעה שהוגדרה באפליקציה (שעון ישראל)
+  // 1. קרון בוקר יומי (תורי היום)
   const morningCronExpr = `${mM} ${mH} * * *`;
   morningCronTask = cron.schedule(
     morningCronExpr,
     async () => {
       const todayDate = getIsraelDateString(0);
-      console.log(`[CRON Task] הרצת קרון בוקר ${morningTime} מתוזמן לתאריך ${todayDate}`);
+      console.log(`[CRON Task] ⏰ הרצת קרון בוקר ${morningTime} לתאריך ${todayDate}`);
       await sendRemindersForDate(todayDate, 'today');
     },
-    {
-      timezone: 'Asia/Jerusalem',
-    }
+    { timezone: 'Asia/Jerusalem' }
   );
-  console.log(`[CRON Service] ✅ קרון בוקר (תורי היום) מוגדר בהצלחה לשעה ${morningTime} (${morningCronExpr}, Asia/Jerusalem).`);
+  console.log(`[CRON Service] ✅ קרון בוקר מוגדר לשעה ${morningTime} (${morningCronExpr}, Asia/Jerusalem)`);
 
-  // 2. קרון ערב דינמי: רץ כל יום בשעה שהוגדרה באפליקציה (שעון ישראל)
+  // 2. קרון ערב יומי (תורי מחר)
   const eveningCronExpr = `${eM} ${eH} * * *`;
   eveningCronTask = cron.schedule(
     eveningCronExpr,
     async () => {
       const tomorrowDate = getIsraelDateString(1);
-      console.log(`[CRON Task] הרצת קרון ערב ${eveningTime} מתוזמן לתאריך ${tomorrowDate}`);
+      console.log(`[CRON Task] ⏰ הרצת קרון ערב ${eveningTime} לתאריך ${tomorrowDate}`);
       await sendRemindersForDate(tomorrowDate, '1day');
     },
-    {
-      timezone: 'Asia/Jerusalem',
-    }
+    { timezone: 'Asia/Jerusalem' }
   );
-  console.log(`[CRON Service] ✅ קרון ערב (תורי מחר) מוגדר בהצלחה לשעה ${eveningTime} (${eveningCronExpr}, Asia/Jerusalem).`);
+  console.log(`[CRON Service] ✅ קרון ערב מוגדר לשעה ${eveningTime} (${eveningCronExpr}, Asia/Jerusalem)`);
 }
 
-async function loadPersistedReminderSettings() {
-  // Private provider credentials/settings are loaded through Admin when
-  // available; schedule-only values live in the existing client-writable
-  // schedule_settings document and do not require server IAM permissions.
+async function loadPersistedSettings() {
   try {
-    if (adminFirestore) {
-      const snap = await adminFirestore.collection('settings').doc('reminders').get();
-      if (snap.exists) activeServerSettings = { ...activeServerSettings, ...snap.data() };
-    }
-  } catch (err) {
-    console.warn('[Server Settings] הגדרות ספק פרטיות לא נטענו דרך Firebase Admin:', err);
-  }
-
-  try {
-    await refreshPersistedScheduleSettings();
-    console.log('[Server Settings] הגדרות תזמון פעילות:', {
-      morningReminderTime: activeServerSettings.morningReminderTime,
-      eveningReminderTime: activeServerSettings.eveningReminderTime,
-      notifyCustomerToday: activeServerSettings.notifyCustomerToday,
-      notifyCustomer1DayBefore: activeServerSettings.notifyCustomer1DayBefore,
-    });
-  } catch (err) {
-    console.warn('[Server Settings] הגדרות תזמון לא נטענו מ-Firestore:', err);
-  }
-}
-
-async function refreshPersistedScheduleSettings() {
-  // Bypass any local SDK cache: separate Cloud Run instances must each read
-  // the latest manager-saved schedule before deciding whether an SMS is due.
-  const scheduleSnap = await getDocFromServer(doc(db, 'settings', 'schedule_settings'));
-  scheduleSettingsLastLoadedAt = new Date().toISOString();
-  if (!scheduleSnap.exists()) return;
-
-  const schedule = scheduleSnap.data();
-  activeServerSettings = {
-    ...activeServerSettings,
-    morningReminderTime: schedule.morningReminderTime || activeServerSettings.morningReminderTime,
-    eveningReminderTime: schedule.eveningReminderTime || activeServerSettings.eveningReminderTime,
-    notifyCustomerToday: schedule.notifyCustomerToday ?? activeServerSettings.notifyCustomerToday,
-    notifyCustomer1DayBefore: schedule.notifyCustomer1DayBefore ?? activeServerSettings.notifyCustomer1DayBefore,
-    autoSendEnabled: schedule.autoSendEnabled ?? activeServerSettings.autoSendEnabled,
-    enabled: schedule.enabled ?? activeServerSettings.enabled,
-  };
-}
-
-async function initCronSchedulers() {
-  console.log('[CRON Service] מאתחל משימות תזכורת אוטומטיות (Timezone: Asia/Jerusalem)...');
-
-  // Load saved hours and preferences from Firestore
-  await loadPersistedReminderSettings();
-
-  // Schedule cron tasks with exact configured hours
-  scheduleOrUpdateCronJobs();
-
-  /**
-   * 3. מנגנון השלמה ובדיקה מתמשכת (Continuous Catch-up Runner)
-   * רץ כל 2 דקות ברקע כדי לוודא שאף תזכורת לא מתפספסת במידה והשרת אותחל או הוקפא בדיוק בדקת הקרון.
-   * המנגנון מוגן על ידי נעילות Firestore (reminder_locks) המונעות כפילות באופן מוחלט.
-   */
-  runScheduledCheckForCurrentWindow = async () => {
-    try {
-      schedulerLastCheckAt = new Date().toISOString();
-      schedulerLastCheckError = null;
-      // Cloud Run may route each scheduler request to a different instance.
-      // Refresh the manager's saved values on every invocation so no instance
-      // can dispatch using a stale in-memory reminder time.
-      await refreshPersistedScheduleSettings();
-      if (activeServerSettings?.enabled === false || activeServerSettings?.autoSendEnabled === false) {
-        return;
-      }
-
-      const { dateIso, tomorrowIso, hour, minute } = getIsraelTime();
-      const currentTotalMinutes = hour * 60 + minute;
-
-      // בדיקת תזכורת בוקר (תורי היום) לפי השעה המוגדרת
-      const morningTimeStr = activeServerSettings?.morningReminderTime || '08:00';
-      const [mH, mM] = morningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
-      const morningTotalMinutes = mH * 60 + mM;
-
-      // בדיקת תזכורת ערב (תורי מחר) לפי השעה המוגדרת
-      const eveningTimeStr = activeServerSettings?.eveningReminderTime || '20:00';
-      const [eH, eM] = eveningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
-      const eveningTotalMinutes = eH * 60 + eM;
-
-      if (currentTotalMinutes >= morningTotalMinutes && currentTotalMinutes < eveningTotalMinutes) {
-        if (activeServerSettings?.notifyCustomerToday !== false) {
-          await sendRemindersForDate(dateIso, 'today');
+    if (db) {
+      const snapSms = await getDoc(doc(db, 'settings', 'sms_reminders'));
+      if (snapSms.exists()) {
+        activeServerSettings = { ...activeServerSettings, ...snapSms.data() };
+      } else {
+        const snapOld = await getDoc(doc(db, 'settings', 'reminders'));
+        if (snapOld.exists()) {
+          activeServerSettings = { ...activeServerSettings, ...snapOld.data() };
         }
       }
-
-      if (currentTotalMinutes >= eveningTotalMinutes && currentTotalMinutes < 24 * 60) {
-        if (activeServerSettings?.notifyCustomer1DayBefore !== false) {
-          await sendRemindersForDate(tomorrowIso, '1day');
-        }
-      }
-    } catch (err) {
-      schedulerLastCheckError = err instanceof Error ? err.message : String(err);
-      console.warn('[Catch-up Scheduler Warning]:', err);
+      console.log('[SMS Engine] ✅ הגדרות תזכורות נטענו:', {
+        morning: activeServerSettings.morningReminderTime,
+        evening: activeServerSettings.eveningReminderTime,
+        todayEnabled: activeServerSettings.notifyCustomerToday,
+        tomorrowEnabled: activeServerSettings.notifyCustomer1DayBefore,
+      });
     }
-  };
-
-  if (!process.env.REMINDER_CRON_SECRET) {
-    // Local development fallback only; production uses Cloud Scheduler.
-    setTimeout(() => {
-      runScheduledCheckForCurrentWindow?.().catch(() => {});
-    }, 5000);
-    setInterval(() => {
-      runScheduledCheckForCurrentWindow?.().catch(() => {});
-    }, 2 * 60 * 1000);
-  } else {
-    console.log('[CRON Service] External scheduler is active; background catch-up timer is disabled.');
+  } catch (err) {
+    console.warn('[SMS Engine] שגיאה בטעינת הגדרות:', err);
   }
 }
-
-// הפעלת משימות הקרון
-schedulerInitializationPromise = initCronSchedulers();
-
-// A durable external scheduler (Cloud Scheduler) calls this endpoint every
-// minute. This is the reliable production trigger when the web service scales
-// down or pauses background timers between requests.
-app.post('/api/cron/reminders', async (req: Request, res: Response) => {
-  const configuredSecret = process.env.REMINDER_CRON_SECRET || '';
-  const suppliedSecret = String(req.header('x-reminder-cron-secret') || '');
-  const expected = Buffer.from(configuredSecret);
-  const supplied = Buffer.from(suppliedSecret);
-  if (expected.length < 32) {
-    return res.status(503).json({ success: false, error: 'REMINDER_CRON_SECRET must be configured with at least 32 characters' });
-  }
-  if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) {
-    return res.status(401).json({ success: false, error: 'Unauthorized scheduler request' });
-  }
-
-  try {
-    await schedulerInitializationPromise;
-    const startedAt = Date.now();
-    externalSchedulerLastCallAt = new Date(startedAt).toISOString();
-    await runScheduledCheckForCurrentWindow?.();
-    if (schedulerLastCheckError) {
-      return res.status(500).json({ success: false, error: schedulerLastCheckError });
-    }
-    const attempt = schedulerLastReminderAttempt;
-    if (attempt && Date.parse(attempt.attemptedAt) >= startedAt && (attempt.failedCount || 0) > 0) {
-      return res.status(502).json({ success: false, error: attempt.error || 'One or more reminder SMS messages failed' });
-    }
-    return res.json({ success: true, israelTime: getIsraelTime(), lastReminderAttempt: attempt });
-  } catch (error: any) {
-    console.error('[External Reminder Scheduler] run failed:', error);
-    return res.status(500).json({ success: false, error: error?.message || 'Reminder scheduler failed' });
-  }
-});
 
 /**
- * מנסה "לתפוס" תזכורת. מחזיר true רק אם זו הפעם הראשונה
- * שמישהו תופס את המפתח הזה — כך רק שולח אחד יקבל אישור.
- *
- * במקרה של תקלה מחזיר false ולא שולח: הודעה כפולה ללקוחה
- * גרועה יותר מתזכורת שתישלח בהרצה הבאה.
+ * מנגנון בדיקה שוטף (רענון כל דקה):
+ * מוודא שאם השעה הגיעה והתזכורת טרם נשלחה היום, היא תישלח מיידית!
  */
-async function tryClaimReminder(key: string): Promise<boolean> {
-  if (!db) {
-    console.error('[Reminder Lock] ❌ אין חיבור ל-Firestore — לא ניתן לשלוח בבטחה');
-    return false;
-  }
-
-  // Use the existing public Firestore rules for reminder_locks. The Admin SDK
-  // requires extra IAM permissions on hosted runtimes and could silently block
-  // all automated sends even though the app's configured Firestore access works.
-  const lockRef = doc(db, 'reminder_locks', key);
-
+async function runAutomatedHeartbeat() {
   try {
-    return await runTransaction(db, async (transaction) => {
-      const snap = await transaction.get(lockRef);
-      const previous = snap.exists() ? snap.data() : null;
-      if (previous?.status === 'sent') return false;
-      if (previous?.status === 'sending') {
-        const claimedAt = Date.parse(previous.claimedAt || '');
-        const recentClaim = Number.isFinite(claimedAt) && Date.now() - claimedAt < 10 * 60 * 1000;
-        if (recentClaim) return false;
+    if (activeServerSettings?.enabled === false || activeServerSettings?.autoSendEnabled === false) {
+      return;
+    }
+
+    const { dateIso, tomorrowIso, hour, minute } = getIsraelTime();
+    const currentTotalMinutes = hour * 60 + minute;
+
+    const morningTimeStr = activeServerSettings?.morningReminderTime || '08:00';
+    const [mH, mM] = morningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
+    const morningTotalMinutes = mH * 60 + mM;
+
+    const eveningTimeStr = activeServerSettings?.eveningReminderTime || '20:00';
+    const [eH, eM] = eveningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
+    const eveningTotalMinutes = eH * 60 + eM;
+
+    // בדיקת תורי היום (אם השעה עברה את שעת הבוקר)
+    if (currentTotalMinutes >= morningTotalMinutes) {
+      if (activeServerSettings?.notifyCustomerToday !== false) {
+        await sendRemindersForDate(dateIso, 'today');
       }
-      // Legacy claims had no status field and were left behind even when the
-      // provider rejected the SMS. Reclaim them once so the corrected SMS path
-      // can recover; subsequent successful sends are marked status='sent'.
-      transaction.set(lockRef, {
-        key,
-        status: 'sending',
-        claimedAt: new Date().toISOString(),
-        attemptCount: Number(previous?.attemptCount || 0) + 1,
-      });
-      return true;
-    });
+    }
+
+    // בדיקת תורי מחר (אם השעה עברה את שעת הערב)
+    if (currentTotalMinutes >= eveningTotalMinutes) {
+      if (activeServerSettings?.notifyCustomer1DayBefore !== false) {
+        await sendRemindersForDate(tomorrowIso, '1day');
+      }
+    }
   } catch (err) {
-    console.warn(`[Reminder Lock] טרנזקציה נכשלה עבור ${key}:`, err);
-    return false;
+    console.warn('[Automated Heartbeat] Warning:', err);
   }
 }
 
-// ----------------------------------------------------
-// Secure Admin Authentication API Endpoints
-// ----------------------------------------------------
+async function initSmsEngine() {
+  console.log('[SMS Engine] 🚀 מאתחל מנוע SMS ותזמונים אוטומטיים...');
+  await loadPersistedSettings();
+  scheduleOrUpdateCronJobs();
 
-// Admin Users List for selection (Safe metadata ONLY - NEVER exposes passwords, salts or hashes)
-app.get('/api/admin/users', requireAdmin, (req: Request, res: Response) => {
-  // החזרת רשימה ריקה מכיוון שניהול המשתמשים מתבצע מעתה בקונסולת Firebase
-  return res.json({ success: true, admins: [] });
-});
+  // הפעלה ראשונה 3 שניות לאחר עלייה
+  setTimeout(() => {
+    runAutomatedHeartbeat().catch(() => {});
+  }, 3000);
 
-// ----------------------------------------------------
-// API Routes
-// ----------------------------------------------------
-
-// Helper to mask sensitive tokens for safe client inspection
-function maskSecretToken(token: string | undefined): string {
-  if (!token) return '';
-  const trimmed = token.trim();
-  if (trimmed.length <= 6) return '••••••';
-  return `${trimmed.substring(0, 3)}••••••••${trimmed.substring(trimmed.length - 3)}`;
+  // בדיקה חוזרת כל דקה (Fail-Safe Heartbeat)
+  setInterval(() => {
+    runAutomatedHeartbeat().catch(() => {});
+  }, 60 * 1000);
 }
 
-// Get current server settings & env configuration (Secrets masked for security)
-app.get('/api/whatsapp/settings', requireAdmin, (req: Request, res: Response) => {
-  try {
-    const rawToken = activeServerSettings?.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN || '';
-    const rawTelnyxKey = activeServerSettings?.telnyxApiKey || process.env.TELNYX_API_KEY || '';
-    const profileId = process.env.TELNYX_PROFILE_ID || '';
-    const fromNumber = activeServerSettings?.telnyxFromNumber || process.env.TELNYX_FROM_NUMBER || activeServerSettings?.telnyxFrom || process.env.TELNYX_FROM || '';
+initSmsEngine();
 
-    res.json({
-      success: true,
-      settings: {
-        ...activeServerSettings,
-        twilioAccountSid: activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID || '',
-        twilioPhoneNumber: activeServerSettings?.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER || '',
-        twilioType: activeServerSettings?.twilioType || process.env.TWILIO_TYPE || 'sms',
-        twilioAuthToken: maskSecretToken(rawToken),
-        hasTwilioAuthToken: Boolean(rawToken),
-        telnyxApiKey: maskSecretToken(rawTelnyxKey),
-        hasTelnyxApiKey: Boolean(rawTelnyxKey),
-        telnyxFromNumber: activeServerSettings?.telnyxFromNumber || process.env.TELNYX_FROM_NUMBER || '',
-        telnyxProfileId: profileId,
-        telnyxFrom: fromNumber,
-      },
-      hasTelnyxConfig: Boolean(rawTelnyxKey && fromNumber),
-      hasTwilioConfig: Boolean((activeServerSettings?.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID) && rawToken),
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err?.message });
-  }
+// ----------------------------------------------------
+// 📡 REST API ENDPOINTS
+// ----------------------------------------------------
+
+// 1. Get SMS settings
+app.get(['/api/sms/settings', '/api/whatsapp/settings'], requireAdmin, (req: Request, res: Response) => {
+  res.json({
+    success: true,
+    settings: {
+      ...activeServerSettings,
+      morningTemplate: activeServerSettings.morningTemplate || activeServerSettings.customerTodayTemplate,
+      eveningTemplate: activeServerSettings.eveningTemplate || activeServerSettings.customer1DayTemplate,
+    },
+  });
 });
 
-// Sync settings from client to server (Telnyx, timing, templates, etc.)
-app.post('/api/whatsapp/sync-settings', requireAdmin, async (req: Request, res: Response) => {
+// 2. Save SMS settings & reschedule immediately
+app.post(['/api/sms/settings', '/api/whatsapp/sync-settings'], requireAdmin, async (req: Request, res: Response) => {
   try {
     const { settings } = req.body;
-    if (settings && typeof settings === 'object') {
-      const sanitizedSettings = { ...settings };
-      for (const timeField of ['morningReminderTime', 'eveningReminderTime']) {
-        if (sanitizedSettings[timeField] !== undefined &&
-            !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(sanitizedSettings[timeField]))) {
-          return res.status(400).json({ success: false, error: `שעה לא תקינה בשדה ${timeField}` });
-        }
-      }
-
-      // Settings returned to the browser mask secrets. Never overwrite the real
-      // credentials with those display-only masked values during a time edit.
-      for (const secretField of ['telnyxApiKey', 'twilioAuthToken', 'apiKey']) {
-        const value = sanitizedSettings[secretField];
-        if (typeof value !== 'string' || !value.trim() || value.includes('•')) {
-          delete sanitizedSettings[secretField];
-        }
-      }
-
-      // Save the schedule-only subset through the existing Firestore rules for
-      // settings/schedule_settings. This avoids requiring Cloud IAM/Admin
-      // credentials just to change the hours in the admin interface.
-      try {
-        const scheduleFields: Record<string, any> = { updatedAt: new Date().toISOString() };
-        for (const field of [
-          'morningReminderTime',
-          'eveningReminderTime',
-          'notifyCustomerToday',
-          'notifyCustomer1DayBefore',
-          'autoSendEnabled',
-          'enabled',
-        ]) {
-          if (sanitizedSettings[field] !== undefined) scheduleFields[field] = sanitizedSettings[field];
-        }
-        await setDoc(doc(db, 'settings', 'schedule_settings'), scheduleFields, { merge: true });
-      } catch (fsErr) {
-        console.error('[Server Settings] שמירת השעות במסמך schedule_settings נכשלה:', fsErr);
-        return res.status(503).json({ success: false, error: 'שמירת השעות נכשלה ב-Firestore.' });
-      }
-
-      activeServerSettings = { ...activeServerSettings, ...sanitizedSettings };
-      // Reschedule immediately using the exact values saved by the admin UI.
-      scheduleOrUpdateCronJobs();
-
-      // Optional persistence for private credentials/templates. Schedule times
-      // are already saved in the rules-authorized schedule_settings document.
-      let privateSettingsPersisted = false;
-      try {
-        if (!adminFirestore) throw new Error('Firebase Admin Firestore is unavailable');
-        await adminFirestore.collection('settings').doc('reminders').set(sanitizedSettings, { merge: true });
-        privateSettingsPersisted = true;
-      } catch (fsErr) {
-        console.warn('[Server Settings] הגדרות פרטיות לא נשמרו דרך Admin Firestore:', fsErr);
-      }
-
-      console.log('[Server Settings] Messaging settings synced & rescheduled:', {
-        morningReminderTime: activeServerSettings.morningReminderTime,
-        eveningReminderTime: activeServerSettings.eveningReminderTime,
-        provider: activeServerSettings.provider,
-        telnyxFrom: activeServerSettings.telnyxFrom,
-        hasGreenApi: Boolean(activeServerSettings.instanceId),
-      });
-      return res.json({ success: true, schedulePersisted: true, privateSettingsPersisted, settings: activeServerSettings });
+    if (!settings || typeof settings !== 'object') {
+      return res.status(400).json({ success: false, error: 'Expected settings object' });
     }
-    return res.status(400).json({ success: false, error: 'Expected settings object' });
+
+    activeServerSettings = {
+      ...activeServerSettings,
+      ...settings,
+      morningTemplate: settings.morningTemplate || settings.customerTodayTemplate || activeServerSettings.morningTemplate,
+      eveningTemplate: settings.eveningTemplate || settings.customer1DayTemplate || activeServerSettings.eveningTemplate,
+    };
+
+    scheduleOrUpdateCronJobs();
+
+    // Trigger immediate check to process any pending reminders under new time
+    runAutomatedHeartbeat().catch(() => {});
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'settings', 'sms_reminders'), activeServerSettings, { merge: true });
+        await setDoc(doc(db, 'settings', 'reminders'), activeServerSettings, { merge: true });
+      } catch (dbErr) {
+        console.warn('[SMS Settings] אזהרה: שמירה ב-Firestore נכשלה (נשמר בזיכרון השרת):', dbErr);
+      }
+    }
+
+    console.log('[SMS Settings] ✅ הגדרות עודכנו וסונכרנו:', {
+      morningTime: activeServerSettings.morningReminderTime,
+      eveningTime: activeServerSettings.eveningReminderTime,
+      today: activeServerSettings.notifyCustomerToday,
+      tomorrow: activeServerSettings.notifyCustomer1DayBefore,
+    });
+
+    return res.json({ success: true, settings: activeServerSettings });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message });
   }
 });
 
-// Sync appointments from client to server in-memory background worker
-app.post('/api/whatsapp/sync-appointments', requireAdmin, (req: Request, res: Response) => {
-  try {
-    const { appointments, sentLog } = req.body;
-    if (Array.isArray(appointments)) {
-      serverAppointments = appointments;
-      
-      if (sentLog && typeof sentLog === 'object') {
-        Object.keys(sentLog).forEach((apptId) => {
-          const entry = sentLog[apptId];
-          if (entry.customerTodaySentAt) recordSentReminder(`${apptId}_morning`);
-          if (entry.customer1DaySentAt) recordSentReminder(`${apptId}_evening`);
-        });
-      }
+// 3. Batch Send Trigger (Today or Tomorrow)
+app.post(['/api/sms/send-batch', '/api/whatsapp/trigger-morning', '/api/whatsapp/test-today-morning'], requireAdmin, async (req: Request, res: Response) => {
+  const reqType = req.body?.type || (req.path.includes('morning') || req.path.includes('today') ? 'today' : '1day');
+  const { dateIso, tomorrowIso } = getIsraelTime();
+  const targetDate = reqType === 'today' ? dateIso : tomorrowIso;
 
-      // Successfully synced in-memory appointments for background cron check
-      return res.json({ success: true, count: serverAppointments.length });
-    }
-    return res.status(400).json({ success: false, error: 'Expected appointments array' });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message });
-  }
+  const result = await sendRemindersForDate(targetDate, reqType);
+  return res.json(result);
 });
 
-// Immediate SMS / WhatsApp / Telnyx Dispatch Route (Protected with Rate Limiting & Input Validation)
-app.post('/api/whatsapp/send', requireAdmin, async (req: Request, res: Response) => {
+app.post(['/api/whatsapp/trigger-evening', '/api/whatsapp/test-1day-evening'], requireAdmin, async (req: Request, res: Response) => {
+  const { tomorrowIso } = getIsraelTime();
+  const result = await sendRemindersForDate(tomorrowIso, '1day');
+  return res.json(result);
+});
+
+// 4. Send Single SMS
+app.post(['/api/sms/send-single', '/api/whatsapp/send'], requireAdmin, async (req: Request, res: Response) => {
   const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
-
-  // Prevent spamming & API abuse
   if (isDispatchRateLimited(clientIp)) {
-    return res.status(429).json({
-      success: false,
-      error: 'קצב הבקשות לשליחת הודעות מהיר מדי. נא להמתין דקה לפני ניסיון נוסף.',
-    });
+    return res.status(429).json({ success: false, error: 'קצב הבקשות מהיר מדי. נא להמתין רגע.' });
   }
 
-  try {
-    const {
-      phone,
-      message,
-      provider,
-      instanceId,
-      apiKey,
-      webhookUrl,
-      reminderType,
-      appointment,
-    } = req.body;
-
-    const cleanPhoneStr = String(phone || '').trim();
-    const cleanMessageStr = String(message || '').trim();
-
-    if (!cleanPhoneStr || !cleanMessageStr) {
-      return res.status(400).json({ success: false, error: 'Phone and message are required' });
-    }
-
-    // Security: Message length limit to prevent abuse or buffer overflow
-    if (cleanMessageStr.length > 2000) {
-      return res.status(400).json({ success: false, error: 'Message content exceeds maximum allowed length (2000 chars)' });
-    }
-
-    // Security: Phone format validation
-    const digitsOnly = cleanPhoneStr.replace(/\D/g, '');
-    if (digitsOnly.length < 8 || digitsOnly.length > 15) {
-      return res.status(400).json({ success: false, error: 'Invalid phone number length' });
-    }
-
-    const result = await sendWhatsAppViaProvider({
-      phone: cleanPhoneStr,
-      message: cleanMessageStr,
-      provider,
-      instanceId,
-      apiKey,
-      webhookUrl,
-    });
-
-    if (appointment && reminderType) {
-      const { dateIso, tomorrowIso } = getIsraelTime();
-      if (reminderType === 'today') {
-        recordSentReminder(`morning_${dateIso}_${appointment.id}_manual`);
-      } else if (reminderType === '1day') {
-        recordSentReminder(`evening_${tomorrowIso}_${appointment.id}_manual`);
-      }
-    }
-
-    if (!result.success) {
-      console.error('[API /api/whatsapp/send] ❌ שליחת הודעה נכשלה:', result.error);
-      return res.status(400).json(result);
-    }
-
-    return res.json(result);
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message });
+  const { phone, message, customerName, appointmentId, reminderType } = req.body;
+  if (!phone || !message) {
+    return res.status(400).json({ success: false, error: 'Phone and message are required' });
   }
+
+  const resSend = await sendSmsViaTelnyx(phone, message);
+
+  const logEntry: SmsLogEntry = {
+    id: `sms_single_${Date.now()}`,
+    recipientName: customerName || 'לקוח/ה',
+    recipientPhone: phone,
+    messageText: message,
+    channel: 'sms',
+    status: resSend.success ? 'sent' : 'failed',
+    reminderType: reminderType || 'manual_single',
+    sentAt: new Date().toISOString(),
+    errorMessage: resSend.error,
+  };
+  recordLogEntry(logEntry);
+
+  if (!resSend.success) {
+    return res.status(400).json(resSend);
+  }
+
+  return res.json(resSend);
 });
 
-// ============================================================================
-// USER REGISTRATION WEBHOOK (SMS / WhatsApp / Make / Zapier Integration)
-// ============================================================================
-// Note for developer: Configure your specific external backend Webhook URL below
-// or set the REGISTRATION_WEBHOOK_URL environment variable.
-let customRegistrationWebhookUrl: string = process.env.REGISTRATION_WEBHOOK_URL || '';
+// 5. Test SMS to Admin
+app.post('/api/sms/test', requireAdmin, async (req: Request, res: Response) => {
+  const { phone, message } = req.body;
+  if (!phone || !message) {
+    return res.status(400).json({ success: false, error: 'נא להזין טלפון והודעה' });
+  }
 
-export function setCustomRegistrationWebhookUrl(url: string) {
-  customRegistrationWebhookUrl = url;
-}
+  const resSend = await sendSmsViaTelnyx(phone, message);
 
-// User Registration Webhook Handler (Sanitized & Validated)
+  const logEntry: SmsLogEntry = {
+    id: `sms_test_${Date.now()}`,
+    recipientName: 'בדיקת מנהלת',
+    recipientPhone: phone,
+    messageText: message,
+    channel: 'sms',
+    status: resSend.success ? 'sent' : 'failed',
+    reminderType: 'test',
+    sentAt: new Date().toISOString(),
+    errorMessage: resSend.error,
+  };
+  recordLogEntry(logEntry);
+
+  if (!resSend.success) {
+    return res.status(400).json(resSend);
+  }
+
+  return res.json(resSend);
+});
+
+// 6. Get Recent Logs
+app.get('/api/sms/logs', requireAdmin, (req: Request, res: Response) => {
+  res.json({ success: true, logs: recentSmsLogs });
+});
+
+// Sync in-memory appointments
+app.post('/api/whatsapp/sync-appointments', requireAdmin, (req: Request, res: Response) => {
+  if (Array.isArray(req.body?.appointments)) {
+    serverAppointments = req.body.appointments;
+    return res.json({ success: true, count: serverAppointments.length });
+  }
+  return res.status(400).json({ success: false, error: 'Expected appointments array' });
+});
+
+// Registration Webhook Endpoint
 app.post('/api/register-webhook', async (req: Request, res: Response) => {
   try {
-    const { name, phone, acceptedTerms, registeredAt, platform, userAgent } = req.body;
-
+    const { name, phone, acceptedTerms, registeredAt } = req.body;
     const sanitizedName = String(name || '').trim().substring(0, 100);
     const sanitizedPhone = String(phone || '').trim().substring(0, 30);
 
     if (!sanitizedName || !sanitizedPhone) {
-      return res.status(400).json({
-        success: false,
-        error: 'Name and phone are required fields for registration',
-      });
+      return res.status(400).json({ success: false, error: 'Name and phone are required' });
     }
 
-    const digitsOnly = sanitizedPhone.replace(/\D/g, '');
-    if (digitsOnly.length < 8) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid phone number',
-      });
-    }
-
-    const cleanPhone = cleanPhoneForWhatsApp(sanitizedPhone);
-    const timestamp = registeredAt || new Date().toISOString();
-
-    console.log(`\n========================================`);
-    console.log(`[Registration Webhook] New User Registered!`);
-    console.log(`Name: ${sanitizedName}`);
-    console.log(`Phone: ${sanitizedPhone} (formatted: +${cleanPhone})`);
-    console.log(`Accepted Terms: ${Boolean(acceptedTerms)}`);
-    console.log(`Timestamp: ${timestamp}`);
-    console.log(`========================================\n`);
-
-    const registrationPayload = {
-      event: 'user_registered',
-      name: sanitizedName,
-      phone: sanitizedPhone,
-      formattedPhone: `+${cleanPhone}`,
-      acceptedTerms: Boolean(acceptedTerms),
-      registeredAt: timestamp,
-      source: 'alex_beauty_app',
-      platform: typeof platform === 'string' ? platform.substring(0, 50) : 'web_mobile',
-      userAgent: typeof userAgent === 'string' ? userAgent.substring(0, 200) : '',
-    };
-
-    let forwarded = false;
-    let forwardResponse: any = null;
-
-    // 1. Forward to external backend Webhook URL if configured
-    const targetWebhookUrl = customRegistrationWebhookUrl || activeServerSettings?.webhookUrl || process.env.REGISTRATION_WEBHOOK_URL;
-    if (targetWebhookUrl) {
-      try {
-        console.log(`[Registration Webhook] Forwarding payload to external backend: ${targetWebhookUrl}`);
-        const response = await fetch(targetWebhookUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Source': 'alex-beauty-registration',
-          },
-          body: JSON.stringify(registrationPayload),
-        });
-
-        forwarded = true;
-        const textResp = await response.text();
-        try {
-          forwardResponse = JSON.parse(textResp);
-        } catch {
-          forwardResponse = textResp;
-        }
-        console.log(`[Registration Webhook] Forward response status: ${response.status}`);
-      } catch (forwardErr: any) {
-        console.warn(`[Registration Webhook] Could not forward to ${targetWebhookUrl}:`, forwardErr?.message);
-      }
-    }
-
-    // 2. Return successful response to client
-    return res.json({
-      success: true,
-      message: 'Registration received and processed successfully',
-      data: registrationPayload,
-      forwarded,
-      forwardResponse,
-    });
+    console.log(`[Registration Webhook] New customer: ${sanitizedName} (${sanitizedPhone})`);
+    return res.json({ success: true, message: 'Registration received' });
   } catch (err: any) {
-    console.error('[Registration Webhook] Error processing registration:', err);
-    return res.status(500).json({
-      success: false,
-      error: err?.message || 'Internal server error processing registration webhook',
-    });
+    return res.status(500).json({ success: false, error: err?.message });
   }
-});
-
-// Endpoint to view or configure registration webhook info
-app.get('/api/register-webhook/info', (req: Request, res: Response) => {
-  res.json({
-    status: 'active',
-    webhookEndpoint: '/api/register-webhook',
-    configuredExternalUrl: customRegistrationWebhookUrl || process.env.REGISTRATION_WEBHOOK_URL || null,
-    samplePayload: {
-      event: 'user_registered',
-      name: 'ישראל ישראלי',
-      phone: '050-1234567',
-      formattedPhone: '+972501234567',
-      acceptedTerms: true,
-      registeredAt: new Date().toISOString(),
-      source: 'alex_beauty_app',
-    },
-  });
-});
-
-// Status & diagnostics route
-app.get('/api/whatsapp/status', (req: Request, res: Response) => {
-  const israelTime = getIsraelTime();
-  res.json({
-    status: 'online',
-    israelTime,
-    schedules: {
-      morningSameDay: `${activeServerSettings?.morningReminderTime || '08:00'} (באותו יום של התור - Asia/Jerusalem)`,
-      evening1DayBefore: `${activeServerSettings?.eveningReminderTime || '20:00'} (יום לפני התור - Asia/Jerusalem)`,
-    },
-    syncedAppointmentsCount: serverAppointments.length,
-    sentRemindersCount: Object.keys(sentHistory).length,
-    activeProvider: activeServerSettings?.provider || (process.env.TELNYX_API_KEY ? 'telnyx' : 'webhook'),
-    hasTelnyxCredentials: Boolean(process.env.TELNYX_API_KEY && process.env.TELNYX_FROM),
-    hasGreenApiCredentials: Boolean(
-      (activeServerSettings?.instanceId || process.env.GREEN_API_INSTANCE_ID) &&
-      (activeServerSettings?.apiKey || process.env.GREEN_API_TOKEN)
-    ),
-    hasWebhook: Boolean(activeServerSettings?.webhookUrl || process.env.WHATSAPP_WEBHOOK_URL),
-  });
-});
-
-// Comprehensive Telnyx & Messaging Diagnostic Endpoint
-app.get('/api/whatsapp/diagnose', requireAdmin, async (req: Request, res: Response) => {
-  const apiKey = (process.env.TELNYX_API_KEY || (activeServerSettings as any)?.telnyxApiKey || '').trim();
-  const rawProfileId = process.env.TELNYX_PROFILE_ID || (activeServerSettings as any)?.telnyxProfileId || '';
-  const fromNumber = (process.env.TELNYX_FROM || (activeServerSettings as any)?.telnyxFrom || '').trim();
-
-  const diagnostics: any = {
-    timestamp: new Date().toISOString(),
-    israelTime: getIsraelTime(),
-    scheduler: {
-      processUptimeSeconds: Math.floor(process.uptime()),
-      externalSchedulerConfigured: Boolean(process.env.REMINDER_CRON_SECRET),
-      externalSchedulerLastCallAt,
-      autoSendEnabled: activeServerSettings?.enabled !== false && activeServerSettings?.autoSendEnabled !== false,
-      morningReminderTime: activeServerSettings?.morningReminderTime || '08:00',
-      eveningReminderTime: activeServerSettings?.eveningReminderTime || '20:00',
-      notifyCustomerToday: activeServerSettings?.notifyCustomerToday !== false,
-      notifyCustomer1DayBefore: activeServerSettings?.notifyCustomer1DayBefore === true,
-      lastCheckAt: schedulerLastCheckAt,
-      lastCheckError: schedulerLastCheckError,
-      scheduleSettingsLastLoadedAt,
-      lastReminderAttempt: schedulerLastReminderAttempt,
-      appointmentCacheCount: serverAppointments.length,
-    },
-    provider: activeServerSettings?.provider || (apiKey ? 'telnyx' : 'webhook'),
-    telnyx: {
-      hasCredentials: Boolean(apiKey && (fromNumber || rawProfileId)),
-      apiKeyMasked: apiKey ? `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}` : null,
-      profileId: rawProfileId || null,
-      fromNumber: fromNumber || null,
-      readyToSend: false,
-      errorSummary: null,
-    },
-  };
-
-  if (!apiKey || (!fromNumber && !rawProfileId)) {
-    diagnostics.telnyx.errorSummary = 'חסרים משתני סביבה של Telnyx (TELNYX_API_KEY ו-TELNYX_FROM או TELNYX_PROFILE_ID)';
-    return res.json(diagnostics);
-  }
-
-  try {
-    const telnyxModule = await import('telnyx');
-    const Telnyx: any = (telnyxModule as any).default || telnyxModule;
-    let client: any;
-    try {
-      client = new Telnyx({ apiKey: apiKey.trim() });
-    } catch {
-      client = typeof Telnyx === 'function' ? Telnyx(apiKey.trim()) : new Telnyx(apiKey.trim());
-    }
-
-    const { profileId: resolvedProfile, from: resolvedFrom } = await resolveTelnyxProfileAndSender(client, apiKey, rawProfileId, fromNumber);
-    if (resolvedProfile) {
-      diagnostics.telnyx.profileId = resolvedProfile;
-    }
-    if (resolvedFrom) {
-      diagnostics.telnyx.fromNumber = resolvedFrom;
-    }
-
-    diagnostics.telnyx.readyToSend = true;
-    return res.json(diagnostics);
-  } catch (err: any) {
-    diagnostics.telnyx.errorSummary = `שגיאת אימות מול Telnyx: ${err?.message}`;
-    return res.json(diagnostics);
-  }
-});
-
-// Manual trigger aliases for morning batch (today)
-app.post(['/api/whatsapp/trigger-morning', '/api/whatsapp/test-today-morning'], requireAdmin, async (req: Request, res: Response) => {
-  const { dateIso, timeStr } = getIsraelTime();
-  const todayAppointments = serverAppointments.filter(
-    (a) =>
-      a.appointment_date === dateIso &&
-      a.status === 'confirmed' &&
-      !a.customer_name.includes('🔒') &&
-      !a.customer_name.includes('חופש')
-  );
-
-  const defaultMorningText = `היי {customer_name} 🌸
-תזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨
-לבירור או שינוי: {phone}
-נתראה! 💖`;
-
-  const results = [];
-  for (const appt of todayAppointments) {
-    const key = `morning_${dateIso}_${appt.id}_manual`;
-    const rawTemplate = activeServerSettings?.customerTodayTemplate || defaultMorningText;
-    const message = formatMessageTemplate(rawTemplate, appt);
-
-    const resSend = await sendWhatsAppViaProvider({
-      phone: appt.customer_phone,
-      message,
-    });
-    
-    if (resSend.success) {
-      recordSentReminder(key);
-    }
-    
-    results.push({ id: appt.id, customer: appt.customer_name, phone: appt.customer_phone, status: resSend });
-  }
-
-  return res.json({
-    success: true,
-    message: results.length > 0 ? `נשלחו תזכורות ל-${results.length} תורים של היום` : 'אין תורים מתוכננים להיום',
-    sentCount: results.length,
-    triggeredAt: timeStr,
-    date: dateIso,
-    totalDispatched: results.length,
-    results,
-  });
-});
-
-// Manual trigger aliases for evening batch (tomorrow)
-app.post(['/api/whatsapp/trigger-evening', '/api/whatsapp/test-1day-evening'], requireAdmin, async (req: Request, res: Response) => {
-  const { tomorrowIso, timeStr } = getIsraelTime();
-  const tomorrowAppointments = serverAppointments.filter(
-    (a) =>
-      a.appointment_date === tomorrowIso &&
-      a.status === 'confirmed' &&
-      !a.customer_name.includes('🔒') &&
-      !a.customer_name.includes('חופש')
-  );
-
-  const defaultEveningText = `היי {customer_name} 🌸
-תזכורת לתור שלך למחר ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨
-לשינוי או בירור: {phone}
-מחכים לראותך! 💖`;
-
-  const results = [];
-  for (const appt of tomorrowAppointments) {
-    const key = `evening_${tomorrowIso}_${appt.id}_manual`;
-    const rawTemplate = activeServerSettings?.customer1DayTemplate || defaultEveningText;
-    const message = formatMessageTemplate(rawTemplate, appt);
-
-    const resSend = await sendWhatsAppViaProvider({
-      phone: appt.customer_phone,
-      message,
-    });
-    
-    if (resSend.success) {
-      recordSentReminder(key);
-    }
-    
-    results.push({ id: appt.id, customer: appt.customer_name, phone: appt.customer_phone, status: resSend });
-  }
-
-  return res.json({
-    success: true,
-    message: results.length > 0 ? `נשלחו תזכורות ל-${results.length} תורים של מחר` : 'אין תורים מתוכננים למחר',
-    sentCount: results.length,
-    triggeredAt: timeStr,
-    targetDate: tomorrowIso,
-    totalDispatched: results.length,
-    results,
-  });
 });
 
 // ----------------------------------------------------

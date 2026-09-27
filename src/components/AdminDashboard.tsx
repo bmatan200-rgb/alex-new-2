@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Calendar,
   CalendarPlus,
@@ -34,6 +34,7 @@ import {
   Sun,
   Users,
   LogOut,
+  MessageCircle,
 } from 'lucide-react';
 import { Appointment, ScheduleSettings, Service } from '../types';
 import {
@@ -51,7 +52,7 @@ import {
 } from '../utils/dateUtils';
 import { SALON_INFO } from '../utils/storage';
 import { WhatsApp2HourAlertBanner } from './WhatsApp2HourAlertBanner';
-import { WhatsAppReminderModal } from './WhatsAppReminderModal';
+import { SmsReminderModal } from './SmsReminderModal';
 import { ServiceDurationModal } from './ServiceDurationModal';
 import { CustomerDirectory } from './CustomerDirectory';
 import { AdminBookingModal } from './AdminBookingModal';
@@ -68,7 +69,7 @@ import {
   getSentRemindersLog,
   dispatchAutomatedWhatsAppApi,
   getStoredReminderSettings,
-  getIsraelTimeParts,
+  createWhatsAppDirectLink,
 } from '../utils/whatsappReminder';
 
 interface AdminDashboardProps {
@@ -107,19 +108,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   scheduleSettings,
   onUpdateScheduleSettings,
 }) => {
-  const [, setClockTick] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => setClockTick((tick) => tick + 1), 30000);
-    return () => clearInterval(timer);
-  }, []);
-  const israelNow = getIsraelTimeParts();
-  const todayIso = israelNow.dateIso;
-  const [todayYear, todayMonth, todayDay] = todayIso.split('-').map(Number);
-  const tomorrowDate = new Date(todayYear, todayMonth - 1, todayDay + 1, 12);
+  const todayIso = toISODateString(new Date());
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
   const tomorrowIso = toISODateString(tomorrowDate);
-  const isAppointmentPastByIsraelTime = (appt: Appointment) =>
-    appt.appointment_date < todayIso ||
-    (appt.appointment_date === todayIso && timeToMinutes(appt.start_time) <= israelNow.totalMinutes);
 
   const [selectedDate, setSelectedDate] = useState<string>(todayIso);
   const [adminTab, setAdminTab] = useState<'calendar' | 'customers'>('calendar');
@@ -451,16 +443,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
 
       if (filter === 'blocked') return isBlock && app.status === 'confirmed';
-      if (filter === 'today') return app.appointment_date === todayIso && !isAppointmentPastByIsraelTime(app);
+      if (filter === 'today') return app.appointment_date === todayIso;
       if (filter === 'upcoming') {
         return (
-          !isAppointmentPastByIsraelTime(app) &&
+          app.appointment_date >= todayIso &&
           app.status === 'confirmed' &&
           !isBlock
         );
       }
       if (filter === 'past') {
-        return isAppointmentPastByIsraelTime(app) || app.status === 'cancelled';
+        return app.appointment_date < todayIso || app.status === 'cancelled';
       }
       return true;
     })
@@ -472,8 +464,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       if (filter === 'all' && sortOrder === 'asc') {
         // When showing ALL with ascending sort: prioritize active upcoming/today appointments (>= today) from closest to farthest
-        const isUpcomingA = !isAppointmentPastByIsraelTime(a);
-        const isUpcomingB = !isAppointmentPastByIsraelTime(b);
+        const isUpcomingA = dateA >= todayIso;
+        const isUpcomingB = dateB >= todayIso;
         if (isUpcomingA && !isUpcomingB) return -1;
         if (!isUpcomingA && isUpcomingB) return 1;
       }
@@ -627,7 +619,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               adminTab === 'calendar' ? 'bg-purple-600 text-white' : 'bg-slate-300 text-slate-700'
             }`}
           >
-            {appointments.filter((a) => !isAppointmentPastByIsraelTime(a) && a.status === 'confirmed').length}
+            {appointments.filter((a) => a.appointment_date >= todayIso && a.status === 'confirmed').length}
           </span>
         </button>
 
@@ -712,14 +704,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </button>
       </div>
 
-      {/* WhatsApp Modal */}
-      <WhatsAppReminderModal
+      {/* SMS Automation & Reminder Modal */}
+      <SmsReminderModal
         isOpen={isWhatsAppModalOpen}
         onClose={() => {
           setIsWhatsAppModalOpen(false);
           setReminderSettings(getStoredReminderSettings());
         }}
-        initialTab={whatsAppModalTab}
+        initialTab={whatsAppModalTab === 'templates' ? 'templates' : 'timing'}
       />
 
       {/* Service Duration & Price Settings Modal */}
@@ -1370,6 +1362,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   <span className="text-[11px]">תזכורת SMS ⚡</span>
                                 </button>
                                 <a
+                                  href={createWhatsAppDirectLink(slot.appointment.customer_phone, '')}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="p-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
+                                  title={`פתיחת שיחת וואטסאפ עם ${slot.appointment.customer_name}`}
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5 fill-white/20 text-white" />
+                                  <span className="text-[11px]">WhatsApp 💬</span>
+                                </a>
+                                <a
                                   href={`tel:${slot.appointment.customer_phone}`}
                                   className="p-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-xl text-xs font-bold transition border border-slate-200 shadow-xs"
                                   title="חיוג ללקוח/ה"
@@ -1440,7 +1442,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               >
                 <span>עתידיים (מהקרוב לרחוק)</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'upcoming' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>
-                  {appointments.filter((a) => !isAppointmentPastByIsraelTime(a) && a.status === 'confirmed' && !isBlockedAppointment(a)).length}
+                  {appointments.filter((a) => a.appointment_date >= todayIso && a.status === 'confirmed' && !isBlockedAppointment(a)).length}
                 </span>
               </button>
 
@@ -1455,7 +1457,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               >
                 <span>היום</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'today' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>
-                  {appointments.filter((a) => a.appointment_date === todayIso && !isAppointmentPastByIsraelTime(a)).length}
+                  {appointments.filter((a) => a.appointment_date === todayIso).length}
                 </span>
               </button>
 
@@ -1502,7 +1504,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <History className="w-3 h-3" />
                 <span>עבר / מבוטלים</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'past' ? 'bg-slate-800 text-slate-300' : 'bg-slate-200 text-slate-700'}`}>
-                  {appointments.filter((a) => isAppointmentPastByIsraelTime(a) || a.status === 'cancelled').length}
+                  {appointments.filter((a) => a.appointment_date < todayIso || a.status === 'cancelled').length}
                 </span>
               </button>
             </div>
@@ -1589,9 +1591,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 ? { text: 'חסום ביומן', className: 'bg-purple-100 text-purple-900 border border-purple-300 font-bold' }
                 : STATUS_LABELS[appt.status] || STATUS_LABELS.confirmed;
               const isCancelled = appt.status === 'cancelled';
-              const isToday = appt.appointment_date === todayIso && !isCancelled && !isAppointmentPastByIsraelTime(appt);
+              const isToday = appt.appointment_date === todayIso && !isCancelled;
               const isTomorrow = appt.appointment_date === tomorrowIso && !isCancelled;
-              const isPast = isAppointmentPastByIsraelTime(appt) && !isCancelled;
+              const isPast = appt.appointment_date < todayIso && !isCancelled;
               const cleanPhone = appt.customer_phone.replace(/\D/g, '');
 
               return (

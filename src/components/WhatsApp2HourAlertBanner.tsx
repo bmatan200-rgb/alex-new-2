@@ -14,6 +14,7 @@ import {
   Loader2,
   AlertCircle,
   Smartphone,
+  MessageCircle,
 } from 'lucide-react';
 import { Appointment } from '../types';
 import { SALON_INFO } from '../utils/storage';
@@ -23,13 +24,13 @@ import {
   buildAlex1DayReminderText,
   isProviderConfigured,
   getStoredReminderSettings,
-  getIsraelTimeParts,
   markReminderSent,
   getSentRemindersLog,
   dispatchAutomatedWhatsAppApi,
+  createWhatsAppDirectLink,
   SentReminderLogEntry,
 } from '../utils/whatsappReminder';
-import { toISODateString, toIsraeliDateString, timeToMinutes } from '../utils/dateUtils';
+import { toISODateString, toIsraeliDateString } from '../utils/dateUtils';
 
 interface WhatsApp2HourAlertBannerProps {
   appointments: Appointment[];
@@ -58,10 +59,10 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
     return () => clearInterval(timer);
   }, []);
 
-  const israelNow = getIsraelTimeParts();
-  const todayIso = israelNow.dateIso;
-  const [todayYear, todayMonth, todayDay] = todayIso.split('-').map(Number);
-  const tomorrow = new Date(todayYear, todayMonth - 1, todayDay + 1, 12);
+  const todayIso = toISODateString(new Date());
+
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowIso = toISODateString(tomorrow);
 
   // Filter confirmed client appointments
@@ -76,7 +77,7 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
 
   // Appointments for today (morning reminder)
   const todayAppts = activeClientAppts
-    .filter((a) => a.appointment_date === todayIso && timeToMinutes(a.start_time) > israelNow.totalMinutes)
+    .filter((a) => a.appointment_date === todayIso)
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
 
   // Appointments for tomorrow (evening 1-day before reminder)
@@ -296,7 +297,7 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
                       type="button"
                       disabled={isCurrentlySending}
                       onClick={() => handleSendAutomatedNow(appt, 'today')}
-                      className={`w-full py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs ${
+                      className={`flex-1 py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs ${
                         customerTodaySent
                           ? 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200'
                           : 'bg-amber-500 hover:bg-amber-600 text-white shadow-amber-500/25'
@@ -320,6 +321,18 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
                         </>
                       )}
                     </button>
+
+                    {/* Direct WhatsApp chat with customer */}
+                    <a
+                      href={createWhatsAppDirectLink(appt.customer_phone, '')}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs shrink-0"
+                      title={`פתיחת שיחת וואטסאפ ישירה עם ${appt.customer_name}`}
+                    >
+                      <MessageCircle className="w-3.5 h-3.5 fill-white/20 text-white" />
+                      <span>וואטסאפ 💬</span>
+                    </a>
                   </div>
                 </div>
               );
@@ -411,7 +424,7 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
                       type="button"
                       disabled={isCurrentlySending}
                       onClick={() => handleSendAutomatedNow(appt, '1day')}
-                      className={`w-full py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs ${
+                      className={`flex-1 py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs ${
                         customer1DaySent
                           ? 'bg-indigo-100 text-indigo-900 border border-indigo-300 hover:bg-indigo-200'
                           : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/25'
@@ -435,6 +448,18 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
                         </>
                       )}
                     </button>
+
+                    {/* Direct WhatsApp chat with customer */}
+                    <a
+                      href={createWhatsAppDirectLink(appt.customer_phone, '')}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs shrink-0"
+                      title={`פתיחת שיחת וואטסאפ ישירה עם ${appt.customer_name}`}
+                    >
+                      <MessageCircle className="w-3.5 h-3.5 fill-white/20 text-white" />
+                      <span>וואטסאפ 💬</span>
+                    </a>
                   </div>
                 </div>
               );

@@ -41,8 +41,7 @@ service cloud.firestore {
 
     match /reminder_locks/{lockId} {
       allow read: if true;
-      allow create, update: if true;
-      allow delete: if false;
+      allow create, update, delete: if true;
     }
 
     match /whatsapp_logs/{logId} {

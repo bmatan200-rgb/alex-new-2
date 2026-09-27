@@ -4,6 +4,7 @@ import fs from 'fs';
 import { getDoc, doc, setDoc, runTransaction, deleteDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from './src/lib/firebase';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
@@ -13,6 +14,7 @@ const PORT = 3000;
 
 // אתחול Firebase Admin לאימות טוקני התחברות של מנהלות.
 let adminSdkReady = false;
+let adminFirestore: ReturnType<typeof getAdminFirestore> | null = null;
 try {
   if (getApps().length === 0) {
     const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -22,6 +24,7 @@ try {
       initializeApp({ projectId: 'gen-lang-client-0382531831' });
     }
   }
+  adminFirestore = getAdminFirestore();
   adminSdkReady = true;
   console.log('[Firebase Admin] ✅ מוכן לאימות טוקנים');
 } catch (err: any) {
@@ -1244,7 +1247,8 @@ function scheduleOrUpdateCronJobs() {
 
 async function loadPersistedReminderSettings() {
   try {
-    const snap = await getDoc(doc(db, 'settings', 'reminders'));
+    if (!adminFirestore) throw new Error('Firebase Admin Firestore is unavailable');
+    const snap = await adminFirestore.collection('settings').doc('reminders').get();
     if (snap.exists()) {
       const persisted = snap.data();
       activeServerSettings = { ...activeServerSettings, ...persisted };
@@ -1331,15 +1335,15 @@ initCronSchedulers();
  * גרועה יותר מתזכורת שתישלח בהרצה הבאה.
  */
 async function tryClaimReminder(key: string): Promise<boolean> {
-  if (!db) {
+  if (!adminFirestore) {
     console.error('[Reminder Lock] ❌ אין חיבור ל-Firestore — לא ניתן לשלוח בבטחה');
     return false;
   }
 
-  const lockRef = doc(db, 'reminder_locks', key);
+  const lockRef = adminFirestore.collection('reminder_locks').doc(key);
 
   try {
-    return await runTransaction(db, async (transaction) => {
+    return await adminFirestore.runTransaction(async (transaction) => {
       const snap = await transaction.get(lockRef);
       if (snap.exists()) return false;
       transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
@@ -1417,7 +1421,8 @@ app.post('/api/whatsapp/sync-settings', requireAdmin, async (req: Request, res: 
 
       // Persist to Firestore so hours and settings survive server restarts and reboots
       try {
-        await setDoc(doc(db, 'settings', 'reminders'), sanitizedSettings, { merge: true });
+        if (!adminFirestore) throw new Error('Firebase Admin Firestore is unavailable');
+        await adminFirestore.collection('settings').doc('reminders').set(sanitizedSettings, { merge: true });
         console.log('[Server Settings] הגדרות תזכורות נשמרו ב-Firestore בהצלחה');
       } catch (fsErr) {
         console.warn('[Server Settings] אזהרה: שמירה ב-Firestore נכשלה:', fsErr);

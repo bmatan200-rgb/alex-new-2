@@ -1171,6 +1171,9 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                           <div className="text-indigo-900">
                             ניסיון שליחה אחרון: {diagnostics.scheduler?.lastReminderAttempt ? `${diagnostics.scheduler.lastReminderAttempt.type === 'today' ? 'תורי היום' : 'תורי מחר'} · ${new Date(diagnostics.scheduler.lastReminderAttempt.attemptedAt).toLocaleString('he-IL')} · נשלחו ${diagnostics.scheduler.lastReminderAttempt.sentCount ?? 0}, נכשלו ${diagnostics.scheduler.lastReminderAttempt.failedCount ?? 0}` : 'טרם בוצע'}
                           </div>
+                          {diagnostics.scheduler?.lastReminderAttempt?.error && (
+                            <div className="text-red-700 font-semibold">פרטי הניסיון: {diagnostics.scheduler.lastReminderAttempt.error}</div>
+                          )}
                           {diagnostics.scheduler?.lastCheckError && (
                             <div className="text-red-700 font-semibold">שגיאת תזמון: {diagnostics.scheduler.lastCheckError}</div>
                           )}

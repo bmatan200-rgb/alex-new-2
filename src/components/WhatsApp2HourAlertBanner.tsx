@@ -23,12 +23,13 @@ import {
   buildAlex1DayReminderText,
   isProviderConfigured,
   getStoredReminderSettings,
+  getIsraelTimeParts,
   markReminderSent,
   getSentRemindersLog,
   dispatchAutomatedWhatsAppApi,
   SentReminderLogEntry,
 } from '../utils/whatsappReminder';
-import { toISODateString, toIsraeliDateString } from '../utils/dateUtils';
+import { toISODateString, toIsraeliDateString, timeToMinutes } from '../utils/dateUtils';
 
 interface WhatsApp2HourAlertBannerProps {
   appointments: Appointment[];
@@ -57,10 +58,10 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
     return () => clearInterval(timer);
   }, []);
 
-  const todayIso = toISODateString(new Date());
-
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const israelNow = getIsraelTimeParts();
+  const todayIso = israelNow.dateIso;
+  const [todayYear, todayMonth, todayDay] = todayIso.split('-').map(Number);
+  const tomorrow = new Date(todayYear, todayMonth - 1, todayDay + 1, 12);
   const tomorrowIso = toISODateString(tomorrow);
 
   // Filter confirmed client appointments
@@ -75,7 +76,7 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
 
   // Appointments for today (morning reminder)
   const todayAppts = activeClientAppts
-    .filter((a) => a.appointment_date === todayIso)
+    .filter((a) => a.appointment_date === todayIso && timeToMinutes(a.start_time) > israelNow.totalMinutes)
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
 
   // Appointments for tomorrow (evening 1-day before reminder)

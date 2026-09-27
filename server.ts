@@ -1038,7 +1038,7 @@ function formatMessageTemplate(template: string, appt: any): string {
  * Unified logic to process and send automated reminders for a target date
  */
 async function sendRemindersForDate(targetDate: string, reminderType: 'today' | '1day') {
-  schedulerLastReminderAttempt = { type: reminderType, targetDate, attemptedAt: new Date().toISOString() };
+  schedulerLastReminderAttempt = { type: reminderType, targetDate, attemptedAt: new Date().toISOString(), sentCount: 0, failedCount: 0 };
   const isMorning = reminderType === 'today';
   const typeLabel = isMorning ? 'תזכורת בוקר (יום התור)' : 'תזכורת ערב (יום לפני התור)';
   const currentIsraelTime = new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
@@ -1050,11 +1050,13 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 
   // 1. Check if reminders of this type are enabled
   if (isMorning && activeServerSettings?.notifyCustomerToday === false) {
+    schedulerLastReminderAttempt.error = 'תזכורת הבוקר כבויה בהגדרות';
     console.log('[CRON] ⏸️ דילוג: תזכורת בוקר יום התור (notifyCustomerToday) מבוטלת בהגדרות');
     return { success: true, count: 0, sentCount: 0, failedCount: 0, skipped: true };
   }
 
   if (!isMorning && activeServerSettings?.notifyCustomer1DayBefore !== true) {
+    schedulerLastReminderAttempt.error = 'תזכורת ערב יום לפני כבויה בהגדרות';
     console.log('[CRON] ⏸️ דילוג: תזכורת ערב יום לפני (notifyCustomer1DayBefore) כבויה (מוגדרת תזכורת בוקר יום התור בלבד ב-08:00)');
     return { success: true, count: 0, sentCount: 0, failedCount: 0, skipped: true };
   }
@@ -1113,6 +1115,7 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
     console.log(`[CRON] נמצאו ${appointments.length} תורים מתאימים לתאריך ${targetDate}`);
 
     if (appointments.length === 0) {
+      schedulerLastReminderAttempt.error = `לא נמצאו תורים מאושרים לתאריך ${targetDate}`;
       console.log(`[CRON] אין תורים לשליחה לתאריך ${targetDate}. התהליך הסתיים.`);
       console.log(`======================================================\n`);
       return { success: true, count: 0, sentCount: 0, failedCount: 0 };
@@ -1194,6 +1197,7 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
       } else {
         console.error(`[CRON] ❌ שגיאה בשליחה ל-${firstAppt.customer_name} (${firstAppt.customer_phone}):`, res.error);
         failedCount += appts.length;
+        schedulerLastReminderAttempt.error = res.error || 'שליחת ה-SMS נכשלה';
         // Mark only locks acquired by this attempt as failed. Firestore rules
         // intentionally disallow deletes, but allow updates; failed claims can
         // be retried by tryClaimReminder on the next scheduler pass.
@@ -1216,6 +1220,7 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 
     return { success: true, count: appointments.length, sentCount: successCount, failedCount };
   } catch (error: any) {
+    if (schedulerLastReminderAttempt) schedulerLastReminderAttempt.error = error?.message || String(error);
     console.error(`[CRON] ❌ שגיאה כללית בהרצת תזכורות לתאריך ${targetDate}:`, error);
     return { success: false, error: error?.message };
   }
@@ -1228,7 +1233,7 @@ let morningCronTask: any = null;
 let eveningCronTask: any = null;
 let schedulerLastCheckAt: string | null = null;
 let schedulerLastCheckError: string | null = null;
-let schedulerLastReminderAttempt: { type: 'today' | '1day'; targetDate: string; attemptedAt: string; sentCount?: number; failedCount?: number } | null = null;
+let schedulerLastReminderAttempt: { type: 'today' | '1day'; targetDate: string; attemptedAt: string; sentCount?: number; failedCount?: number; error?: string } | null = null;
 
 function scheduleOrUpdateCronJobs() {
   const morningTime = activeServerSettings?.morningReminderTime || '08:00';

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Calendar,
   CalendarPlus,
@@ -68,6 +68,7 @@ import {
   getSentRemindersLog,
   dispatchAutomatedWhatsAppApi,
   getStoredReminderSettings,
+  getIsraelTimeParts,
 } from '../utils/whatsappReminder';
 
 interface AdminDashboardProps {
@@ -106,10 +107,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   scheduleSettings,
   onUpdateScheduleSettings,
 }) => {
-  const todayIso = toISODateString(new Date());
-  const tomorrowDate = new Date();
-  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setClockTick((tick) => tick + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
+  const israelNow = getIsraelTimeParts();
+  const todayIso = israelNow.dateIso;
+  const [todayYear, todayMonth, todayDay] = todayIso.split('-').map(Number);
+  const tomorrowDate = new Date(todayYear, todayMonth - 1, todayDay + 1, 12);
   const tomorrowIso = toISODateString(tomorrowDate);
+  const isAppointmentPastByIsraelTime = (appt: Appointment) =>
+    appt.appointment_date < todayIso ||
+    (appt.appointment_date === todayIso && timeToMinutes(appt.start_time) <= israelNow.totalMinutes);
 
   const [selectedDate, setSelectedDate] = useState<string>(todayIso);
   const [adminTab, setAdminTab] = useState<'calendar' | 'customers'>('calendar');
@@ -441,16 +451,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
 
       if (filter === 'blocked') return isBlock && app.status === 'confirmed';
-      if (filter === 'today') return app.appointment_date === todayIso;
+      if (filter === 'today') return app.appointment_date === todayIso && !isAppointmentPastByIsraelTime(app);
       if (filter === 'upcoming') {
         return (
-          app.appointment_date >= todayIso &&
+          !isAppointmentPastByIsraelTime(app) &&
           app.status === 'confirmed' &&
           !isBlock
         );
       }
       if (filter === 'past') {
-        return app.appointment_date < todayIso || app.status === 'cancelled';
+        return isAppointmentPastByIsraelTime(app) || app.status === 'cancelled';
       }
       return true;
     })
@@ -462,8 +472,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       if (filter === 'all' && sortOrder === 'asc') {
         // When showing ALL with ascending sort: prioritize active upcoming/today appointments (>= today) from closest to farthest
-        const isUpcomingA = dateA >= todayIso;
-        const isUpcomingB = dateB >= todayIso;
+        const isUpcomingA = !isAppointmentPastByIsraelTime(a);
+        const isUpcomingB = !isAppointmentPastByIsraelTime(b);
         if (isUpcomingA && !isUpcomingB) return -1;
         if (!isUpcomingA && isUpcomingB) return 1;
       }
@@ -617,7 +627,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               adminTab === 'calendar' ? 'bg-purple-600 text-white' : 'bg-slate-300 text-slate-700'
             }`}
           >
-            {appointments.filter((a) => a.appointment_date >= todayIso && a.status === 'confirmed').length}
+            {appointments.filter((a) => !isAppointmentPastByIsraelTime(a) && a.status === 'confirmed').length}
           </span>
         </button>
 
@@ -1430,7 +1440,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               >
                 <span>עתידיים (מהקרוב לרחוק)</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'upcoming' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>
-                  {appointments.filter((a) => a.appointment_date >= todayIso && a.status === 'confirmed' && !isBlockedAppointment(a)).length}
+                  {appointments.filter((a) => !isAppointmentPastByIsraelTime(a) && a.status === 'confirmed' && !isBlockedAppointment(a)).length}
                 </span>
               </button>
 
@@ -1445,7 +1455,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               >
                 <span>היום</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'today' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>
-                  {appointments.filter((a) => a.appointment_date === todayIso).length}
+                  {appointments.filter((a) => a.appointment_date === todayIso && !isAppointmentPastByIsraelTime(a)).length}
                 </span>
               </button>
 
@@ -1492,7 +1502,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <History className="w-3 h-3" />
                 <span>עבר / מבוטלים</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'past' ? 'bg-slate-800 text-slate-300' : 'bg-slate-200 text-slate-700'}`}>
-                  {appointments.filter((a) => a.appointment_date < todayIso || a.status === 'cancelled').length}
+                  {appointments.filter((a) => isAppointmentPastByIsraelTime(a) || a.status === 'cancelled').length}
                 </span>
               </button>
             </div>
@@ -1579,9 +1589,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 ? { text: 'חסום ביומן', className: 'bg-purple-100 text-purple-900 border border-purple-300 font-bold' }
                 : STATUS_LABELS[appt.status] || STATUS_LABELS.confirmed;
               const isCancelled = appt.status === 'cancelled';
-              const isToday = appt.appointment_date === todayIso && !isCancelled;
+              const isToday = appt.appointment_date === todayIso && !isCancelled && !isAppointmentPastByIsraelTime(appt);
               const isTomorrow = appt.appointment_date === tomorrowIso && !isCancelled;
-              const isPast = appt.appointment_date < todayIso && !isCancelled;
+              const isPast = isAppointmentPastByIsraelTime(appt) && !isCancelled;
               const cleanPhone = appt.customer_phone.replace(/\D/g, '');
 
               return (

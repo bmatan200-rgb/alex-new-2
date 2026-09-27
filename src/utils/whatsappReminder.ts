@@ -101,14 +101,18 @@ export async function saveReminderSettings(settings: WhatsAppReminderSettings): 
   try {
     localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
     const token = auth.currentUser ? await auth.currentUser.getIdToken() : '';
-    fetch('/api/whatsapp/sync-settings', {
+    const response = await fetch('/api/whatsapp/sync-settings', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {})
       },
       body: JSON.stringify({ settings }),
-    }).catch(() => {});
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.error || `Settings sync failed (${response.status})`);
+    }
   } catch (err) {
     console.error('Failed to save reminder settings:', err);
   }

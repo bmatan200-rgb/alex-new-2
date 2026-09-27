@@ -1142,6 +1142,27 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
 
                     {diagnostics ? (
                       <div className="space-y-2.5 text-[11px]">
+                        <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-xl space-y-1.5">
+                          <div className="font-bold text-indigo-950">בדיקת תזמון אוטומטי</div>
+                          <div className="text-indigo-900">
+                            {diagnostics.scheduler?.autoSendEnabled ? 'שליחה אוטומטית מופעלת' : 'שליחה אוטומטית כבויה'}
+                            {' · '}היום {diagnostics.scheduler?.morningReminderTime || '08:00'}
+                            {' · '}יום לפני {diagnostics.scheduler?.eveningReminderTime || '20:00'}
+                          </div>
+                          <div className="text-indigo-900">
+                            תורים בזיכרון השרת: {diagnostics.scheduler?.appointmentCacheCount ?? 'לא ידוע'}
+                            {' · '}בדיקת רקע אחרונה: {diagnostics.scheduler?.lastCheckAt ? new Date(diagnostics.scheduler.lastCheckAt).toLocaleString('he-IL') : 'טרם בוצעה'}
+                          </div>
+                          <div className="text-indigo-900">
+                            ניסיון שליחה אחרון: {diagnostics.scheduler?.lastReminderAttempt ? `${diagnostics.scheduler.lastReminderAttempt.type === 'today' ? 'תורי היום' : 'תורי מחר'} · ${new Date(diagnostics.scheduler.lastReminderAttempt.attemptedAt).toLocaleString('he-IL')} · נשלחו ${diagnostics.scheduler.lastReminderAttempt.sentCount ?? 0}, נכשלו ${diagnostics.scheduler.lastReminderAttempt.failedCount ?? 0}` : 'טרם בוצע'}
+                          </div>
+                          {diagnostics.scheduler?.lastCheckError && (
+                            <div className="text-red-700 font-semibold">שגיאת תזמון: {diagnostics.scheduler.lastCheckError}</div>
+                          )}
+                          {(diagnostics.scheduler?.processUptimeSeconds ?? 0) < 180 && (
+                            <div className="text-amber-800">השרת הופעל לאחרונה; תזמון פנימי דורש שהשרת יישאר פעיל.</div>
+                          )}
+                        </div>
                         <div className="grid grid-cols-2 gap-2">
                           <div className="p-2 bg-slate-50 rounded-lg border border-slate-200">
                             <span className="text-slate-500 block">סטטוס הגדרות:</span>

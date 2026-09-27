@@ -10,7 +10,7 @@ import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // אתחול Firebase Admin לאימות טוקני התחברות של מנהלות.
 let adminSdkReady = false;
@@ -1038,6 +1038,7 @@ function formatMessageTemplate(template: string, appt: any): string {
  * Unified logic to process and send automated reminders for a target date
  */
 async function sendRemindersForDate(targetDate: string, reminderType: 'today' | '1day') {
+  schedulerLastReminderAttempt = { type: reminderType, targetDate, attemptedAt: new Date().toISOString() };
   const isMorning = reminderType === 'today';
   const typeLabel = isMorning ? 'תזכורת בוקר (יום התור)' : 'תזכורת ערב (יום לפני התור)';
   const currentIsraelTime = new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
@@ -1182,6 +1183,7 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 
     console.log(`------------------------------------------------------`);
     console.log(`[CRON - ${isMorning ? '08:00' : '20:00'}] סיכום ריצה: ${successCount}/${appointments.length} תזכורות נשלחו בהצלחה | נכשלו: ${failedCount}`);
+    schedulerLastReminderAttempt = { ...schedulerLastReminderAttempt!, sentCount: successCount, failedCount };
     console.log(`======================================================\n`);
 
     return { success: true, count: appointments.length, sentCount: successCount, failedCount };
@@ -1196,6 +1198,9 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 // ----------------------------------------------------------------------
 let morningCronTask: any = null;
 let eveningCronTask: any = null;
+let schedulerLastCheckAt: string | null = null;
+let schedulerLastCheckError: string | null = null;
+let schedulerLastReminderAttempt: { type: 'today' | '1day'; targetDate: string; attemptedAt: string; sentCount?: number; failedCount?: number } | null = null;
 
 function scheduleOrUpdateCronJobs() {
   const morningTime = activeServerSettings?.morningReminderTime || '08:00';
@@ -1280,6 +1285,8 @@ async function initCronSchedulers() {
    */
   const runScheduledCheck = async () => {
     try {
+      schedulerLastCheckAt = new Date().toISOString();
+      schedulerLastCheckError = null;
       if (activeServerSettings?.enabled === false || activeServerSettings?.autoSendEnabled === false) {
         return;
       }
@@ -1309,6 +1316,7 @@ async function initCronSchedulers() {
         }
       }
     } catch (err) {
+      schedulerLastCheckError = err instanceof Error ? err.message : String(err);
       console.warn('[Catch-up Scheduler Warning]:', err);
     }
   };
@@ -1335,15 +1343,18 @@ initCronSchedulers();
  * גרועה יותר מתזכורת שתישלח בהרצה הבאה.
  */
 async function tryClaimReminder(key: string): Promise<boolean> {
-  if (!adminFirestore) {
+  if (!db) {
     console.error('[Reminder Lock] ❌ אין חיבור ל-Firestore — לא ניתן לשלוח בבטחה');
     return false;
   }
 
-  const lockRef = adminFirestore.collection('reminder_locks').doc(key);
+  // Use the existing public Firestore rules for reminder_locks. The Admin SDK
+  // requires extra IAM permissions on hosted runtimes and could silently block
+  // all automated sends even though the app's configured Firestore access works.
+  const lockRef = doc(db, 'reminder_locks', key);
 
   try {
-    return await adminFirestore.runTransaction(async (transaction) => {
+    return await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(lockRef);
       if (snap.exists()) return false;
       transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
@@ -1691,6 +1702,18 @@ app.get('/api/whatsapp/diagnose', requireAdmin, async (req: Request, res: Respon
   const diagnostics: any = {
     timestamp: new Date().toISOString(),
     israelTime: getIsraelTime(),
+    scheduler: {
+      processUptimeSeconds: Math.floor(process.uptime()),
+      autoSendEnabled: activeServerSettings?.enabled !== false && activeServerSettings?.autoSendEnabled !== false,
+      morningReminderTime: activeServerSettings?.morningReminderTime || '08:00',
+      eveningReminderTime: activeServerSettings?.eveningReminderTime || '20:00',
+      notifyCustomerToday: activeServerSettings?.notifyCustomerToday !== false,
+      notifyCustomer1DayBefore: activeServerSettings?.notifyCustomer1DayBefore === true,
+      lastCheckAt: schedulerLastCheckAt,
+      lastCheckError: schedulerLastCheckError,
+      lastReminderAttempt: schedulerLastReminderAttempt,
+      appointmentCacheCount: serverAppointments.length,
+    },
     provider: activeServerSettings?.provider || (apiKey ? 'telnyx' : 'webhook'),
     telnyx: {
       hasCredentials: Boolean(apiKey && (fromNumber || rawProfileId)),

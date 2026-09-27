@@ -1279,21 +1279,40 @@ function scheduleOrUpdateCronJobs() {
 }
 
 async function loadPersistedReminderSettings() {
+  // Private provider credentials/settings are loaded through Admin when
+  // available; schedule-only values live in the existing client-writable
+  // schedule_settings document and do not require server IAM permissions.
   try {
-    if (!adminFirestore) throw new Error('Firebase Admin Firestore is unavailable');
-    const snap = await adminFirestore.collection('settings').doc('reminders').get();
-    if (snap.exists()) {
-      const persisted = snap.data();
-      activeServerSettings = { ...activeServerSettings, ...persisted };
-      console.log('[Server Settings] ✅ הגדרות תזכורות נטענו מ-Firestore:', {
-        morningReminderTime: activeServerSettings.morningReminderTime,
-        eveningReminderTime: activeServerSettings.eveningReminderTime,
-        notifyCustomerToday: activeServerSettings.notifyCustomerToday,
-        notifyCustomer1DayBefore: activeServerSettings.notifyCustomer1DayBefore,
-      });
+    if (adminFirestore) {
+      const snap = await adminFirestore.collection('settings').doc('reminders').get();
+      if (snap.exists) activeServerSettings = { ...activeServerSettings, ...snap.data() };
     }
   } catch (err) {
-    console.warn('[Server Settings] שגיאה בטעינת הגדרות מ-Firestore:', err);
+    console.warn('[Server Settings] הגדרות ספק פרטיות לא נטענו דרך Firebase Admin:', err);
+  }
+
+  try {
+    const scheduleSnap = await getDoc(doc(db, 'settings', 'schedule_settings'));
+    if (scheduleSnap.exists()) {
+      const schedule = scheduleSnap.data();
+      activeServerSettings = {
+        ...activeServerSettings,
+        morningReminderTime: schedule.morningReminderTime || activeServerSettings.morningReminderTime,
+        eveningReminderTime: schedule.eveningReminderTime || activeServerSettings.eveningReminderTime,
+        notifyCustomerToday: schedule.notifyCustomerToday ?? activeServerSettings.notifyCustomerToday,
+        notifyCustomer1DayBefore: schedule.notifyCustomer1DayBefore ?? activeServerSettings.notifyCustomer1DayBefore,
+        autoSendEnabled: schedule.autoSendEnabled ?? activeServerSettings.autoSendEnabled,
+        enabled: schedule.enabled ?? activeServerSettings.enabled,
+      };
+    }
+    console.log('[Server Settings] הגדרות תזמון פעילות:', {
+      morningReminderTime: activeServerSettings.morningReminderTime,
+      eveningReminderTime: activeServerSettings.eveningReminderTime,
+      notifyCustomerToday: activeServerSettings.notifyCustomerToday,
+      notifyCustomer1DayBefore: activeServerSettings.notifyCustomer1DayBefore,
+    });
+  } catch (err) {
+    console.warn('[Server Settings] הגדרות תזמון לא נטענו מ-Firestore:', err);
   }
 }
 
@@ -1483,20 +1502,41 @@ app.post('/api/whatsapp/sync-settings', requireAdmin, async (req: Request, res: 
         }
       }
 
-      // Persist first. Only report success after the admin UI's times are safely
-      // stored so startup and the live scheduler use the same values.
+      // Save the schedule-only subset through the existing Firestore rules for
+      // settings/schedule_settings. This avoids requiring Cloud IAM/Admin
+      // credentials just to change the hours in the admin interface.
       try {
-        if (!adminFirestore) throw new Error('Firebase Admin Firestore is unavailable');
-        await adminFirestore.collection('settings').doc('reminders').set(sanitizedSettings, { merge: true });
-        console.log('[Server Settings] הגדרות תזכורות נשמרו ב-Firestore בהצלחה');
+        const scheduleFields: Record<string, any> = { updatedAt: new Date().toISOString() };
+        for (const field of [
+          'morningReminderTime',
+          'eveningReminderTime',
+          'notifyCustomerToday',
+          'notifyCustomer1DayBefore',
+          'autoSendEnabled',
+          'enabled',
+        ]) {
+          if (sanitizedSettings[field] !== undefined) scheduleFields[field] = sanitizedSettings[field];
+        }
+        await setDoc(doc(db, 'settings', 'schedule_settings'), scheduleFields, { merge: true });
       } catch (fsErr) {
-        console.warn('[Server Settings] אזהרה: שמירה ב-Firestore נכשלה:', fsErr);
-        return res.status(503).json({ success: false, error: 'לא הצלחתי לשמור את הגדרות התזמון ב-Firestore; השעה לא עודכנה.' });
+        console.error('[Server Settings] שמירת השעות במסמך schedule_settings נכשלה:', fsErr);
+        return res.status(503).json({ success: false, error: 'שמירת השעות נכשלה ב-Firestore.' });
       }
 
       activeServerSettings = { ...activeServerSettings, ...sanitizedSettings };
       // Reschedule immediately using the exact values saved by the admin UI.
       scheduleOrUpdateCronJobs();
+
+      // Optional persistence for private credentials/templates. Schedule times
+      // are already saved in the rules-authorized schedule_settings document.
+      let privateSettingsPersisted = false;
+      try {
+        if (!adminFirestore) throw new Error('Firebase Admin Firestore is unavailable');
+        await adminFirestore.collection('settings').doc('reminders').set(sanitizedSettings, { merge: true });
+        privateSettingsPersisted = true;
+      } catch (fsErr) {
+        console.warn('[Server Settings] הגדרות פרטיות לא נשמרו דרך Admin Firestore:', fsErr);
+      }
 
       console.log('[Server Settings] Messaging settings synced & rescheduled:', {
         morningReminderTime: activeServerSettings.morningReminderTime,
@@ -1505,7 +1545,7 @@ app.post('/api/whatsapp/sync-settings', requireAdmin, async (req: Request, res: 
         telnyxFrom: activeServerSettings.telnyxFrom,
         hasGreenApi: Boolean(activeServerSettings.instanceId),
       });
-      return res.json({ success: true, settings: activeServerSettings });
+      return res.json({ success: true, schedulePersisted: true, privateSettingsPersisted, settings: activeServerSettings });
     }
     return res.status(400).json({ success: false, error: 'Expected settings object' });
   } catch (err: any) {

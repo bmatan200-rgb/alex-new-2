@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  MessageCircle,
+  MessageSquare,
   Bell,
   CheckCircle2,
   Send,
@@ -40,8 +40,6 @@ import {
   buildCustomerReminderText,
   buildAlex1DayReminderText,
   buildAlexBookingText,
-  createWhatsAppDirectLink,
-  openWhatsAppDirect,
   playNotificationChime,
   triggerBrowserPushNotification,
   DEFAULT_REMINDER_SETTINGS,
@@ -112,6 +110,46 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
     }
   };
 
+  const fetchServerSettings = async () => {
+    try {
+      let token = '';
+      try {
+        if (auth.currentUser) token = await auth.currentUser.getIdToken();
+      } catch {}
+      const res = await fetch('/api/whatsapp/settings', {
+        headers: {
+          'x-admin-request': 'true',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.settings) {
+          setSettings((prev) => {
+            const merged = {
+              ...prev,
+              ...data.settings,
+              morningReminderTime: data.settings.morningReminderTime || prev.morningReminderTime || '08:00',
+              eveningReminderTime: data.settings.eveningReminderTime || prev.eveningReminderTime || '20:00',
+            };
+            try {
+              localStorage.setItem('alex_whatsapp_reminder_settings_v1', JSON.stringify(merged));
+            } catch {}
+            return merged;
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load server settings:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchServerSettings();
+    }
+  }, [isOpen]);
+
   useEffect(() => {
     if (isOpen && activeTab === 'automation') {
       fetchDiagnostics();
@@ -176,30 +214,6 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
       setSettings((prev) => ({ ...prev, browserNotificationsEnabled: true }));
       saveReminderSettings({ ...settings, browserNotificationsEnabled: true });
     }
-  };
-
-  const handleTestDirectWhatsApp = (target: 'today' | 'customer_1day' | 'booking' | '2hours' | 'alex') => {
-    let phone = demoAppt.customer_phone;
-    let text = customer1DayPreviewText;
-
-    if (target === 'customer_1day') {
-      phone = demoAppt.customer_phone;
-      text = customer1DayPreviewText;
-    } else if (target === 'today') {
-      phone = demoAppt.customer_phone;
-      text = customerTodayPreviewText;
-    } else if (target === 'booking') {
-      phone = demoAppt.customer_phone;
-      text = customerBookingPreviewText;
-    } else if (target === '2hours') {
-      phone = demoAppt.customer_phone;
-      text = customer2HoursPreviewText;
-    } else if (target === 'alex') {
-      phone = SALON_INFO.whatsappNumber;
-      text = alexPreviewText;
-    }
-
-    openWhatsAppDirect(phone, text);
   };
 
   const insertVariableTag = (tag: string, field: keyof WhatsAppReminderSettings) => {
@@ -343,18 +357,18 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
         {/* Header */}
         <div className="p-5 sm:p-6 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-purple-50 via-white to-purple-50/50">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-emerald-500 text-white flex items-center justify-center shadow-md shadow-emerald-500/20">
-              <MessageCircle className="w-6 h-6 fill-white/20" />
+            <div className="w-10 h-10 rounded-2xl bg-purple-600 text-white flex items-center justify-center shadow-md shadow-purple-600/20">
+              <Smartphone className="w-6 h-6" />
             </div>
             <div>
               <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                <span>ניהול תזכורות SMS ו-WhatsApp</span>
+                <span>ניהול תזכורות SMS (הודעות ללקוחות)</span>
                 <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold border border-emerald-300">
                   קרון אוטומטי פעיל (08:00 ו-20:00)
                 </span>
               </h2>
               <p className="text-xs text-slate-500">
-                עריכת נוסח ההודעות, שליחה מיידית בלחיצת כפתור והגדרות ספק SMS
+                עריכת נוסח הודעות ה-SMS, שליחה מיידית והגדרות ספק SMS (Telnyx)
               </p>
             </div>
           </div>
@@ -373,8 +387,8 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
           <div className="flex items-center gap-2.5">
             <Clock className="w-4 h-4 text-indigo-700 shrink-0" />
             <div className="text-indigo-950 font-medium">
-              <span className="font-bold">שעות שליחה אוטומטיות: </span>
-              <span>☀️ 08:00 בבוקר (לתורי היום) | 🌙 20:00 בערב (לתורי מחר) לפי שעון ישראל.</span>
+              <span className="font-bold">שעות שליחת SMS אוטומטיות (מותאמות אישית): </span>
+              <span>☀️ {settings.morningReminderTime || '08:00'} בבוקר (לתורי היום) | 🌙 {settings.eveningReminderTime || '20:00'} בערב (לתורי מחר) לפי שעון ישראל.</span>
             </div>
           </div>
         </div>
@@ -390,8 +404,8 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
-            <MessageCircle className="w-4 h-4" />
-            <span>1. עריכת נוסח ההודעות</span>
+            <MessageSquare className="w-4 h-4 text-purple-600" />
+            <span>1. נוסח הודעות SMS</span>
           </button>
 
           <button
@@ -404,7 +418,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
             }`}
           >
             <Zap className="w-4 h-4 text-amber-500" />
-            <span>2. שליחה מיידית ובדיקות ⚡</span>
+            <span>2. שליחה מיידית ובדיקות SMS ⚡</span>
           </button>
 
           <button
@@ -417,7 +431,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
             }`}
           >
             <Settings className="w-4 h-4" />
-            <span>3. הגדרות Telnyx / API</span>
+            <span>3. הגדרות ספק SMS (Telnyx)</span>
           </button>
         </div>
 
@@ -438,7 +452,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                   }`}
                 >
                   <Sun className="w-3.5 h-3.5 text-amber-500" />
-                  <span>1. בוקר התור (08:00 בדיוק) ☀️</span>
+                  <span>1. בוקר התור ({settings.morningReminderTime || '08:00'}) ☀️</span>
                 </button>
 
                 <button
@@ -451,7 +465,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                   }`}
                 >
                   <Moon className="w-3.5 h-3.5" />
-                  <span>2. ערב יום לפני (20:00)</span>
+                  <span>2. ערב יום לפני ({settings.eveningReminderTime || '20:00'}) 🌙</span>
                 </button>
 
                 <button
@@ -867,10 +881,10 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
               <div className="p-4 bg-amber-50/80 border border-amber-200 rounded-2xl space-y-2">
                 <span className="font-bold text-amber-950 text-sm flex items-center gap-1.5">
                   <Zap className="w-4 h-4 text-amber-600" />
-                  <span>כפתורי שליחה מיידית של תזכורות (SMS / WhatsApp)</span>
+                  <span>כפתורי שליחה מיידית של תזכורות SMS (Telnyx)</span>
                 </span>
                 <p className="text-amber-900 leading-relaxed">
-                  השתמשי בכפתורים אלו לשליחה ישירה ומיידית בכל עת, ללא צורך להמתין לשעות הקרון הקבועות.
+                  השתמשי בכפתורים אלו לשליחת תזכורות SMS ישירה ומיידית בכל עת, ללא צורך להמתין לשעות הקרון הקבועות.
                 </p>
               </div>
 
@@ -1073,17 +1087,14 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
 
               {/* Provider Selection */}
               <div>
-                <label className="block font-bold text-slate-800 mb-1.5">בחירת ספק השליחה:</label>
+                <label className="block font-bold text-slate-800 mb-1.5">ספק שליחת הודעות SMS:</label>
                 <select
                   value={settings.provider === 'twilio' ? 'telnyx' : (settings.provider || 'telnyx')}
                   onChange={(e) => setSettings({ ...settings, provider: e.target.value as any })}
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 focus:bg-white focus:border-purple-600 outline-none cursor-pointer"
                 >
-                  <option value="telnyx">⭐ Telnyx (שליחת הודעות SMS מהירה ומאובטחת)</option>
-                  <option value="greenapi">Green-API (חיבור WhatsApp Web ישיר)</option>
-                  <option value="ultramsg">UltraMsg (חיבור WhatsApp API)</option>
-                  <option value="webhook">Webhook (Make / Zapier / n8n)</option>
-                  <option value="direct">שליחה ידנית בלבד (פתיחת וואטסאפ במכשיר)</option>
+                  <option value="telnyx">⭐ Telnyx (שליחת הודעות SMS אוטומטיות מהירות ומאובטחות - פעיל)</option>
+                  <option value="webhook">Webhook חיצוני (Make / Zapier / n8n)</option>
                 </select>
               </div>
 

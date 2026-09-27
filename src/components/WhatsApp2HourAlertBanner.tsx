@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   Bell,
-  MessageCircle,
   Clock,
   Send,
   Sparkles,
@@ -22,8 +21,6 @@ import {
   buildCustomerTodayReminderText,
   buildCustomer1DayReminderText,
   buildAlex1DayReminderText,
-  createWhatsAppDirectLink,
-  openWhatsAppDirect,
   isProviderConfigured,
   getStoredReminderSettings,
   markReminderSent,
@@ -135,26 +132,6 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
     }
   };
 
-  // Direct WhatsApp Web/App Trigger
-  const handleSendDirectWhatsApp = (
-    appt: Appointment,
-    type: 'today' | '1day'
-  ) => {
-    const phone = appt.customer_phone;
-    const text = type === 'today'
-      ? buildCustomerTodayReminderText(appt, settings.customerTodayTemplate)
-      : buildCustomer1DayReminderText(appt, settings.customer1DayTemplate);
-
-    openWhatsAppDirect(phone, text);
-    markReminderSent(appt.id, 'customer', type);
-    setSentLog(getSentRemindersLog());
-    setStatusNotification({
-      type: 'success',
-      message: `נפתח וואטסאפ עם הנוסח המעודכן ל-${appt.customer_name}! 💬`,
-    });
-    setTimeout(() => setStatusNotification(null), 3500);
-  };
-
   // Batch Instant Automated Send (All appointments for today or tomorrow)
   const handleBatchAutomatedSend = async (targetGroup: 'today' | 'tomorrow') => {
     setBatchSending(targetGroup);
@@ -201,7 +178,7 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
     const dayName = targetGroup === 'today' ? 'היום' : 'מחר';
     setStatusNotification({
       type: 'success',
-      message: `סבב שליחה אוטומטי הושלם בהצלחה! נשלחו תזכורות לכל ${targetList.length} לקוחות ${dayName}. ⚡🎉`,
+      message: `סבב שליחת תזכורות SMS הושלם בהצלחה! נשלחו הודעות לכל ${targetList.length} לקוחות ${dayName}. ⚡🎉`,
     });
     setTimeout(() => setStatusNotification(null), 5000);
   };
@@ -269,7 +246,7 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
                 ) : (
                   <>
                     <Zap className="w-3.5 h-3.5 fill-white" />
-                    <span>שלח אוטומטית עכשיו לכל תורי היום ({todayAppts.length})</span>
+                    <span>שלח תזכורות SMS עכשיו לכל תורי היום ({todayAppts.length})</span>
                   </>
                 )}
               </button>
@@ -384,7 +361,7 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
                 ) : (
                   <>
                     <Zap className="w-3.5 h-3.5 fill-white" />
-                    <span>שלח אוטומטית עכשיו לכל תורי מחר ({tomorrowAppts.length})</span>
+                    <span>שלח תזכורות SMS עכשיו לכל תורי מחר ({tomorrowAppts.length})</span>
                   </>
                 )}
               </button>

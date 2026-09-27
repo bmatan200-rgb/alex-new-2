@@ -4,7 +4,7 @@ import {
   CalendarPlus,
   Clock,
   Phone,
-  MessageCircle,
+  MessageSquare,
   PlusCircle,
   Trash2,
   AlertCircle,
@@ -62,8 +62,6 @@ import {
   buildCustomerReminderText,
   buildAlex1DayReminderText,
   buildAlexReminderText,
-  createWhatsAppDirectLink,
-  openWhatsAppDirect,
   formatIsraeliPhoneToE164,
   isProviderConfigured,
   markReminderSent,
@@ -150,7 +148,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [sentLog, setSentLog] = useState<Record<string, { customerSentAt?: string; alexSentAt?: string }>>(() =>
     getSentRemindersLog()
   );
-  const reminderSettings = getStoredReminderSettings();
+  const [reminderSettings, setReminderSettings] = useState(() => getStoredReminderSettings());
 
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMessage({ text, type });
@@ -209,23 +207,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     } finally {
       setSendingApptId(null);
     }
-  };
-
-  const handleSendReminderDirect = (appt: Appointment, target: 'customer' | 'alex') => {
-    const settings = getStoredReminderSettings();
-    const phone = target === 'customer' ? appt.customer_phone : SALON_INFO.whatsappNumber;
-    let text = '';
-    if (target === 'customer') {
-      text = appt.appointment_date === todayIso
-        ? buildCustomerTodayReminderText(appt, settings.customerTodayTemplate)
-        : buildCustomer1DayReminderText(appt, settings.customer1DayTemplate);
-    } else {
-      text = buildAlex1DayReminderText(appt, settings.alexTemplate);
-    }
-    openWhatsAppDirect(phone, text);
-    markReminderSent(appt.id, target, appt.appointment_date === todayIso ? 'today' : '1day');
-    setSentLog(getSentRemindersLog());
-    showToast(`נפתח וואטסאפ עם הנוסח המעודכן ל-${target === 'customer' ? appt.customer_name : 'אלכס'}! 💬`, 'success');
   };
 
   // Block form state
@@ -543,7 +524,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <span className="font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-md border border-purple-200">
               {formatDurationMinutes(currentService.duration_minutes || 110)} ({formatILS(currentService.price || 150)})
             </span>
-            <span>• מניעת כפילויות ותזכורות WhatsApp</span>
+            <span>• מניעת כפילויות ותזכורות SMS (Telnyx)</span>
           </p>
         </div>
 
@@ -583,18 +564,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <span>משך טיפול: {formatDurationMinutes(currentService.duration_minutes || 110)}</span>
           </button>
 
-          {/* SMS / WhatsApp Alert Center Button */}
+          {/* SMS Alert Center Button */}
           <button
             type="button"
             onClick={() => {
               setWhatsAppModalTab('templates');
               setIsWhatsAppModalOpen(true);
             }}
-            className="px-3.5 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
-            title="עריכת נוסח תזכורות ושליחה מיידית"
+            className="px-3.5 py-2.5 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
+            title="עריכת נוסח תזכורות SMS והגדרות שליחה"
           >
-            <MessageCircle className="w-4 h-4 text-emerald-600" />
-            <span>הגדרות נוסח ושליחה אוטומטית</span>
+            <Smartphone className="w-4 h-4 text-purple-600" />
+            <span>הגדרות תזכורות SMS</span>
           </button>
 
           <button
@@ -685,25 +666,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       />
 
       {/* Quick SMS Scheduling Summary */}
-      <div className="bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
+      <div className="bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
         <div className="flex items-start sm:items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-emerald-100 flex items-center justify-center flex-shrink-0">
-            <MessageCircle className="w-5 h-5 text-emerald-700" />
+          <div className="w-10 h-10 rounded-2xl bg-purple-100 flex items-center justify-center flex-shrink-0">
+            <Smartphone className="w-5 h-5 text-purple-700" />
           </div>
           <div>
             <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-              מערכת תזכורות אוטומטית (node-cron)
-              <span className="text-[10px] bg-emerald-500 text-white px-2 py-0.5 rounded-full font-bold shadow-xs">פעילה ברקע ✓</span>
+              מערכת תזכורות SMS אוטומטית (Telnyx)
+              <span className="text-[10px] bg-purple-600 text-white px-2 py-0.5 rounded-full font-bold shadow-xs">פעילה ברקע ✓</span>
             </h3>
             <div className="text-xs text-slate-600 mt-1 flex flex-wrap items-center gap-1.5">
-              <span>תזמון אוטומטי קבוע (שעון ישראל):</span>
-              <span className="bg-white border border-emerald-200 px-2 py-0.5 rounded-md font-bold text-emerald-800 flex items-center gap-1">
+              <span>שעות שליחת SMS אוטומטיות (שעון ישראל):</span>
+              <span className="bg-white border border-purple-200 px-2 py-0.5 rounded-md font-bold text-purple-800 flex items-center gap-1">
                 <Moon className="w-3 h-3" />
-                ערב (20:00) לתורי מחר
+                ערב ({reminderSettings.eveningReminderTime || '20:00'}) לתורי מחר
               </span>
-              <span className="bg-white border border-emerald-200 px-2 py-0.5 rounded-md font-bold text-emerald-800 flex items-center gap-1">
+              <span className="bg-white border border-purple-200 px-2 py-0.5 rounded-md font-bold text-purple-800 flex items-center gap-1">
                 <Sun className="w-3 h-3" />
-                בוקר (08:00) לתורי היום
+                בוקר ({reminderSettings.morningReminderTime || '08:00'}) לתורי היום
               </span>
             </div>
           </div>
@@ -714,17 +695,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             setWhatsAppModalTab('templates');
             setIsWhatsAppModalOpen(true);
           }}
-          className="px-4 py-2 bg-white hover:bg-emerald-50 border border-emerald-300 text-emerald-700 font-bold text-xs rounded-xl transition shadow-xs flex-shrink-0 flex items-center justify-center gap-2"
+          className="px-4 py-2 bg-white hover:bg-purple-50 border border-purple-300 text-purple-700 font-bold text-xs rounded-xl transition shadow-xs flex-shrink-0 flex items-center justify-center gap-2 cursor-pointer"
         >
-          <MessageCircle className="w-4 h-4" />
-          <span>עריכת נוסח ושליחה מיידית</span>
+          <Smartphone className="w-4 h-4 text-purple-600" />
+          <span>עריכת נוסח תזכורות SMS</span>
         </button>
       </div>
 
       {/* WhatsApp Modal */}
       <WhatsAppReminderModal
         isOpen={isWhatsAppModalOpen}
-        onClose={() => setIsWhatsAppModalOpen(false)}
+        onClose={() => {
+          setIsWhatsAppModalOpen(false);
+          setReminderSettings(getStoredReminderSettings());
+        }}
         initialTab={whatsAppModalTab}
       />
 
@@ -1366,7 +1350,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   disabled={sendingApptId === `${slot.appointment.id}-customer`}
                                   onClick={() => handleSendReminderAutomated(slot.appointment!, 'customer')}
                                   className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                                  title="שליחת תזכורת SMS ישירה ללקוח/ה"
+                                  title="שליחת תזכורת SMS מיידית ללקוח/ה דרך Telnyx"
                                 >
                                   {sendingApptId === `${slot.appointment.id}-customer` ? (
                                     <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
@@ -1383,13 +1367,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   <Phone className="w-3.5 h-3.5" />
                                 </a>
                                 <a
-                                  href={`https://wa.me/${formatIsraeliPhoneToE164(slot.appointment.customer_phone)}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="p-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl text-xs font-bold transition border border-emerald-200 shadow-xs"
-                                  title="וואטסאפ ללקוח/ה"
+                                  href={`sms:${slot.appointment.customer_phone}`}
+                                  className="p-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl text-xs font-bold transition border border-blue-200 shadow-xs"
+                                  title="פתיחת הודעת SMS בנייד"
                                 >
-                                  <MessageCircle className="w-3.5 h-3.5" />
+                                  <Smartphone className="w-3.5 h-3.5" />
                                 </a>
                               </>
                             )}
@@ -1696,7 +1678,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           disabled={sendingApptId === `${appt.id}-customer`}
                           onClick={() => handleSendReminderAutomated(appt, 'customer')}
                           className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold flex items-center gap-1 transition shadow-xs cursor-pointer disabled:opacity-50"
-                          title="שליחת תזכורת SMS ישירה ללקוח/ה"
+                          title="שליחת תזכורת SMS מיידית ללקוח/ה דרך Telnyx"
                         >
                           {sendingApptId === `${appt.id}-customer` ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
@@ -1714,13 +1696,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <Phone className="w-3.5 h-3.5 text-slate-700" />
                         </a>
                         <a
-                          href={`https://wa.me/${formatIsraeliPhoneToE164(appt.customer_phone)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="p-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl text-xs font-bold flex items-center gap-1 transition border border-emerald-200 shadow-xs"
-                          title="וואטסאפ ללקוח/ה"
+                          href={`sms:${appt.customer_phone}`}
+                          className="p-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl text-xs font-bold flex items-center gap-1 transition border border-blue-200 shadow-xs"
+                          title="פתיחת הודעת SMS בנייד"
                         >
-                          <MessageCircle className="w-3.5 h-3.5 text-emerald-700" />
+                          <Smartphone className="w-3.5 h-3.5 text-blue-700" />
                         </a>
                       </div>
                     )}

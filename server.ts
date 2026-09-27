@@ -1133,10 +1133,14 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
     for (const [phoneKey, appts] of Object.entries(customerGroups)) {
       const firstAppt = appts[0];
       let anyClaimed = false;
+      const claimedReminderKeys: string[] = [];
       for (const a of appts) {
         const key = `${isMorning ? 'morning' : 'evening'}_${a.id}_${targetDate}`;
         const claimed = await tryClaimReminder(key);
-        if (claimed) anyClaimed = true;
+        if (claimed) {
+          anyClaimed = true;
+          claimedReminderKeys.push(key);
+        }
       }
       if (!anyClaimed) {
         console.log(`[CRON] דילוג (נעילה): התזכורת ללקוח/ה ${firstAppt.customer_name} מוגדרת כנשלחה ב-Firestore.`);
@@ -1179,9 +1183,29 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
       if (res.success) {
         console.log(`[CRON] ✅ נשלח בהצלחה ל-${firstAppt.customer_name} (${firstAppt.customer_phone})`);
         successCount += appts.length;
+        await Promise.all(claimedReminderKeys.map((key) =>
+          setDoc(doc(db, 'reminder_locks', key), {
+            status: 'sent',
+            sentAt: new Date().toISOString(),
+          }, { merge: true }).catch((err) => {
+            console.warn(`[Reminder Lock] לא ניתן לסמן שליחה כהצלחה עבור ${key}:`, err);
+          })
+        ));
       } else {
         console.error(`[CRON] ❌ שגיאה בשליחה ל-${firstAppt.customer_name} (${firstAppt.customer_phone}):`, res.error);
         failedCount += appts.length;
+        // Mark only locks acquired by this attempt as failed. Firestore rules
+        // intentionally disallow deletes, but allow updates; failed claims can
+        // be retried by tryClaimReminder on the next scheduler pass.
+        await Promise.all(claimedReminderKeys.map((key) =>
+          setDoc(doc(db, 'reminder_locks', key), {
+            status: 'failed',
+            failedAt: new Date().toISOString(),
+            lastError: res.error || 'SMS provider rejected the message',
+          }, { merge: true }).catch((err) => {
+            console.warn(`[Reminder Lock] לא ניתן לסמן ניסיון כושל עבור ${key}:`, err);
+          })
+        ));
       }
     }
 
@@ -1360,8 +1384,22 @@ async function tryClaimReminder(key: string): Promise<boolean> {
   try {
     return await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(lockRef);
-      if (snap.exists()) return false;
-      transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
+      const previous = snap.exists() ? snap.data() : null;
+      if (previous?.status === 'sent') return false;
+      if (previous?.status === 'sending') {
+        const claimedAt = Date.parse(previous.claimedAt || '');
+        const recentClaim = Number.isFinite(claimedAt) && Date.now() - claimedAt < 10 * 60 * 1000;
+        if (recentClaim) return false;
+      }
+      // Legacy claims had no status field and were left behind even when the
+      // provider rejected the SMS. Reclaim them once so the corrected SMS path
+      // can recover; subsequent successful sends are marked status='sent'.
+      transaction.set(lockRef, {
+        key,
+        status: 'sending',
+        claimedAt: new Date().toISOString(),
+        attemptCount: Number(previous?.attemptCount || 0) + 1,
+      });
       return true;
     });
   } catch (err) {

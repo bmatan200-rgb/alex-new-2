@@ -531,20 +531,85 @@ function getIsraelTime(): { dateIso: string; tomorrowIso: string; hour: number; 
   return { dateIso, tomorrowIso, hour, minute, timeStr };
 }
 
+// Helper to validate UUID format for Telnyx messaging_profile_id
+const isValidTelnyxUuid = (val?: string): boolean =>
+  Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim()));
+
+// Cached auto-resolved Messaging Profile ID to avoid repeated API calls
+let cachedTelnyxProfileId: string | null = null;
+
+/**
+ * מאחזר את ה-Messaging Profile ID מחשבון ה-Telnyx באופן אוטומטי אם אינו מוגדר במשתני הסביבה
+ */
+async function resolveTelnyxMessagingProfileId(
+  client: any,
+  apiKey: string,
+  explicitProfileId?: string
+): Promise<string | undefined> {
+  if (explicitProfileId && isValidTelnyxUuid(explicitProfileId)) {
+    return explicitProfileId.trim();
+  }
+  if (cachedTelnyxProfileId && isValidTelnyxUuid(cachedTelnyxProfileId)) {
+    return cachedTelnyxProfileId;
+  }
+
+  const envProfile =
+    process.env.TELNYX_PROFILE_ID ||
+    process.env.TELNYX_MESSAGING_PROFILE_ID ||
+    process.env.MESSAGING_PROFILE_ID ||
+    (activeServerSettings as any)?.telnyxProfileId;
+
+  if (envProfile && isValidTelnyxUuid(envProfile)) {
+    cachedTelnyxProfileId = envProfile.trim();
+    return cachedTelnyxProfileId;
+  }
+
+  // Auto-fetch from Telnyx SDK
+  try {
+    if (client?.messagingProfiles?.list) {
+      const res = await client.messagingProfiles.list();
+      const list = res?.data || (Array.isArray(res) ? res : []);
+      if (list.length > 0 && list[0]?.id && isValidTelnyxUuid(list[0].id)) {
+        cachedTelnyxProfileId = list[0].id;
+        console.log(`[Telnyx Gateway] ℹ️ אותר Messaging Profile ID אוטומטית: ${cachedTelnyxProfileId}`);
+        return cachedTelnyxProfileId;
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Telnyx Gateway] ⚠️ לא הצלחנו לקבל רשימת Profiles מה-SDK:', err?.message);
+  }
+
+  // Backup REST fetch to /v2/messaging_profiles
+  try {
+    const restRes = await fetch('https://api.telnyx.com/v2/messaging_profiles', {
+      headers: { Authorization: `Bearer ${apiKey.trim()}` },
+    });
+    if (restRes.ok) {
+      const restData = await restRes.json();
+      const list = restData?.data || [];
+      if (list.length > 0 && list[0]?.id && isValidTelnyxUuid(list[0].id)) {
+        cachedTelnyxProfileId = list[0].id;
+        console.log(`[Telnyx Gateway] ℹ️ אותר Messaging Profile ID דרך REST: ${cachedTelnyxProfileId}`);
+        return cachedTelnyxProfileId;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return undefined;
+}
+
 /**
  * פונקציית שליחת הודעת SMS באמצעות הספרייה של Telnyx
- * משתמשת אך ורק במשתני הסביבה:
- * - process.env.TELNYX_API_KEY (עבור האימות)
- * - process.env.TELNYX_PROFILE_ID (עבור ה-messaging_profile_id)
- * - process.env.TELNYX_FROM (עבור שדה השולח)
  */
 export async function sendTelnyxSMS(
   to: string,
   message: string
 ): Promise<{ success: boolean; data?: any; error?: string }> {
-  const apiKey = process.env.TELNYX_API_KEY;
-  const messagingProfileId = process.env.TELNYX_PROFILE_ID;
-  const fromNumber = process.env.TELNYX_FROM;
+  const apiKey = (process.env.TELNYX_API_KEY || (activeServerSettings as any)?.telnyxApiKey || '').trim();
+  const rawProfileId = process.env.TELNYX_PROFILE_ID || (activeServerSettings as any)?.telnyxProfileId || '';
+  const fromNumber = (process.env.TELNYX_FROM || (activeServerSettings as any)?.telnyxFrom || '').trim();
 
   if (!apiKey) {
     return {
@@ -553,10 +618,10 @@ export async function sendTelnyxSMS(
     };
   }
 
-  if (!fromNumber) {
+  if (!fromNumber && !rawProfileId) {
     return {
       success: false,
-      error: 'חסר משתנה סביבה TELNYX_FROM עבור שדה השולח',
+      error: 'חסר משתנה סביבה TELNYX_FROM (מספר שולח) או TELNYX_PROFILE_ID עבור שליחה מול Telnyx',
     };
   }
 
@@ -581,37 +646,21 @@ export async function sendTelnyxSMS(
     // תמיכה בגרסאות שונות של ה-SDK (v3+ Class / v1-v2 Factory)
     let client: any;
     try {
-      client = new Telnyx({ apiKey: apiKey.trim() });
+      client = new Telnyx({ apiKey: apiKey });
     } catch {
-      client = typeof Telnyx === 'function' ? Telnyx(apiKey.trim()) : new Telnyx(apiKey.trim());
+      client = typeof Telnyx === 'function' ? Telnyx(apiKey) : new Telnyx(apiKey);
     }
 
-    // בדיקת תקינות UUID עבור messaging_profile_id
-    const isUuid = (val?: string) =>
-      Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim()));
+    // איתור Messaging Profile ID (אם מוגדר או אוטומטית מהחשבון)
+    let profileId = await resolveTelnyxMessagingProfileId(client, apiKey, rawProfileId);
 
-    const cleanProfileId = messagingProfileId && isUuid(messagingProfileId) ? messagingProfileId.trim() : undefined;
-
-    // תמיכה במתודת send (הגרסה העדכנית) או create (גרסאות ישנות יותר)
-    const sendMethod = client.messages?.send || client.messages?.create;
-
-    // פונקציית עזר לשליחה עם או בלי פרופיל
-    const executeSend = async (useProfile: boolean) => {
-      const payload: {
-        from?: string;
-        to: string;
-        text: string;
-        messaging_profile_id?: string;
-      } = {
-        from: fromNumber.trim(),
-        to: formattedTo,
-        text: message,
-      };
-
-      if (useProfile && cleanProfileId) {
-        payload.messaging_profile_id = cleanProfileId;
-      }
-
+    const sendViaSdkOrRest = async (payload: {
+      from?: string;
+      to: string;
+      text: string;
+      messaging_profile_id?: string;
+    }) => {
+      const sendMethod = client.messages?.send || client.messages?.create;
       if (sendMethod) {
         return await sendMethod.call(client.messages, payload);
       }
@@ -621,7 +670,7 @@ export async function sendTelnyxSMS(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey.trim()}`,
+          Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify(payload),
       });
@@ -630,29 +679,93 @@ export async function sendTelnyxSMS(
         const err: any = new Error(restData?.errors?.[0]?.detail || 'Telnyx REST error');
         err.errors = restData?.errors;
         err.statusCode = restRes.status;
+        err.response = { status: restRes.status, data: restData };
         throw err;
       }
       return restData;
     };
 
-    console.log(`[Telnyx Gateway] שולח SMS אל ${formattedTo} מאת ${fromNumber}...`);
-    
-    let response: any;
-    try {
-      // נסיון שליחה ראשון (ללא profile_id אם אינו נדרש, כדי למנוע שגיאת 10015)
-      response = await executeSend(Boolean(cleanProfileId && !fromNumber));
-    } catch (firstAttemptErr: any) {
-      const isProfileErr =
-        JSON.stringify(firstAttemptErr).includes('10015') ||
-        firstAttemptErr?.message?.includes('messaging profile') ||
-        firstAttemptErr?.errors?.some((e: any) => e.code === '10015');
+    console.log(`[Telnyx Gateway] שולח SMS אל ${formattedTo} (מאת: ${fromNumber || 'ברירת מחדל'}, פרופיל: ${profileId || 'ללא'})...`);
 
-      if (isProfileErr) {
-        console.warn('[Telnyx Gateway] ⚠️ messaging_profile_id שגוי/לא תואם - מנסה שליחה חוזרת באמצעות from בלבד...');
-        response = await executeSend(false);
-      } else {
-        throw firstAttemptErr;
+    let response: any;
+    let sendError: any = null;
+
+    // נסיון 1: שליחה עם from ובמידה וקיים profileId - גם messaging_profile_id
+    try {
+      const payload: any = {
+        to: formattedTo,
+        text: message,
+      };
+      if (fromNumber) payload.from = fromNumber;
+      if (profileId) payload.messaging_profile_id = profileId;
+
+      response = await sendViaSdkOrRest(payload);
+    } catch (err1: any) {
+      sendError = err1;
+      const errStr = JSON.stringify(err1 || {});
+      const errMsg = err1?.message || '';
+
+      const isMissingProfileErr =
+        errStr.includes('10004') ||
+        errMsg.includes('10004') ||
+        errMsg.includes('messaging profile must be specified') ||
+        err1?.errors?.some((e: any) => String(e?.code) === '10004');
+
+      const isMismatchedProfileErr =
+        errStr.includes('10015') ||
+        errMsg.includes('10015') ||
+        errMsg.includes('does not match') ||
+        err1?.errors?.some((e: any) => String(e?.code) === '10015');
+
+      // טיפול בשגיאת 10004: נדרש messaging_profile_id
+      if (isMissingProfileErr) {
+        console.warn('[Telnyx Gateway] ⚠️ שגיאת 10004 (נדרש messaging profile) - מאחזר פרופיל ומנסה שוב...');
+        cachedTelnyxProfileId = null; // Reset cache to force fresh lookup
+        profileId = await resolveTelnyxMessagingProfileId(client, apiKey);
+
+        if (profileId) {
+          try {
+            const retryPayload: any = {
+              to: formattedTo,
+              text: message,
+              messaging_profile_id: profileId,
+            };
+            if (fromNumber) retryPayload.from = fromNumber;
+            response = await sendViaSdkOrRest(retryPayload);
+            sendError = null;
+          } catch (retryErr2: any) {
+            // אם עדיין נכשל עם from, ננסה עם messaging_profile_id בלבד
+            try {
+              console.warn('[Telnyx Gateway] ⚠️ מנסה שליחה עם messaging_profile_id בלבד (ללא from)...');
+              response = await sendViaSdkOrRest({
+                to: formattedTo,
+                text: message,
+                messaging_profile_id: profileId,
+              });
+              sendError = null;
+            } catch (retryErr3: any) {
+              sendError = retryErr3;
+            }
+          }
+        }
+      } else if (isMismatchedProfileErr) {
+        // טיפול בשגיאת 10015: המספר אינו תואם לפרופיל - שליחה עם from בלבד
+        console.warn('[Telnyx Gateway] ⚠️ שגיאת 10015 (פרופיל לא תואם למספר) - מנסה שליחה עם from בלבד...');
+        try {
+          response = await sendViaSdkOrRest({
+            to: formattedTo,
+            text: message,
+            from: fromNumber,
+          });
+          sendError = null;
+        } catch (retryErr: any) {
+          sendError = retryErr;
+        }
       }
+    }
+
+    if (sendError) {
+      throw sendError;
     }
 
     const responseData = response?.data || response;
@@ -665,7 +778,7 @@ export async function sendTelnyxSMS(
       };
     }
 
-    console.log(`[Telnyx Gateway] הודעה נשלחה בהצלחה! ID: ${responseData?.id || 'OK'}`);
+    console.log(`[Telnyx Gateway] ✅ הודעה נשלחה בהצלחה! ID: ${responseData?.id || 'OK'}`);
 
     return {
       success: true,
@@ -687,13 +800,12 @@ export async function sendTelnyxSMS(
       to: formattedTo,
       originalTo: to,
       from: fromNumber,
-      profileId: messagingProfileId || '(none)',
+      profileId: rawProfileId || '(none)',
       httpStatus: status,
       errorMessage: err?.message,
       telnyxErrors,
       responseBody,
     });
-    console.error('[Telnyx Gateway] ❌ אובייקט שגיאה מלא מ-Telnyx:', err);
 
     let detailedMessage = err?.message || 'שגיאה לא ידועה בשליחה מול Telnyx';
     if (telnyxErrors && Array.isArray(telnyxErrors) && telnyxErrors.length > 0) {
@@ -1411,26 +1523,26 @@ app.get('/api/whatsapp/status', (req: Request, res: Response) => {
 
 // Comprehensive Telnyx & Messaging Diagnostic Endpoint
 app.get('/api/whatsapp/diagnose', requireAdmin, async (req: Request, res: Response) => {
-  const apiKey = process.env.TELNYX_API_KEY || '';
-  const profileId = process.env.TELNYX_PROFILE_ID || '';
-  const fromNumber = process.env.TELNYX_FROM || activeServerSettings?.telnyxFrom || '';
+  const apiKey = (process.env.TELNYX_API_KEY || (activeServerSettings as any)?.telnyxApiKey || '').trim();
+  const rawProfileId = process.env.TELNYX_PROFILE_ID || (activeServerSettings as any)?.telnyxProfileId || '';
+  const fromNumber = (process.env.TELNYX_FROM || (activeServerSettings as any)?.telnyxFrom || '').trim();
 
   const diagnostics: any = {
     timestamp: new Date().toISOString(),
     israelTime: getIsraelTime(),
     provider: activeServerSettings?.provider || (apiKey ? 'telnyx' : 'webhook'),
     telnyx: {
-      hasCredentials: Boolean(apiKey && fromNumber),
+      hasCredentials: Boolean(apiKey && (fromNumber || rawProfileId)),
       apiKeyMasked: apiKey ? `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}` : null,
-      profileId: profileId || null,
+      profileId: rawProfileId || null,
       fromNumber: fromNumber || null,
       readyToSend: false,
       errorSummary: null,
     },
   };
 
-  if (!apiKey || !fromNumber) {
-    diagnostics.telnyx.errorSummary = 'חסרים משתני סביבה של Telnyx (TELNYX_API_KEY או TELNYX_FROM)';
+  if (!apiKey || (!fromNumber && !rawProfileId)) {
+    diagnostics.telnyx.errorSummary = 'חסרים משתני סביבה של Telnyx (TELNYX_API_KEY ו-TELNYX_FROM או TELNYX_PROFILE_ID)';
     return res.json(diagnostics);
   }
 
@@ -1442,6 +1554,11 @@ app.get('/api/whatsapp/diagnose', requireAdmin, async (req: Request, res: Respon
       client = new Telnyx({ apiKey: apiKey.trim() });
     } catch {
       client = typeof Telnyx === 'function' ? Telnyx(apiKey.trim()) : new Telnyx(apiKey.trim());
+    }
+
+    const resolvedProfile = await resolveTelnyxMessagingProfileId(client, apiKey, rawProfileId);
+    if (resolvedProfile) {
+      diagnostics.telnyx.profileId = resolvedProfile;
     }
 
     diagnostics.telnyx.readyToSend = true;

@@ -1,5 +1,7 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
+  initializeFirestore,
+  memoryLocalCache,
   getFirestore,
   collection,
   doc,
@@ -35,11 +37,18 @@ export const auth = getAuth(app);
 export { signInWithEmailAndPassword, signOut, onAuthStateChanged };
 export type { FirebaseUser };
 
-// Initialize Firestore with specific database ID if present
-export const db: Firestore = getFirestore(
-  app,
-  firebaseConfig.firestoreDatabaseId || undefined
-);
+// Initialize Firestore with clean memory cache to prevent BloomFilter indexing errors
+let firestoreInstance: Firestore;
+try {
+  firestoreInstance = initializeFirestore(
+    app,
+    { localCache: memoryLocalCache() },
+    firebaseConfig.firestoreDatabaseId || undefined
+  );
+} catch {
+  firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
+}
+export const db: Firestore = firestoreInstance;
 
 const APPOINTMENTS_COLLECTION = 'appointments';
 

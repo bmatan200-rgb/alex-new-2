@@ -33,7 +33,7 @@ export const DatePickerCarousel: React.FC<DatePickerCarouselProps> = ({
         {/* Floating Calendar Info Badge */}
         <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-slate-50 via-white to-purple-50/60 border border-slate-200 text-slate-800 text-xs font-bold shadow-xs">
           <CalendarIcon className="w-3.5 h-3.5 text-purple-600" />
-          <span>21 ימים פתוחים לבחירה</span>
+          <span>יומן פתוח לחודשיים ({days.length} ימים)</span>
         </div>
       </div>
 

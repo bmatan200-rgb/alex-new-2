@@ -75,7 +75,7 @@ export function formatDurationMinutes(minutes: number): string {
   return `${hours} שעות ${remainingMins > 0 ? `ו-${remainingMins} דקות` : ''} (${minutes} דק׳)`;
 }
 
-export function buildNextDays(count: number = 21): DayInfo[] {
+export function buildNextDays(count: number = 60): DayInfo[] {
   const days: DayInfo[] = [];
   const today = new Date();
   today.setHours(0, 0, 0, 0);

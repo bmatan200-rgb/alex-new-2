@@ -50,7 +50,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
   currentUser,
   onBackToHome,
 }) => {
-  const days: DayInfo[] = useMemo(() => buildNextDays(21), []);
+  const days: DayInfo[] = useMemo(() => buildNextDays(60), []);
 
   // Step 1: Selected service (Default: לק ג'ל)
   const [selectedServiceId, setSelectedServiceId] = useState<number>(

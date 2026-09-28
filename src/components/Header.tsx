@@ -68,37 +68,35 @@ export const Header: React.FC<HeaderProps> = ({
         )}
       </div>
 
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3.5">
         <div className="flex items-center justify-between gap-3">
           {/* Logo & Brand */}
           <div
             onClick={() => onSelectTab?.('booking')}
-            className="flex items-center gap-3 cursor-pointer select-none group"
+            className="flex items-center gap-3.5 cursor-pointer select-none group"
           >
-            {/* Clean Logo Badge */}
-            <div className="relative w-12 h-12 rounded-2xl bg-black p-0.5 shadow-sm flex-shrink-0 group-hover:scale-105 transition-all duration-300 border border-slate-800">
-              <div className="w-full h-full bg-black rounded-[14px] flex flex-col items-center justify-center relative overflow-hidden">
-                <span className="text-white font-black tracking-tight text-base font-['Rubik',sans-serif] leading-none">
+            {/* Large, Elegant Salon Logo */}
+            <div className="relative w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-purple-950 via-slate-950 to-black p-0.5 shadow-md flex-shrink-0 group-hover:scale-105 transition-all duration-300 border border-purple-500/30">
+              <div className="w-full h-full bg-slate-950 rounded-[14px] flex flex-col items-center justify-center relative overflow-hidden">
+                <span className="text-white font-black tracking-tight text-xl sm:text-2xl font-['Rubik',sans-serif] leading-none">
                   Alex
                 </span>
-                <span className="text-[7px] text-slate-400 font-bold tracking-widest uppercase mt-0.5">
+                <span className="text-[8px] sm:text-[9px] text-purple-300 font-extrabold tracking-widest uppercase mt-1">
                   BEAUTY
                 </span>
               </div>
-              <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-white border-2 border-black flex items-center justify-center shadow-sm">
-                <Sparkles className="w-2.5 h-2.5 text-slate-900" />
+              <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-white border border-purple-200 flex items-center justify-center shadow-sm">
+                <Sparkles className="w-3 h-3 text-purple-600" />
               </div>
             </div>
 
-            <div>
+            <div className="space-y-0.5">
               <div className="flex items-baseline gap-2">
-                <h1 className="text-xl sm:text-2xl font-black tracking-tight text-slate-900 font-['Rubik',sans-serif] flex items-center gap-1.5">
-                  <span className="text-slate-900">
-                    Alex טיפוח ויופי
-                  </span>
+                <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-950 font-['Rubik',sans-serif]">
+                  Alex טיפוח ויופי
                 </h1>
               </div>
-              <p className="text-[11px] text-slate-600 font-medium mt-0.5">
+              <p className="text-xs sm:text-sm text-slate-600 font-medium">
                 {SALON_INFO.tagline}
               </p>
             </div>
@@ -106,15 +104,14 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2">
-            {/* לחצן התור שלי / ביטול - זמין ללקוח */}
             <button
               id="my-booking-search-btn"
               onClick={onOpenMyBooking}
               type="button"
-              className="px-3.5 py-2 text-xs font-bold text-slate-700 bg-white hover:bg-purple-50 hover:text-purple-700 hover:border-purple-300 rounded-xl transition cursor-pointer border border-slate-200 shadow-xs flex items-center gap-1.5"
+              className="px-4 py-2.5 text-xs sm:text-sm font-bold text-slate-800 bg-white hover:bg-purple-50 hover:text-purple-700 hover:border-purple-300 rounded-2xl transition cursor-pointer border border-slate-200 shadow-xs flex items-center gap-2 active:scale-95"
               title="איתור או ביטול תור לפי טלפון"
             >
-              <Calendar className="w-3.5 h-3.5 text-purple-600" />
+              <Calendar className="w-4 h-4 text-purple-600" />
               <span>התור שלי / ביטול</span>
             </button>
           </div>

@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   X,
   ChevronRight,
+  ChevronLeft,
   Clock,
   Calendar,
   Sparkles,
@@ -21,6 +22,7 @@ import {
   BUSINESS_CLOSE,
   FRIDAY_CLOSE,
   buildNextDays,
+  toISODateString,
   toShortIsraeliDateString,
   toIsraeliDateString,
   calculateAvailableSlots,
@@ -33,6 +35,8 @@ import {
   getAllStandardSlots,
   isSlotInPast,
   isAppointmentInPast,
+  HEBREW_MONTHS,
+  HEBREW_WEEKDAYS,
 } from '../utils/dateUtils';
 import { SALON_INFO, saveUserSession } from '../utils/storage';
 import { addAppointmentToFirestore, upsertCustomerToFirestore } from '../lib/firebase';
@@ -108,8 +112,20 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     }
   }, [isOpen, currentUser]);
 
-  // 21 days for the booking calendar
-  const days: DayInfo[] = useMemo(() => buildNextDays(21), []);
+  // 60 days (2 months) for the booking calendar
+  const days: DayInfo[] = useMemo(() => buildNextDays(60), []);
+
+  // Month navigation state (viewed month and year)
+  const [viewedYear, setViewedYear] = useState<number>(() => new Date().getFullYear());
+  const [viewedMonth, setViewedMonth] = useState<number>(() => new Date().getMonth());
+
+  useEffect(() => {
+    if (isOpen) {
+      const now = new Date();
+      setViewedYear(now.getFullYear());
+      setViewedMonth(now.getMonth());
+    }
+  }, [isOpen]);
 
   const userActiveBookingsCount = useMemo(() => {
     const rawPhone = customerPhone || currentUser?.phone || '';
@@ -142,6 +158,66 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     return slots.filter((slotTime) => !isSlotInPast(dateIso, slotTime));
   };
 
+  const todayIso = toISODateString(new Date());
+
+  // Generate days for the currently viewed month (starts from current day for the current month)
+  const viewedMonthDays = useMemo(() => {
+    const totalDays = new Date(viewedYear, viewedMonth + 1, 0).getDate();
+    const result = [];
+    const now = new Date();
+    const isCurrentMonth =
+      viewedYear === now.getFullYear() && viewedMonth === now.getMonth();
+    const startDay = isCurrentMonth ? now.getDate() : 1;
+
+    for (let d = startDay; d <= totalDays; d++) {
+      const dateObj = new Date(viewedYear, viewedMonth, d);
+      const iso = toISODateString(dateObj);
+      const dayOfWeek = dateObj.getDay();
+      const isClosed = dayOfWeek === 6; // Closed on Saturday
+      const isPast = iso < todayIso;
+      const isToday = iso === todayIso;
+      const availSlots = !isPast && !isClosed ? getEffectiveAvailableSlots(iso) : [];
+      const isAvailable = !isPast && !isClosed && availSlots.length > 0;
+
+      result.push({
+        iso,
+        dayNumber: d,
+        weekday: HEBREW_WEEKDAYS[dayOfWeek],
+        dayOfWeek,
+        isPast,
+        isToday,
+        isClosed,
+        availSlots,
+        isAvailable,
+      });
+    }
+    return result;
+  }, [viewedYear, viewedMonth, appointments, durationMinutes, businessOpen, businessClose, todayIso]);
+
+  const currentNow = new Date();
+  const canGoPrevMonth =
+    viewedYear > currentNow.getFullYear() ||
+    (viewedYear === currentNow.getFullYear() && viewedMonth > currentNow.getMonth());
+
+  const handlePrevMonth = () => {
+    if (!canGoPrevMonth) return;
+    if (viewedMonth === 0) {
+      setViewedMonth(11);
+      setViewedYear((y) => y - 1);
+    } else {
+      setViewedMonth((m) => m - 1);
+    }
+  };
+
+  const handleNextMonth = () => {
+    if (viewedMonth === 11) {
+      setViewedMonth(0);
+      setViewedYear((y) => y + 1);
+    } else {
+      setViewedMonth((m) => m + 1);
+    }
+  };
+
   // Full occupancy of all standard slots for selected date (including occupied, blocked, and free)
   const currentSlotsOccupancy: SlotOccupancy[] = useMemo(() => {
     if (!selectedDate) return [];
@@ -165,9 +241,15 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     setStep('day');
   };
 
-  const handleSelectDay = (day: DayInfo) => {
-    if (day.isClosed) return;
-    setSelectedDate(day.iso);
+  const handleSelectDay = (dayIso: string) => {
+    setSelectedDate(dayIso);
+    setSelectedSlot('');
+    setStep('slot');
+  };
+
+  const handleSelectDirectDate = (dateIso: string) => {
+    if (!dateIso) return;
+    setSelectedDate(dateIso);
     setSelectedSlot('');
     setStep('slot');
   };
@@ -402,22 +484,56 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
             </div>
           )}
 
-          {/* STEP 2: בחירת יום */}
+          {/* STEP 2: בחירת יום - ניווט חודשים חופשי ללא בחירה אוטומטית */}
           {step === 'day' && (
-            <div className="space-y-3 py-1">
+            <div className="space-y-3.5 py-1">
               <div className="flex items-center justify-between px-1 text-xs text-slate-500 font-medium">
                 <span>טיפול: <strong className="text-purple-700 font-bold">{selectedService.name}</strong></span>
-                <span>{formatDurationMinutes(durationMinutes)}</span>
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
+                  יומן פתוח לחודשיים קדימה ✨
+                </span>
               </div>
 
-              {/* Vertical Day Buttons list exactly matching video */}
-              <div className="space-y-2.5">
-                {days.map((day) => {
-                  const availSlots = getEffectiveAvailableSlots(day.iso);
-                  const isAvailable = !day.isClosed && availSlots.length > 0;
+              {/* Month Navigation Bar (Navigates months freely without auto-selecting a day) */}
+              <div className="bg-slate-900 text-white p-3 rounded-2xl flex items-center justify-between shadow-sm">
+                <button
+                  type="button"
+                  onClick={handleNextMonth}
+                  className="p-2 hover:bg-slate-800 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-bold text-purple-300 active:scale-95"
+                  title="חודש הבא"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                  <span>חודש הבא</span>
+                </button>
+
+                <div className="text-center">
+                  <span className="text-sm sm:text-base font-black tracking-wide font-['Rubik',sans-serif] text-white">
+                    {HEBREW_MONTHS[viewedMonth]} {viewedYear}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handlePrevMonth}
+                  disabled={!canGoPrevMonth}
+                  className={`p-2 rounded-xl transition flex items-center gap-1 text-xs font-bold ${
+                    canGoPrevMonth
+                      ? 'hover:bg-slate-800 text-purple-300 cursor-pointer active:scale-95'
+                      : 'text-slate-600 cursor-not-allowed opacity-40'
+                  }`}
+                  title="חודש קודם"
+                >
+                  <span>חודש קודם</span>
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Vertical Day Buttons list for the viewed month */}
+              <div className="space-y-2.5 max-h-[46vh] overflow-y-auto pr-0.5">
+                {viewedMonthDays.map((day) => {
+                  const isAvailable = day.isAvailable;
                   const shortDate = toShortIsraeliDateString(day.iso);
 
-                  // Label logic: "היום, 21/08/26", "יום ראשון, 23/08/26"
                   const dayLabel = day.isToday
                     ? `היום, ${shortDate}`
                     : `יום ${day.weekday}, ${shortDate}`;
@@ -427,22 +543,28 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                       key={day.iso}
                       type="button"
                       disabled={!isAvailable}
-                      onClick={() => handleSelectDay(day)}
+                      onClick={() => handleSelectDay(day.iso)}
                       className={`w-full py-3.5 px-5 rounded-2xl border text-center font-bold text-sm sm:text-base transition-all flex items-center justify-between ${
                         isAvailable
-                          ? 'bg-white border-slate-200 hover:border-purple-600 hover:bg-purple-50/50 hover:shadow-md text-slate-900 cursor-pointer'
+                          ? 'bg-white border-slate-200 hover:border-purple-600 hover:bg-purple-50/50 hover:shadow-md text-slate-900 cursor-pointer active:scale-98'
+                          : day.isPast
+                          ? 'bg-slate-50/60 border-slate-200 text-slate-400 cursor-not-allowed opacity-50'
                           : day.isClosed
                           ? 'bg-slate-50/80 border-slate-200 text-slate-400 cursor-not-allowed opacity-75'
                           : 'bg-red-50/60 border-red-200 text-red-600 cursor-not-allowed font-medium'
                       }`}
                     >
-                      <span className={`${isAvailable ? 'text-slate-900 font-black' : !day.isClosed ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
+                      <span className={`${isAvailable ? 'text-slate-900 font-black' : !day.isClosed && !day.isPast ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
                         {dayLabel}
                       </span>
 
                       {isAvailable ? (
                         <span className="text-[11px] px-2.5 py-1 rounded-full bg-purple-50 text-purple-700 font-black border border-purple-200">
-                          {availSlots.length} פנויים
+                          {day.availSlots.length} פנויים
+                        </span>
+                      ) : day.isPast ? (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-400 font-medium">
+                          עבר
                         </span>
                       ) : day.isClosed ? (
                         <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 font-medium">
@@ -458,10 +580,9 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                 })}
               </div>
 
-              {/* Video Note Style */}
-              <div className="pt-2 text-center text-xs text-slate-500 font-medium">
-                <span>* ימים ללא תורים פנויים מסומנים ב</span>
-                <span className="text-red-600 font-bold">אדום</span>
+              {/* Note Style */}
+              <div className="pt-1 text-center text-xs text-slate-500 font-medium flex items-center justify-center gap-2">
+                <span>* לחיצה על יום פנוי תחשוף את כל השעות הפנויות באותו היום</span>
               </div>
             </div>
           )}
@@ -470,14 +591,23 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
           {step === 'slot' && (
             <div className="space-y-4 py-1">
               <div className="bg-purple-50 rounded-2xl p-3 border border-purple-200 flex items-center justify-between text-xs">
-                <span className="text-purple-950 font-bold">
-                  {selectedDayInfo?.isToday
-                    ? `היום (${toIsraeliDateString(selectedDate)})`
-                    : `יום ${selectedDayInfo?.weekday} (${toIsraeliDateString(selectedDate)})`}
-                </span>
-                <span className="text-purple-700 font-bold">
-                  משך טיפול: {formatDurationMinutes(durationMinutes)}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <Calendar className="w-4 h-4 text-purple-700" />
+                  <span className="text-purple-950 font-bold">
+                    {selectedDayInfo?.isToday
+                      ? `היום (${toIsraeliDateString(selectedDate)})`
+                      : `יום ${selectedDayInfo?.weekday || ''} (${toIsraeliDateString(selectedDate)})`}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setStep('day')}
+                  className="px-2.5 py-1 bg-white hover:bg-purple-100 text-purple-800 border border-purple-300 rounded-xl font-black text-[11px] transition cursor-pointer active:scale-95 shadow-2xs"
+                  title="בחירת יום אחר"
+                >
+                  החלף יום 🔄
+                </button>
               </div>
 
               {currentSlotsOccupancy.length === 0 ? (

@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import {
   X,
   ChevronRight,
+  ChevronLeft,
   Clock,
   Calendar,
   Sparkles,
@@ -27,6 +28,7 @@ import {
   BUSINESS_CLOSE,
   FRIDAY_CLOSE,
   buildNextDays,
+  toISODateString,
   toShortIsraeliDateString,
   toIsraeliDateString,
   calculateAvailableSlots,
@@ -37,6 +39,8 @@ import {
   formatDurationMinutes,
   formatILS,
   isSlotInPast,
+  HEBREW_MONTHS,
+  HEBREW_WEEKDAYS,
 } from '../utils/dateUtils';
 import { upsertCustomerToFirestore } from '../lib/firebase';
 
@@ -81,8 +85,11 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 }) => {
   const [step, setStep] = useState<Step>('treatment');
   const [isBlockAction, setIsBlockAction] = useState<boolean>(initialMode === 'block');
-  const [blockReason, setBlockReason] = useState<string>('תור תפוס');
+  const [blockReason, setBlockReason] = useState<string>('חופש');
   const [blockWholeDay, setBlockWholeDay] = useState<boolean>(false);
+  const [blockModeType, setBlockModeType] = useState<'single' | 'range'>('single');
+  const [rangeStartDate, setRangeStartDate] = useState<string>('');
+  const [rangeEndDate, setRangeEndDate] = useState<string>('');
 
   const [selectedService, setSelectedService] = useState<Service>(services[0] || {
     id: 1,
@@ -101,8 +108,19 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
-  // 30 days for admin booking calendar
-  const days: DayInfo[] = useMemo(() => buildNextDays(30), []);
+  // 90 days for admin booking calendar (allows booking up to 3 months forward)
+  const days: DayInfo[] = useMemo(() => buildNextDays(90), []);
+
+  const [viewedYear, setViewedYear] = useState<number>(() => new Date().getFullYear());
+  const [viewedMonth, setViewedMonth] = useState<number>(() => new Date().getMonth());
+
+  useEffect(() => {
+    if (isOpen) {
+      const now = new Date();
+      setViewedYear(now.getFullYear());
+      setViewedMonth(now.getMonth());
+    }
+  }, [isOpen]);
 
   const durationMinutes = selectedService?.duration_minutes || scheduleSettings?.durationMinutes || 90;
   const businessOpen = scheduleSettings?.businessOpen || BUSINESS_OPEN;
@@ -123,6 +141,66 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   const getEffectiveAvailableSlots = (dateIso: string) => {
     const slots = getSlotsForDay(dateIso);
     return slots.filter((slotTime) => !isSlotInPast(dateIso, slotTime));
+  };
+
+  const todayIso = toISODateString(new Date());
+
+  // Generate days for the currently viewed month (starts from current day for the current month)
+  const viewedMonthDays = useMemo(() => {
+    const totalDays = new Date(viewedYear, viewedMonth + 1, 0).getDate();
+    const result = [];
+    const now = new Date();
+    const isCurrentMonth =
+      viewedYear === now.getFullYear() && viewedMonth === now.getMonth();
+    const startDay = isCurrentMonth ? now.getDate() : 1;
+
+    for (let d = startDay; d <= totalDays; d++) {
+      const dateObj = new Date(viewedYear, viewedMonth, d);
+      const iso = toISODateString(dateObj);
+      const dayOfWeek = dateObj.getDay();
+      const isClosed = dayOfWeek === 6; // Closed on Saturday
+      const isPast = iso < todayIso;
+      const isToday = iso === todayIso;
+      const availSlots = !isPast && !isClosed ? getEffectiveAvailableSlots(iso) : [];
+      const isAvailable = !isPast && !isClosed && availSlots.length > 0;
+
+      result.push({
+        iso,
+        dayNumber: d,
+        weekday: HEBREW_WEEKDAYS[dayOfWeek],
+        dayOfWeek,
+        isPast,
+        isToday,
+        isClosed,
+        availSlots,
+        isAvailable,
+      });
+    }
+    return result;
+  }, [viewedYear, viewedMonth, appointments, durationMinutes, businessOpen, businessClose, todayIso]);
+
+  const currentNow = new Date();
+  const canGoPrevMonth =
+    viewedYear > currentNow.getFullYear() ||
+    (viewedYear === currentNow.getFullYear() && viewedMonth > currentNow.getMonth());
+
+  const handlePrevMonth = () => {
+    if (!canGoPrevMonth) return;
+    if (viewedMonth === 0) {
+      setViewedMonth(11);
+      setViewedYear((y) => y - 1);
+    } else {
+      setViewedMonth((m) => m - 1);
+    }
+  };
+
+  const handleNextMonth = () => {
+    if (viewedMonth === 11) {
+      setViewedMonth(0);
+      setViewedYear((y) => y + 1);
+    } else {
+      setViewedMonth((m) => m + 1);
+    }
   };
 
   // Full occupancy of all standard slots for selected date (including occupied, blocked, and free)
@@ -176,8 +254,11 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
     if (isOpen) {
       const modeIsBlock = initialMode === 'block';
       setIsBlockAction(modeIsBlock);
-      setBlockReason(modeIsBlock ? 'תור תפוס' : '');
+      setBlockReason(modeIsBlock ? 'חופש' : '');
       setBlockWholeDay(false);
+      setBlockModeType('single');
+      setRangeStartDate(initialDate || (days[0]?.iso || ''));
+      setRangeEndDate(initialDate || (days[0]?.iso || ''));
       setCustomerName(initialCustomerName || '');
       setCustomerPhone(initialCustomerPhone || '');
       setNotes(initialNotes || '');
@@ -192,31 +273,25 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
       } else if (initialDate) {
         setSelectedDate(initialDate);
         setSelectedSlot('');
-        setStep('slot');
+        setStep(modeIsBlock ? 'day' : 'treatment');
       } else {
-        setSelectedDate('');
+        setSelectedDate(days[0]?.iso || '');
         setSelectedSlot('');
-        setStep('treatment');
+        setStep(modeIsBlock ? 'day' : 'treatment');
       }
 
       if (services.length > 0) {
         setSelectedService(services[0]);
       }
     }
-  }, [isOpen, initialDate, initialSlot, initialCustomerName, initialCustomerPhone, initialNotes, initialMode, services]);
+  }, [isOpen, initialDate, initialSlot, initialCustomerName, initialCustomerPhone, initialNotes, initialMode, services, days]);
 
   if (!isOpen) return null;
 
   const handleSelectService = (service: Service) => {
     setIsBlockAction(false);
     setSelectedService(service);
-    if (!selectedDate) {
-      setStep('day');
-    } else if (!selectedSlot) {
-      setStep('slot');
-    } else {
-      setStep('details');
-    }
+    setStep('day');
   };
 
   const handleSelectBlockPreset = (preset: typeof BLOCK_PRESETS[0]) => {
@@ -229,18 +304,19 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
       duration_minutes: durationMinutes,
       price: 0,
     });
-    if (!selectedDate) {
-      setStep('day');
-    } else if (!selectedSlot) {
-      setStep('slot');
-    } else {
-      setStep('details');
-    }
+    setStep('day');
   };
 
   const handleSelectDay = (day: DayInfo) => {
     if (day.isClosed) return;
     setSelectedDate(day.iso);
+    setSelectedSlot('');
+    setStep('slot');
+  };
+
+  const handleSelectDirectDate = (dateIso: string) => {
+    if (!dateIso) return;
+    setSelectedDate(dateIso);
     setSelectedSlot('');
     setStep('slot');
   };
@@ -265,6 +341,82 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   const handleSubmitBooking = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
+
+    if (isBlockAction && blockModeType === 'range') {
+      if (!rangeStartDate || !rangeEndDate) {
+        setErrorMessage('נא לבחור תאריך התחלה ותאריך סיום לחופשה');
+        return;
+      }
+      if (rangeStartDate > rangeEndDate) {
+        setErrorMessage('תאריך ההתחלה אינו יכול להיות מאוחר מתאריך הסיום');
+        return;
+      }
+
+      setIsSubmitting(true);
+      try {
+        const reasonText = blockReason.trim() || 'חופש';
+        // Generate list of dates in range
+        const datesToBlock: string[] = [];
+        const curr = new Date(rangeStartDate + 'T00:00:00');
+        const end = new Date(rangeEndDate + 'T00:00:00');
+        while (curr <= end) {
+          const iso = toISODateString(curr);
+          if (curr.getDay() !== 6) { // Skip closed Saturday
+            datesToBlock.push(iso);
+          }
+          curr.setDate(curr.getDate() + 1);
+        }
+
+        if (datesToBlock.length === 0) {
+          setErrorMessage('אין ימי פעילות בטווח התאריכים שנבחר');
+          setIsSubmitting(false);
+          return;
+        }
+
+        let totalBlockedSlots = 0;
+        for (const dateIso of datesToBlock) {
+          const dailyOccupancy = getDailySlotsOccupancy(
+            dateIso,
+            appointments,
+            durationMinutes,
+            businessOpen,
+            businessClose,
+            FRIDAY_CLOSE
+          );
+          const freeSlots = dailyOccupancy.filter((s) => s.isAvailable);
+          for (const s of freeSlots) {
+            const startMin = timeToMinutes(s.time);
+            const endMin = startMin + durationMinutes;
+            const endTimeStr = minutesToTime(endMin);
+
+            const blockAppt: Omit<Appointment, 'id'> = {
+              customer_name: `🔒 ${reasonText}`,
+              customer_phone: 'חסימת יומן',
+              service_id: 1,
+              service_name: reasonText,
+              appointment_date: dateIso,
+              start_time: s.time,
+              end_time: endTimeStr,
+              price: 0,
+              status: 'confirmed',
+              created_at: new Date().toISOString(),
+              notes: notes.trim() || reasonText,
+            };
+            await onAddAppointment(blockAppt);
+            totalBlockedSlots += 1;
+          }
+        }
+
+        onShowToast(`נחסמו ${datesToBlock.length} ימי חופשה (${totalBlockedSlots} שעות) בהצלחה! 🌴`, 'success');
+        onClose();
+      } catch (err: any) {
+        console.error('Error blocking range:', err);
+        setErrorMessage('שגיאה בתפיסת הימים: ' + (err?.message || 'אנא נסי שוב'));
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
 
     if (!selectedDate) {
       setErrorMessage('נא לבחור יום מהיומן');
@@ -551,80 +703,251 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
             </div>
           )}
 
-          {/* STEP 2: בחירת יום - Identical to TorModalFlow */}
+          {/* STEP 2: בחירת יום או טווח ימי חופשה */}
           {step === 'day' && (
-            <div className="space-y-3 py-1">
+            <div className="space-y-4 py-1">
+              {/* Header Info */}
               <div className="flex items-center justify-between px-1 text-xs text-slate-500 font-medium">
                 <span>מטרה: <strong className={isBlockAction ? "text-slate-950 font-bold" : "text-purple-700 font-bold"}>{selectedService.name}</strong></span>
                 <span>{formatDurationMinutes(durationMinutes)}</span>
               </div>
 
-              {/* Vertical Day Buttons list */}
-              <div className="space-y-2.5">
-                {days.map((day) => {
-                  const availSlots = getEffectiveAvailableSlots(day.iso);
-                  const isAvailable = !day.isClosed && availSlots.length > 0;
-                  const shortDate = toShortIsraeliDateString(day.iso);
+              {/* Mode Toggle for Block / Vacation: Single Day vs Multi-Day Range */}
+              {isBlockAction && (
+                <div className="p-1 bg-slate-100 rounded-2xl flex items-center gap-1 border border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setBlockModeType('single')}
+                    className={`flex-1 py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      blockModeType === 'single'
+                        ? 'bg-slate-950 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>יום בודד / שעה ⏰</span>
+                  </button>
 
-                  const dayLabel = day.isToday
-                    ? `היום, ${shortDate}`
-                    : `יום ${day.weekday}, ${shortDate}`;
+                  <button
+                    type="button"
+                    onClick={() => setBlockModeType('range')}
+                    className={`flex-1 py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      blockModeType === 'range'
+                        ? 'bg-purple-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Palmtree className="w-3.5 h-3.5" />
+                    <span>חופשה מרובת ימים (טווח) 🌴</span>
+                  </button>
+                </div>
+              )}
 
-                  return (
+              {/* MULTI-DAY VACATION RANGE FORM */}
+              {isBlockAction && blockModeType === 'range' ? (
+                <form onSubmit={handleSubmitBooking} className="p-4 bg-purple-50/80 rounded-2xl border border-purple-200 space-y-4 text-xs">
+                  <div className="flex items-center gap-2 text-purple-950 font-bold">
+                    <Palmtree className="w-4 h-4 text-purple-700" />
+                    <span>הגדרת טווח תאריכים לחופש (נעילת כל השעות ברצף)</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">מתאריך (התחלת חופשה):</label>
+                      <input
+                        type="date"
+                        required
+                        min={days[0]?.iso}
+                        value={rangeStartDate}
+                        onChange={(e) => {
+                          setRangeStartDate(e.target.value);
+                          if (!rangeEndDate || e.target.value > rangeEndDate) {
+                            setRangeEndDate(e.target.value);
+                          }
+                        }}
+                        className="w-full px-3 py-2 bg-white text-slate-900 rounded-xl border border-purple-200 outline-none focus:border-purple-600 font-bold text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">עד תאריך (סיום חופשה):</label>
+                      <input
+                        type="date"
+                        required
+                        min={rangeStartDate || days[0]?.iso}
+                        value={rangeEndDate}
+                        onChange={(e) => setRangeEndDate(e.target.value)}
+                        className="w-full px-3 py-2 bg-white text-slate-900 rounded-xl border border-purple-200 outline-none focus:border-purple-600 font-bold text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5 pt-1">
+                    <label className="text-[11px] font-bold text-slate-700 block">סיבת החופשה:</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {['חופש', 'חופשה שנתית', 'סידורים אישיים', 'שיפוץ / סגירה'].map((r) => (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => setBlockReason(r)}
+                          className={`py-1.5 px-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                            blockReason === r
+                              ? 'bg-purple-600 text-white shadow-xs'
+                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          <Palmtree className="w-3 h-3" />
+                          <span>{r}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-slate-700 font-bold">הערה פנימית (אופציונלי):</label>
+                    <input
+                      type="text"
+                      placeholder="הערה ליומן..."
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-purple-200 rounded-xl text-slate-900 text-xs focus:border-purple-600 outline-none text-right transition"
+                    />
+                  </div>
+
+                  {errorMessage && (
+                    <div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-red-700 font-bold text-xs flex items-center gap-1.5">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{errorMessage}</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={isSubmitting || !rangeStartDate || !rangeEndDate}
+                    className="w-full py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-bold text-sm shadow-md transition cursor-pointer flex items-center justify-center gap-2 active:scale-98 disabled:opacity-50"
+                  >
+                    <Palmtree className="w-4 h-4" />
+                    <span>{isSubmitting ? 'שומר חופשה ביומן...' : 'תפיסת כל ימי החופשה בטווח 🔒'}</span>
+                  </button>
+                </form>
+              ) : (
+                /* SINGLE DAY SELECTION LIST WITH MONTH NAVIGATION */
+                <>
+                  {/* Month Navigation Bar */}
+                  <div className="bg-slate-900 text-white p-3 rounded-2xl flex items-center justify-between shadow-sm">
                     <button
-                      key={day.iso}
                       type="button"
-                      disabled={day.isClosed}
-                      onClick={() => handleSelectDay(day)}
-                      className={`w-full py-3.5 px-5 rounded-2xl border text-center font-bold text-sm sm:text-base transition-all flex items-center justify-between ${
-                        isAvailable
-                          ? 'bg-white border-slate-200 hover:border-purple-600 hover:bg-purple-50/50 hover:shadow-md text-slate-900 cursor-pointer active:scale-98'
-                          : day.isClosed
-                          ? 'bg-slate-50/80 border-slate-200 text-slate-400 cursor-not-allowed opacity-75'
-                          : 'bg-red-50/60 border-red-200 text-red-600 cursor-pointer hover:bg-red-50 font-medium'
-                      }`}
+                      onClick={handleNextMonth}
+                      className="p-2 hover:bg-slate-800 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-bold text-purple-300 active:scale-95"
+                      title="חודש הבא"
                     >
-                      <span className={`${isAvailable ? 'text-slate-900 font-black' : !day.isClosed ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
-                        {dayLabel}
-                      </span>
-
-                      {isAvailable ? (
-                        <span className="text-[11px] px-2.5 py-1 rounded-full bg-purple-50 text-purple-700 font-black border border-purple-200">
-                          {availSlots.length} פנויים
-                        </span>
-                      ) : day.isClosed ? (
-                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 font-medium">
-                          שבת סגור
-                        </span>
-                      ) : (
-                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold">
-                          מלא
-                        </span>
-                      )}
+                      <ChevronRight className="w-4 h-4" />
+                      <span>חודש הבא</span>
                     </button>
-                  );
-                })}
-              </div>
 
-              <div className="pt-2 text-center text-xs text-slate-400 font-medium">
-                <span>* ימים ללא תורים פנויים מסומנים ב</span>
-                <span className="text-red-600 font-bold">אדום</span>
-              </div>
+                    <div className="text-center">
+                      <span className="text-sm sm:text-base font-black tracking-wide font-['Rubik',sans-serif] text-white">
+                        {HEBREW_MONTHS[viewedMonth]} {viewedYear}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handlePrevMonth}
+                      disabled={!canGoPrevMonth}
+                      className={`p-2 rounded-xl transition flex items-center gap-1 text-xs font-bold ${
+                        canGoPrevMonth
+                          ? 'hover:bg-slate-800 text-purple-300 cursor-pointer active:scale-95'
+                          : 'text-slate-600 cursor-not-allowed opacity-40'
+                      }`}
+                      title="חודש קודם"
+                    >
+                      <span>חודש קודם</span>
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Vertical Day Buttons list for the viewed month */}
+                  <div className="space-y-2 max-h-[46vh] overflow-y-auto pr-0.5">
+                    {viewedMonthDays.map((day) => {
+                      const isAvailable = day.isAvailable;
+                      const shortDate = toShortIsraeliDateString(day.iso);
+
+                      const dayLabel = day.isToday
+                        ? `היום, ${shortDate}`
+                        : `יום ${day.weekday}, ${shortDate}`;
+
+                      return (
+                        <button
+                          key={day.iso}
+                          type="button"
+                          disabled={day.isClosed || day.isPast}
+                          onClick={() => handleSelectDirectDate(day.iso)}
+                          className={`w-full py-3.5 px-5 rounded-2xl border text-center font-bold text-sm sm:text-base transition-all flex items-center justify-between ${
+                            isAvailable
+                              ? 'bg-white border-slate-200 hover:border-purple-600 hover:bg-purple-50/50 hover:shadow-md text-slate-900 cursor-pointer active:scale-98'
+                              : day.isPast
+                              ? 'bg-slate-50/60 border-slate-200 text-slate-400 cursor-not-allowed opacity-50'
+                              : day.isClosed
+                              ? 'bg-slate-50/80 border-slate-200 text-slate-400 cursor-not-allowed opacity-75'
+                              : 'bg-red-50/60 border-red-200 text-red-600 cursor-pointer hover:bg-red-50 font-medium'
+                          }`}
+                        >
+                          <span className={`${isAvailable ? 'text-slate-900 font-black' : !day.isClosed && !day.isPast ? 'text-red-600 font-bold' : 'text-slate-400'}`}>
+                            {dayLabel}
+                          </span>
+
+                          {isAvailable ? (
+                            <span className="text-[11px] px-2.5 py-1 rounded-full bg-purple-50 text-purple-700 font-black border border-purple-200">
+                              {day.availSlots.length} פנויים
+                            </span>
+                          ) : day.isPast ? (
+                            <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-400 font-medium">
+                              עבר
+                            </span>
+                          ) : day.isClosed ? (
+                            <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 font-medium">
+                              שבת סגור
+                            </span>
+                          ) : (
+                            <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold">
+                              מלא
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="pt-1 text-center text-xs text-slate-500 font-medium">
+                    <span>* לחיצה על יום תחשוף את השעות הפנויות או תאפשר תפיסת תור</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
-          {/* STEP 3: בחירת שעה - Identical to TorModalFlow with Strikethrough & 'תפוס' */}
+          {/* STEP 3: בחירת שעה - With Quick Date Switcher Banner */}
           {step === 'slot' && (
             <div className="space-y-4 py-1">
               <div className="bg-purple-50 rounded-2xl p-3 border border-purple-200 flex items-center justify-between text-xs">
-                <span className="text-purple-950 font-bold">
-                  {selectedDayInfo?.isToday
-                    ? `היום (${toIsraeliDateString(selectedDate)})`
-                    : `יום ${selectedDayInfo?.weekday} (${toIsraeliDateString(selectedDate)})`}
-                </span>
-                <span className="text-purple-700 font-bold">
-                  משך טיפול: {formatDurationMinutes(durationMinutes)}
-                </span>
+                <div className="flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-purple-700" />
+                  <span className="text-purple-950 font-bold">
+                    {selectedDayInfo?.isToday
+                      ? `היום (${toIsraeliDateString(selectedDate)})`
+                      : `יום ${selectedDayInfo?.weekday || ''} (${toIsraeliDateString(selectedDate)})`}
+                  </span>
+                </div>
+                
+                <button
+                  type="button"
+                  onClick={() => setStep('day')}
+                  className="px-2.5 py-1 bg-white hover:bg-purple-100 text-purple-800 border border-purple-300 rounded-xl font-black text-[11px] transition cursor-pointer active:scale-95 shadow-2xs"
+                  title="בחירת יום אחר מהיומן"
+                >
+                  החלף יום 🔄
+                </button>
               </div>
 
               {/* If Admin is in Block mode, give option for full day block right here */}

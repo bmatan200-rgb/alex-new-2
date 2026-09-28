@@ -22,7 +22,7 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
   onSelectTime,
   appointments,
 }) => {
-  const days = buildNextDays(21);
+  const days = buildNextDays(60);
 
   return (
     <div className="w-full bg-[#121212] rounded-2xl p-5 sm:p-6 border border-[#262626] shadow-sm space-y-6">

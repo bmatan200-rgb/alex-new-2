@@ -941,8 +941,9 @@ async function loadPersistedSettings() {
 }
 
 /**
- * מנגנון בדיקה שוטף (רענון כל דקה):
- * מוודא שאם השעה הגיעה והתזכורת טרם נשלחה היום, היא תישלח מיידית!
+ * בדיקת תזמון מדויק (Heartbeat):
+ * שולח תזכורות אוטומטיות אך ורק בדקת השעה המוגדרת בדיוק, או בעת טריגר ידני של המנהל.
+ * מונע שליחה אוטומטית בעת קביעת תור חדש במהלך היום.
  */
 async function runAutomatedHeartbeat() {
   try {
@@ -951,25 +952,22 @@ async function runAutomatedHeartbeat() {
     }
 
     const { dateIso, tomorrowIso, hour, minute } = getIsraelTime();
-    const currentTotalMinutes = hour * 60 + minute;
 
     const morningTimeStr = activeServerSettings?.morningReminderTime || '08:00';
     const [mH, mM] = morningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
-    const morningTotalMinutes = mH * 60 + mM;
 
     const eveningTimeStr = activeServerSettings?.eveningReminderTime || '20:00';
     const [eH, eM] = eveningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
-    const eveningTotalMinutes = eH * 60 + eM;
 
-    // בדיקת תורי היום (אם השעה עברה את שעת הבוקר)
-    if (currentTotalMinutes >= morningTotalMinutes) {
+    // בדיקת תורי היום - נשלח רק אם השעה הנוכחית היא בדיוק שעת הבוקר המוגדרת
+    if (hour === mH && minute === mM) {
       if (activeServerSettings?.notifyCustomerToday !== false) {
         await sendRemindersForDate(dateIso, 'today');
       }
     }
 
-    // בדיקת תורי מחר (אם השעה עברה את שעת הערב)
-    if (currentTotalMinutes >= eveningTotalMinutes) {
+    // בדיקת תורי מחר - נשלח רק אם השעה הנוכחית היא בדיוק שעת הערב המוגדרת
+    if (hour === eH && minute === eM) {
       if (activeServerSettings?.notifyCustomer1DayBefore !== false) {
         await sendRemindersForDate(tomorrowIso, '1day');
       }
@@ -980,16 +978,11 @@ async function runAutomatedHeartbeat() {
 }
 
 async function initSmsEngine() {
-  console.log('[SMS Engine] 🚀 מאתחל מנוע SMS ותזמונים אוטומטיים...');
+  console.log('[SMS Engine] 🚀 מאתחל מנוע SMS ותזמונים אוטומטיים (שליחה רק בשעות המוגדרות או ידנית)...');
   await loadPersistedSettings();
   scheduleOrUpdateCronJobs();
 
-  // הפעלה ראשונה 3 שניות לאחר עלייה
-  setTimeout(() => {
-    runAutomatedHeartbeat().catch(() => {});
-  }, 3000);
-
-  // בדיקה חוזרת כל דקה (Fail-Safe Heartbeat)
+  // בדיקה חוזרת כל דקה התואמת לשעות המוגדרות
   setInterval(() => {
     runAutomatedHeartbeat().catch(() => {});
   }, 60 * 1000);

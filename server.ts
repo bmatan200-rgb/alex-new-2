@@ -737,13 +737,35 @@ async function tryClaimReminderLock(key: string): Promise<boolean> {
   try {
     return await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(lockRef);
-      if (snap.exists()) return false;
-      transaction.set(lockRef, { claimedAt: new Date().toISOString(), key });
+      if (snap.exists()) {
+        const data = snap.data() as any;
+        if (data?.status === 'sent') return false; // Already sent successfully
+
+        // If claimed more than 20 minutes ago and not sent, allow re-try
+        const claimedAt = data?.claimedAt ? new Date(data.claimedAt).getTime() : 0;
+        const now = Date.now();
+        if (claimedAt > 0 && now - claimedAt > 20 * 60 * 1000) {
+          transaction.set(lockRef, { claimedAt: new Date().toISOString(), key, status: 'in_progress' });
+          return true;
+        }
+        return false;
+      }
+      transaction.set(lockRef, { claimedAt: new Date().toISOString(), key, status: 'in_progress' });
       return true;
     });
   } catch (err) {
     console.warn(`[Reminder Lock] נעילה נכשלה עבור ${key}:`, err);
     return false;
+  }
+}
+
+async function markReminderLockSuccess(key: string): Promise<void> {
+  if (!db) return;
+  try {
+    const lockRef = doc(db, 'reminder_locks', key);
+    await setDoc(lockRef, { status: 'sent', sentAt: new Date().toISOString(), key }, { merge: true });
+  } catch {
+    // ignore
   }
 }
 
@@ -877,6 +899,7 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 
       if (res.success) {
         successCount += appts.length;
+        await markReminderLockSuccess(lockKey);
         results.push({ customer: firstAppt.customer_name, phone: firstAppt.customer_phone, success: true });
       } else {
         failedCount += appts.length;
@@ -953,14 +976,28 @@ async function loadPersistedSettings() {
   try {
     if (db) {
       const snapSms = await getDoc(doc(db, 'settings', 'sms_reminders'));
+      let data: any = {};
       if (snapSms.exists()) {
-        activeServerSettings = { ...activeServerSettings, ...snapSms.data() };
+        data = snapSms.data();
       } else {
         const snapOld = await getDoc(doc(db, 'settings', 'reminders'));
         if (snapOld.exists()) {
-          activeServerSettings = { ...activeServerSettings, ...snapOld.data() };
+          data = snapOld.data();
         }
       }
+
+      // Preserve environment variables if DB field is empty
+      const resolvedApiKey = (data.telnyxApiKey || '').trim() || process.env.TELNYX_API_KEY || activeServerSettings.telnyxApiKey || '';
+      const resolvedFromNumber = (data.telnyxFromNumber || data.telnyxFrom || '').trim() || process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM || activeServerSettings.telnyxFromNumber || 'ALEX BEAUTY';
+      const resolvedProfileId = (data.telnyxProfileId || '').trim() || process.env.TELNYX_PROFILE_ID || KNOWN_TELNYX_PROFILE_ID;
+
+      activeServerSettings = {
+        ...DEFAULT_SMS_SETTINGS,
+        ...data,
+        telnyxApiKey: resolvedApiKey,
+        telnyxFromNumber: resolvedFromNumber,
+        telnyxProfileId: resolvedProfileId,
+      };
 
       // Synchronize template field aliases
       const morningText = activeServerSettings.morningTemplate || activeServerSettings.customerTodayTemplate || DEFAULT_SMS_SETTINGS.morningTemplate;
@@ -975,6 +1012,7 @@ async function loadPersistedSettings() {
         evening: activeServerSettings.eveningReminderTime,
         todayEnabled: activeServerSettings.notifyCustomerToday,
         tomorrowEnabled: activeServerSettings.notifyCustomer1DayBefore,
+        hasApiKey: !!activeServerSettings.telnyxApiKey,
       });
     }
   } catch (err) {
@@ -983,39 +1021,63 @@ async function loadPersistedSettings() {
 }
 
 /**
- * בדיקת תזמון מדויק (Heartbeat):
- * שולח תזכורות אוטומטיות אך ורק בדקת השעה המוגדרת בדיוק, או בעת טריגר ידני של המנהל.
- * מונע שליחה אוטומטית בעת קביעת תור חדש במהלך היום.
+ * בדיקת תזמון חכמה ועמידה (Fail-Safe Automated Engine):
+ * בודק תזכורות שממתינות לשליחה להיום (משעת הבוקר והלאה) ולמחר (משעת הערב והלאה).
+ * מנגנון הנעילה ב-Firestore מבטיח שכל תור מקבל תזכורת בדיוק פעם אחת!
+ * פותר את בעיית תרדמת השרת (Server Sleep) כך שגם אם השרת התעורר אחרי שעת היעד — התזכורת תישלח מיד.
  */
-async function runAutomatedHeartbeat() {
+let isDispatchingDueReminders = false;
+
+async function checkAndDispatchDueReminders(): Promise<{
+  success: boolean;
+  todayResult?: any;
+  tomorrowResult?: any;
+  checkedAt: string;
+}> {
+  if (isDispatchingDueReminders) {
+    return { success: true, checkedAt: new Date().toISOString() };
+  }
+  isDispatchingDueReminders = true;
+
   try {
     if (activeServerSettings?.enabled === false || activeServerSettings?.autoSendEnabled === false) {
-      return;
+      return { success: true, checkedAt: new Date().toISOString() };
     }
 
-    const { dateIso, tomorrowIso, hour, minute } = getIsraelTime();
+    const { dateIso, tomorrowIso, hour, minute, timeStr } = getIsraelTime();
+    const currentTotalMinutes = hour * 60 + minute;
 
     const morningTimeStr = activeServerSettings?.morningReminderTime || '08:00';
     const [mH, mM] = morningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
+    const targetMornTotalMinutes = mH * 60 + mM;
 
     const eveningTimeStr = activeServerSettings?.eveningReminderTime || '20:00';
     const [eH, eM] = eveningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
+    const targetEveTotalMinutes = eH * 60 + eM;
 
-    // בדיקת תורי היום - נשלח רק אם השעה הנוכחית היא בדיוק שעת הבוקר המוגדרת
-    if (hour === mH && minute === mM) {
+    let todayResult: any = null;
+    let tomorrowResult: any = null;
+
+    // 1. תזכורות בוקר לתורי היום: נשלח אם השעה הנוכחית היא משעת הבוקר המוגדרת והלאה
+    if (currentTotalMinutes >= targetMornTotalMinutes) {
       if (activeServerSettings?.notifyCustomerToday !== false) {
-        await sendRemindersForDate(dateIso, 'today');
+        todayResult = await sendRemindersForDate(dateIso, 'today');
       }
     }
 
-    // בדיקת תורי מחר - נשלח רק אם השעה הנוכחית היא בדיוק שעת הערב המוגדרת
-    if (hour === eH && minute === eM) {
+    // 2. תזכורות ערב לתורי מחר: נשלח אם השעה הנוכחית היא משעת הערב המוגדרת והלאה
+    if (currentTotalMinutes >= targetEveTotalMinutes) {
       if (activeServerSettings?.notifyCustomer1DayBefore !== false) {
-        await sendRemindersForDate(tomorrowIso, '1day');
+        tomorrowResult = await sendRemindersForDate(tomorrowIso, '1day');
       }
     }
-  } catch (err) {
-    console.warn('[Automated Heartbeat] Warning:', err);
+
+    return { success: true, todayResult, tomorrowResult, checkedAt: new Date().toISOString() };
+  } catch (err: any) {
+    console.error('[Automated Reminders] ❌ שגיאה בבדיקת תזכורות תקופתית:', err?.message);
+    return { success: false, checkedAt: new Date().toISOString() };
+  } finally {
+    isDispatchingDueReminders = false;
   }
 }
 
@@ -1024,10 +1086,15 @@ async function initSmsEngine() {
   await loadPersistedSettings();
   scheduleOrUpdateCronJobs();
 
-  // בדיקה חוזרת כל דקה התואמת לשעות המוגדרות
+  // הרצת בדיקה ראשונית בעת עליית השרת
+  setTimeout(() => {
+    checkAndDispatchDueReminders().catch(() => {});
+  }, 3000);
+
+  // בדיקת דופק קבועה כל 30 שניות לשליחה אמינה גם אחרי תרדמת שרת
   setInterval(() => {
-    runAutomatedHeartbeat().catch(() => {});
-  }, 60 * 1000);
+    checkAndDispatchDueReminders().catch(() => {});
+  }, 30 * 1000);
 }
 
 initSmsEngine();
@@ -1035,6 +1102,16 @@ initSmsEngine();
 // ----------------------------------------------------
 // 📡 REST API ENDPOINTS
 // ----------------------------------------------------
+
+// Endpoint לבדיקת דופק וסנכרון תזכורות ממתינות (נקרא גם ע"י ה-Frontend וה-Cron)
+app.all(['/api/sms/check-due', '/api/reminders/heartbeat'], async (_req: Request, res: Response) => {
+  try {
+    const result = await checkAndDispatchDueReminders();
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
 
 // 1. Get SMS settings
 app.get(['/api/sms/settings', '/api/whatsapp/settings'], requireAdmin, (req: Request, res: Response) => {
@@ -1086,7 +1163,7 @@ app.post(['/api/sms/settings', '/api/whatsapp/sync-settings'], requireAdmin, asy
     scheduleOrUpdateCronJobs();
 
     // Trigger immediate check to process any pending reminders under new time
-    runAutomatedHeartbeat().catch(() => {});
+    checkAndDispatchDueReminders().catch(() => {});
 
     if (db) {
       try {

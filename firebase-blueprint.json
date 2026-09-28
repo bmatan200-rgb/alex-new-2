@@ -118,6 +118,60 @@
         }
       },
       "required": ["full_name", "phone", "created_at", "last_login_at"]
+    },
+    "SmsLogEntry": {
+      "title": "SmsLogEntry",
+      "description": "Audit log entry for automated and manual SMS reminders",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Log record identifier"
+        },
+        "recipientName": {
+          "type": "string",
+          "description": "Name of the recipient"
+        },
+        "recipientPhone": {
+          "type": "string",
+          "description": "Phone number formatted with country code"
+        },
+        "messageText": {
+          "type": "string",
+          "description": "Content of the sent message"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["sent", "failed"],
+          "description": "Delivery dispatch status"
+        },
+        "sentAt": {
+          "type": "string",
+          "description": "ISO timestamp of dispatch"
+        }
+      },
+      "required": ["id", "recipientName", "recipientPhone", "messageText", "status", "sentAt"]
+    },
+    "ReminderLock": {
+      "title": "ReminderLock",
+      "description": "Deduplication lock to ensure exactly-once automated reminder delivery",
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Unique key per appointment and reminder window"
+        },
+        "claimedAt": {
+          "type": "string",
+          "description": "Timestamp when lock was claimed"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["in_progress", "sent"],
+          "description": "Lock execution state"
+        }
+      },
+      "required": ["key", "claimedAt"]
     }
   },
   "firestore": {
@@ -132,6 +186,14 @@
     "/customers/{customerId}": {
       "entity": "Customer",
       "description": "Directory of registered customers with phone, name, and activity timestamps"
+    },
+    "/sms_logs/{logId}": {
+      "entity": "SmsLogEntry",
+      "description": "Audit log collection for sent SMS reminders"
+    },
+    "/reminder_locks/{lockId}": {
+      "entity": "ReminderLock",
+      "description": "Locks collection preventing duplicate automatic reminder dispatches"
     }
   }
 }

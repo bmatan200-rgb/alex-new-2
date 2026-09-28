@@ -139,6 +139,22 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Background pulse for automatic SMS reminder checks
+  useEffect(() => {
+    const triggerDueRemindersCheck = () => {
+      fetch('/api/sms/check-due')
+        .then((r) => r.json())
+        .catch(() => {});
+    };
+
+    // Initial check on mount
+    triggerDueRemindersCheck();
+
+    // Check periodically every 60 seconds
+    const interval = setInterval(triggerDueRemindersCheck, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Customer Login / Registration callback
   const handleCustomerLogin = (session: UserSession) => {
     const cleanSession: UserSession = {

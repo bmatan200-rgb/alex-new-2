@@ -1450,14 +1450,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             )}
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={() => setAppointmentToCancel(slot.appointment!)}
-                            className="text-xs px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-xl font-bold transition cursor-pointer flex items-center gap-1"
-                          >
-                            <XCircle className="w-3.5 h-3.5 text-red-600" />
-                            <span>ביטול תור</span>
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setAppointmentToCancel(slot.appointment!)}
+                              className="text-xs px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-xl font-bold transition cursor-pointer flex items-center gap-1"
+                              title="ביטול תור ושחרור השעה"
+                            >
+                              <XCircle className="w-3.5 h-3.5 text-amber-600" />
+                              <span>ביטול</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onDeleteAppointment(slot.appointment!.id);
+                                showToast(`התור של ${slot.appointment!.customer_name} נמחק לצמיתות והשעה שוחררה! 🌸`, 'success');
+                              }}
+                              className="text-xs px-2.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold transition cursor-pointer flex items-center gap-1 shadow-xs"
+                              title="מחיקת תור זה לצמיתות מהמערכת"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>מחיקה 🗑️</span>
+                            </button>
+                          </div>
                         </>
                       ) : isBlock && slot.appointment ? (
                         <div className="w-full flex items-center justify-between gap-2 flex-wrap">
@@ -1778,49 +1794,44 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </div>
                     )}
 
-                    <div className="flex items-center gap-2">
-                      {!isCancelled ? (
+                    <div className="flex items-center gap-1.5">
+                      {isBlock ? (
                         <button
                           type="button"
                           onClick={() => {
-                            if (isBlock) {
-                              onCancelAppointment(appt.id);
-                              showToast('החסימה שוחררה בהצלחה והשעה נפתחה להזמנות', 'success');
-                            } else {
-                              setAppointmentToCancel(appt);
-                            }
+                            onCancelAppointment(appt.id);
+                            showToast('החסימה שוחררה בהצלחה והשעה נפתחה להזמנות', 'success');
                           }}
-                          className={`text-xs px-3 py-1.5 rounded-xl font-bold transition cursor-pointer border flex items-center gap-1 ${
-                            isBlock
-                              ? 'bg-purple-100 text-purple-900 border-purple-300 hover:bg-purple-200'
-                              : 'text-red-700 bg-red-50 border-red-200 hover:bg-red-100'
-                          }`}
+                          className="text-xs px-3 py-1.5 rounded-xl font-bold transition cursor-pointer border flex items-center gap-1 bg-purple-100 text-purple-900 border-purple-300 hover:bg-purple-200"
                         >
-                          {isBlock ? (
-                            <>
-                              <Unlock className="w-3.5 h-3.5 text-purple-700" />
-                              <span>שחרור חסימה 🔓</span>
-                            </>
-                          ) : (
-                            <>
-                              <XCircle className="w-3.5 h-3.5 text-red-600" />
-                              <span>ביטול תור</span>
-                            </>
-                          )}
+                          <Unlock className="w-3.5 h-3.5 text-purple-700" />
+                          <span>שחרור חסימה 🔓</span>
                         </button>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            onDeleteAppointment(appt.id);
-                            showToast('התור נמחק מהמערכת', 'success');
-                          }}
-                          className="text-xs text-red-600 hover:text-red-700 p-1.5 hover:bg-red-50 rounded-lg transition cursor-pointer flex items-center gap-1"
-                          title="מחיקה לצמיתות"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                          <span className="text-[11px] font-bold">מחיקה לצמיתות</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setAppointmentToCancel(appt)}
+                            className="text-xs px-2.5 py-1.5 rounded-xl font-bold transition cursor-pointer border flex items-center gap-1 text-amber-800 bg-amber-50 border-amber-200 hover:bg-amber-100"
+                            title="ביטול תור ושחרור השעה ביומן"
+                          >
+                            <XCircle className="w-3.5 h-3.5 text-amber-600" />
+                            <span>ביטול תור</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onDeleteAppointment(appt.id);
+                              showToast(`התור של ${appt.customer_name} נמחק לצמיתות מהמערכת 🌸`, 'success');
+                            }}
+                            className="text-xs px-2.5 py-1.5 rounded-xl font-bold transition cursor-pointer border flex items-center gap-1 text-red-700 bg-red-50 border-red-200 hover:bg-red-100"
+                            title="מחיקת תור זה לצמיתות מהמערכת"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                            <span>מחיקה 🗑️</span>
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>

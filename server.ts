@@ -141,18 +141,47 @@ app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
     const { appointmentId, appointmentDate, startTime } = req.body;
     if (!appointmentId) return res.status(400).json({ success: false, error: 'Missing appointmentId' });
     
-    await deleteDoc(doc(db, 'appointments', String(appointmentId)));
+    const idStr = String(appointmentId);
+    try {
+      await deleteDoc(doc(db, 'appointments', idStr));
+    } catch {
+      // ignore
+    }
 
     if (appointmentDate && startTime) {
       const sId = `appt_${appointmentDate}_${startTime.replace(':', '')}`;
-      if (sId !== String(appointmentId)) {
+      if (sId !== idStr) {
         try {
           await deleteDoc(doc(db, 'appointments', sId));
         } catch {
           // ignore
         }
       }
+
+      // Query and delete all matching documents in appointments collection for this date and time
+      try {
+        const q = query(
+          collection(db, 'appointments'),
+          where('appointment_date', '==', appointmentDate),
+          where('start_time', '==', startTime)
+        );
+        const querySnap = await getDocs(q);
+        for (const docItem of querySnap.docs) {
+          try {
+            await deleteDoc(doc(db, 'appointments', docItem.id));
+          } catch {
+            // ignore
+          }
+        }
+      } catch (qErr) {
+        console.warn('[Delete API] Warning querying slot appointments in Firestore:', qErr);
+      }
     }
+
+    // Filter out of in-memory appointments
+    serverAppointments = serverAppointments.filter(
+      (a) => String(a.id) !== idStr && !(appointmentDate && startTime && a.appointment_date === appointmentDate && a.start_time === startTime)
+    );
 
     return res.json({ success: true });
   } catch (err: any) {

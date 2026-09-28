@@ -260,6 +260,7 @@ export async function deleteAppointmentInFirestore(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-admin-request': session?.isAdmin ? 'true' : 'false',
         'Authorization': `Bearer ${token}`,
         ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
       },
@@ -291,6 +292,20 @@ export async function deleteAppointmentInFirestore(
       } catch {
         // ignore
       }
+    }
+
+    try {
+      const q = query(
+        collection(db, APPOINTMENTS_COLLECTION),
+        where('appointment_date', '==', appointmentDate),
+        where('start_time', '==', startTime)
+      );
+      const querySnap = await getDocs(q);
+      for (const d of querySnap.docs) {
+        await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, d.id));
+      }
+    } catch {
+      // ignore
     }
   }
 }

@@ -112,7 +112,7 @@ export function getStoredAppointments(): Appointment[] {
     const parsed: Appointment[] = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     
-    return deduplicateAppointments(parsed);
+    return deduplicateAppointments(parsed.filter((a) => a.status !== 'cancelled'));
   } catch {
     return [];
   }
@@ -133,19 +133,7 @@ export function saveAppointment(appointment: Appointment): void {
 }
 
 export function cancelAppointment(appointmentId: number | string): void {
-  const current = getStoredAppointments();
-  const idStr = String(appointmentId);
-  const target = current.find((a) => String(a.id) === idStr);
-
-  const updated = current.map((app) => {
-    if (String(app.id) === idStr) return { ...app, status: 'cancelled' as const };
-    if (target && app.appointment_date === target.appointment_date && app.start_time === target.start_time) {
-      return { ...app, status: 'cancelled' as const };
-    }
-    return app;
-  });
-  const deduped = deduplicateAppointments(updated);
-  localStorage.setItem(STORAGE_KEY_APPOINTMENTS, JSON.stringify(deduped));
+  deleteAppointmentPermanently(appointmentId);
 }
 
 export function deleteAppointmentPermanently(appointmentId: number | string): void {

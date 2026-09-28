@@ -66,6 +66,7 @@ export function subscribeAppointments(
           if (seenIds.has(id)) continue;
           seenIds.add(id);
           const data = docSnap.data();
+          if (data.status === 'cancelled') continue;
           list.push({
             id,
             customer_name: data.customer_name || '',
@@ -202,19 +203,24 @@ export async function cancelAppointmentInFirestore(
     console.warn('Server cancel attempt warning, using Firestore direct fallback:', err);
   }
 
-  // Fallback: If server wasn't able to complete or returned non-200, apply directly to Firestore
+  // Primary: Delete directly from Firestore so it is removed immediately
   try {
-    await setDoc(doc(db, APPOINTMENTS_COLLECTION, idStr), { status: 'cancelled' }, { merge: true });
+    await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, idStr));
   } catch (err) {
-    console.warn('Direct Firestore cancel failed for idStr:', err);
+    // If delete fails, mark as cancelled
+    try {
+      await setDoc(doc(db, APPOINTMENTS_COLLECTION, idStr), { status: 'cancelled' }, { merge: true });
+    } catch {
+      // ignore
+    }
   }
 
-  // Also ensure deterministic slot doc and any matching slot docs are cancelled
+  // Also ensure deterministic slot doc and any matching slot docs are deleted
   if (appointmentDate && startTime) {
     const sDocId = slotDocId(appointmentDate, startTime);
     if (sDocId !== idStr) {
       try {
-        await setDoc(doc(db, APPOINTMENTS_COLLECTION, sDocId), { status: 'cancelled' }, { merge: true });
+        await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, sDocId));
       } catch {
         // ignore
       }
@@ -228,7 +234,7 @@ export async function cancelAppointmentInFirestore(
       );
       const querySnap = await getDocs(q);
       for (const d of querySnap.docs) {
-        await setDoc(doc(db, APPOINTMENTS_COLLECTION, d.id), { status: 'cancelled' }, { merge: true });
+        await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, d.id));
       }
     } catch {
       // ignore

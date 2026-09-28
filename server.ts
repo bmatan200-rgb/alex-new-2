@@ -80,8 +80,16 @@ app.post('/api/appointments/cancel', async (req, res) => {
 
     const nowIso = new Date().toISOString();
 
-    if (snap.exists()) {
-      await setDoc(doc(db, 'appointments', idStr), { status: 'cancelled', updated_at: nowIso }, { merge: true });
+    try {
+      await deleteDoc(doc(db, 'appointments', idStr));
+    } catch {
+      if (snap.exists()) {
+        try {
+          await setDoc(doc(db, 'appointments', idStr), { status: 'cancelled', updated_at: nowIso }, { merge: true });
+        } catch {
+          // ignore
+        }
+      }
     }
 
     const apptDate = req.body?.appointmentDate || snapData?.appointment_date;
@@ -90,13 +98,13 @@ app.post('/api/appointments/cancel', async (req, res) => {
       const sId = `appt_${apptDate}_${apptTime.replace(':', '')}`;
       if (sId !== idStr) {
         try {
-          await setDoc(doc(db, 'appointments', sId), { status: 'cancelled', updated_at: nowIso }, { merge: true });
+          await deleteDoc(doc(db, 'appointments', sId));
         } catch {
           // ignore
         }
       }
 
-      // Query and cancel all matching documents in appointments collection for this date and time
+      // Query and delete all matching documents in appointments collection for this date and time
       try {
         const q = query(
           collection(db, 'appointments'),
@@ -105,18 +113,20 @@ app.post('/api/appointments/cancel', async (req, res) => {
         );
         const querySnap = await getDocs(q);
         for (const docItem of querySnap.docs) {
-          await setDoc(doc(db, 'appointments', docItem.id), { status: 'cancelled', updated_at: nowIso }, { merge: true });
+          try {
+            await deleteDoc(doc(db, 'appointments', docItem.id));
+          } catch {
+            // ignore
+          }
         }
       } catch (qErr) {
         console.warn('[Cancel API] Warning querying slot appointments in Firestore:', qErr);
       }
     }
 
-    // Update in-memory appointments
-    serverAppointments = serverAppointments.map((a) =>
-      String(a.id) === idStr || (apptDate && apptTime && a.appointment_date === apptDate && a.start_time === apptTime)
-        ? { ...a, status: 'cancelled' }
-        : a
+    // Filter out of in-memory appointments so it is completely gone
+    serverAppointments = serverAppointments.filter(
+      (a) => String(a.id) !== idStr && !(apptDate && apptTime && a.appointment_date === apptDate && a.start_time === apptTime)
     );
 
     return res.json({ success: true });

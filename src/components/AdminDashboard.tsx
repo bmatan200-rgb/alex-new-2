@@ -857,7 +857,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-xs text-amber-900 flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
               <p>
-                ביטול התור ישנה את הסטטוס ל-<strong>מבוטל</strong> וישחרר את השעה <strong>{appointmentToCancel.start_time}</strong> באופן מיידי בלוח הזמנים של הלקוחות לקביעה מחודשת.
+                ביטול התור ימחק את התור מהיומן וישחרר את השעה <strong>{appointmentToCancel.start_time}</strong> באופן מיידי לקביעה מחודשת.
               </p>
             </div>
 
@@ -867,13 +867,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 type="button"
                 onClick={() => {
                   onCancelAppointment(appointmentToCancel.id);
-                  showToast(`התור של ${appointmentToCancel.customer_name} בוטל בהצלחה והשעה ${appointmentToCancel.start_time} שוחררה לקביעה! 🌸`, 'success');
+                  showToast(`התור של ${appointmentToCancel.customer_name} בוטל ונמחק בהצלחה והשעה ${appointmentToCancel.start_time} שוחררה לקביעה! 🌸`, 'success');
                   setAppointmentToCancel(null);
                 }}
                 className="w-full py-3 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl text-xs sm:text-sm transition flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-red-600/20"
               >
                 <XCircle className="w-4 h-4" />
-                <span>כן, ביטול התור ושחרור השעה ביומן</span>
+                <span>כן, ביטול ומחיקת התור ושחרור השעה ביומן</span>
               </button>
 
               <button

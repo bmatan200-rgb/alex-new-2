@@ -188,24 +188,29 @@ export default function App() {
     const idStr = String(id);
     const apptToCancel = appointments.find((a) => String(a.id) === idStr);
     cancelAppointment(idStr);
+    deleteAppointmentPermanently(idStr);
     setAppointments((prev) =>
-      deduplicateAppointments(
-        prev.map((app) =>
-          String(app.id) === idStr ||
-          (apptToCancel &&
+      prev.filter(
+        (app) =>
+          String(app.id) !== idStr &&
+          !(
+            apptToCancel &&
             app.appointment_date === apptToCancel.appointment_date &&
-            app.start_time === apptToCancel.start_time)
-            ? { ...app, status: 'cancelled' as const }
-            : app
-        )
+            app.start_time === apptToCancel.start_time
+          )
       )
     );
-    showToast('התור בוטל בהצלחה והשעה שוחררה ביומן 🌸', 'success');
+    showToast('התור בוטל ונמחק בהצלחה והשעה שוחררה ביומן 🌸', 'success');
 
     try {
       await cancelAppointmentInFirestore(
         idStr,
         apptToCancel?.customer_phone,
+        apptToCancel?.appointment_date,
+        apptToCancel?.start_time
+      );
+      await deleteAppointmentInFirestore(
+        idStr,
         apptToCancel?.appointment_date,
         apptToCancel?.start_time
       );

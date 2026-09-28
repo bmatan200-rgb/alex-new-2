@@ -377,10 +377,13 @@ END:VCALENDAR`;
 export function deduplicateAppointments(list: Appointment[]): Appointment[] {
   if (!Array.isArray(list) || list.length === 0) return [];
 
+  const activeList = list.filter((a) => a.status !== 'cancelled');
+  if (activeList.length === 0) return [];
+
   // Sort priority:
-  // First: confirmed before non-confirmed (cancelled)
+  // First: confirmed before non-confirmed
   // Second: newest created_at first
-  const sorted = [...list].sort((a, b) => {
+  const sorted = [...activeList].sort((a, b) => {
     if (a.status === 'confirmed' && b.status !== 'confirmed') return -1;
     if (a.status !== 'confirmed' && b.status === 'confirmed') return 1;
     const timeA = new Date(a.created_at || 0).getTime();

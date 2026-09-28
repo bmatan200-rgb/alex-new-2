@@ -11,21 +11,39 @@ import { createServer as createViteServer } from 'vite';
 const app = express();
 const PORT = 3000;
 
-// אתחול Firebase Admin לאימות טוקני התחברות של מנהלות.
+// אתחול Firebase Admin לאימות טוקני התחברות של מנהלות (מוגן מפני קריסה)
 let adminSdkReady = false;
 try {
   if (getApps().length === 0) {
     const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (saJson) {
-      initializeApp({ credential: cert(JSON.parse(saJson)), projectId: 'gen-lang-client-0382531831' });
-    } else {
+    let initialized = false;
+
+    if (saJson && typeof saJson === 'string') {
+      const trimmed = saJson.trim();
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        try {
+          const parsedCreds = JSON.parse(trimmed);
+          if (parsedCreds && parsedCreds.project_id) {
+            initializeApp({
+              credential: cert(parsedCreds),
+              projectId: parsedCreds.project_id || 'gen-lang-client-0382531831',
+            });
+            initialized = true;
+          }
+        } catch (parseErr: any) {
+          console.warn('[Firebase Admin] ⚠️ שגיאת פענוח Service Account JSON (עובר לאתחול לפי projectId):', parseErr?.message);
+        }
+      }
+    }
+
+    if (!initialized) {
       initializeApp({ projectId: 'gen-lang-client-0382531831' });
     }
   }
   adminSdkReady = true;
-  console.log('[Firebase Admin] ✅ מוכן לאימות טוקנים');
+  console.log('[Firebase Admin] ✅ מוכן לאימות טוקנים (מצב פעיל)');
 } catch (err: any) {
-  console.error('[Firebase Admin] ❌ אתחול נכשל:', err?.message);
+  console.warn('[Firebase Admin] ⚠️ אתחול במצב Standalone:', err?.message);
 }
 
 const normalizePhone = (p?: string) => (p || '').replace(/\D/g, '');
@@ -739,11 +757,35 @@ async function releaseReminderLock(key: string): Promise<void> {
 }
 
 function recordLogEntry(entry: SmsLogEntry) {
-  recentSmsLogs.unshift(entry);
-  if (recentSmsLogs.length > 100) recentSmsLogs.pop();
+  try {
+    const sanitizedEntry = {
+      id: entry.id || `sms_${Date.now()}`,
+      recipientName: entry.recipientName || '',
+      recipientPhone: entry.recipientPhone || '',
+      messageText: entry.messageText || '',
+      channel: entry.channel || 'sms',
+      status: entry.status || 'sent',
+      reminderType: entry.reminderType || 'manual_single',
+      appointmentDate: entry.appointmentDate || null,
+      startTime: entry.startTime || null,
+      sentAt: entry.sentAt || new Date().toISOString(),
+      errorMessage: entry.errorMessage ? String(entry.errorMessage) : null,
+    };
 
-  if (db) {
-    setDoc(doc(db, 'sms_logs', entry.id), entry, { merge: true }).catch(() => {});
+    recentSmsLogs.unshift(sanitizedEntry as SmsLogEntry);
+    if (recentSmsLogs.length > 100) recentSmsLogs.pop();
+
+    if (db) {
+      try {
+        setDoc(doc(db, 'sms_logs', sanitizedEntry.id), sanitizedEntry, { merge: true }).catch((err) => {
+          console.warn('[SMS Logs] Firestore setDoc warning (non-fatal):', err?.message);
+        });
+      } catch (innerErr: any) {
+        console.warn('[SMS Logs] setDoc catch block warning:', innerErr?.message);
+      }
+    }
+  } catch (err: any) {
+    console.warn('[SMS Logs] ⚠️ Safe error recording log entry:', err?.message);
   }
 }
 
@@ -1086,65 +1128,75 @@ app.post(['/api/whatsapp/trigger-evening', '/api/whatsapp/test-1day-evening'], r
 
 // 4. Send Single SMS
 app.post(['/api/sms/send-single', '/api/whatsapp/send'], requireAdmin, async (req: Request, res: Response) => {
-  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
-  if (isDispatchRateLimited(clientIp)) {
-    return res.status(429).json({ success: false, error: 'קצב הבקשות מהיר מדי. נא להמתין רגע.' });
+  try {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    if (isDispatchRateLimited(clientIp)) {
+      return res.status(429).json({ success: false, error: 'קצב הבקשות מהיר מדי. נא להמתין רגע.' });
+    }
+
+    const { phone, message, customerName, appointmentId, reminderType } = req.body;
+    if (!phone || !message) {
+      return res.status(400).json({ success: false, error: 'Phone and message are required' });
+    }
+
+    const resSend = await sendSmsViaTelnyx(phone, message);
+
+    const logEntry: SmsLogEntry = {
+      id: `sms_single_${Date.now()}`,
+      recipientName: customerName || 'לקוח/ה',
+      recipientPhone: phone,
+      messageText: message,
+      channel: 'sms',
+      status: resSend.success ? 'sent' : 'failed',
+      reminderType: reminderType || 'manual_single',
+      sentAt: new Date().toISOString(),
+      errorMessage: resSend.error || null,
+    };
+    recordLogEntry(logEntry);
+
+    if (!resSend.success) {
+      return res.status(400).json(resSend);
+    }
+
+    return res.json(resSend);
+  } catch (err: any) {
+    console.error('[SMS Endpoint] ❌ שגיאה בשליחת SMS בודד:', err?.message);
+    return res.status(500).json({ success: false, error: err?.message || 'שגיאה פנימית בשליחת SMS' });
   }
-
-  const { phone, message, customerName, appointmentId, reminderType } = req.body;
-  if (!phone || !message) {
-    return res.status(400).json({ success: false, error: 'Phone and message are required' });
-  }
-
-  const resSend = await sendSmsViaTelnyx(phone, message);
-
-  const logEntry: SmsLogEntry = {
-    id: `sms_single_${Date.now()}`,
-    recipientName: customerName || 'לקוח/ה',
-    recipientPhone: phone,
-    messageText: message,
-    channel: 'sms',
-    status: resSend.success ? 'sent' : 'failed',
-    reminderType: reminderType || 'manual_single',
-    sentAt: new Date().toISOString(),
-    errorMessage: resSend.error,
-  };
-  recordLogEntry(logEntry);
-
-  if (!resSend.success) {
-    return res.status(400).json(resSend);
-  }
-
-  return res.json(resSend);
 });
 
 // 5. Test SMS to Admin
 app.post('/api/sms/test', requireAdmin, async (req: Request, res: Response) => {
-  const { phone, message } = req.body;
-  if (!phone || !message) {
-    return res.status(400).json({ success: false, error: 'נא להזין טלפון והודעה' });
+  try {
+    const { phone, message } = req.body;
+    if (!phone || !message) {
+      return res.status(400).json({ success: false, error: 'נא להזין טלפון והודעה' });
+    }
+
+    const resSend = await sendSmsViaTelnyx(phone, message);
+
+    const logEntry: SmsLogEntry = {
+      id: `sms_test_${Date.now()}`,
+      recipientName: 'בדיקת מנהלת',
+      recipientPhone: phone,
+      messageText: message,
+      channel: 'sms',
+      status: resSend.success ? 'sent' : 'failed',
+      reminderType: 'test',
+      sentAt: new Date().toISOString(),
+      errorMessage: resSend.error || null,
+    };
+    recordLogEntry(logEntry);
+
+    if (!resSend.success) {
+      return res.status(400).json(resSend);
+    }
+
+    return res.json(resSend);
+  } catch (err: any) {
+    console.error('[SMS Endpoint] ❌ שגיאה בשליחת SMS בדיקה:', err?.message);
+    return res.status(500).json({ success: false, error: err?.message || 'שגיאה פנימית בשליחת SMS בדיקה' });
   }
-
-  const resSend = await sendSmsViaTelnyx(phone, message);
-
-  const logEntry: SmsLogEntry = {
-    id: `sms_test_${Date.now()}`,
-    recipientName: 'בדיקת מנהלת',
-    recipientPhone: phone,
-    messageText: message,
-    channel: 'sms',
-    status: resSend.success ? 'sent' : 'failed',
-    reminderType: 'test',
-    sentAt: new Date().toISOString(),
-    errorMessage: resSend.error,
-  };
-  recordLogEntry(logEntry);
-
-  if (!resSend.success) {
-    return res.status(400).json(resSend);
-  }
-
-  return res.json(resSend);
 });
 
 // 6. Get Recent Logs

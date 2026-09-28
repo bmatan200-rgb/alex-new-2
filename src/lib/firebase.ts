@@ -37,12 +37,15 @@ export const auth = getAuth(app);
 export { signInWithEmailAndPassword, signOut, onAuthStateChanged };
 export type { FirebaseUser };
 
-// Initialize Firestore with clean memory cache to prevent BloomFilter indexing errors
+// Initialize Firestore with clean memory cache and ignoreUndefinedProperties to prevent crashes
 let firestoreInstance: Firestore;
 try {
   firestoreInstance = initializeFirestore(
     app,
-    { localCache: memoryLocalCache() },
+    {
+      localCache: memoryLocalCache(),
+      ignoreUndefinedProperties: true,
+    },
     firebaseConfig.firestoreDatabaseId || undefined
   );
 } catch {

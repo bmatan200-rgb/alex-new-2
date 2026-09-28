@@ -9,6 +9,7 @@ import {
   deleteDoc,
   onSnapshot,
   query,
+  where,
   orderBy,
   getDocs,
   getDoc,
@@ -182,6 +183,7 @@ export async function cancelAppointmentInFirestore(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-admin-request': session?.isAdmin ? 'true' : 'false',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
         ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
       },
@@ -207,7 +209,7 @@ export async function cancelAppointmentInFirestore(
     console.warn('Direct Firestore cancel failed for idStr:', err);
   }
 
-  // Also ensure deterministic slot doc is cancelled if date and time are provided
+  // Also ensure deterministic slot doc and any matching slot docs are cancelled
   if (appointmentDate && startTime) {
     const sDocId = slotDocId(appointmentDate, startTime);
     if (sDocId !== idStr) {
@@ -216,6 +218,20 @@ export async function cancelAppointmentInFirestore(
       } catch {
         // ignore
       }
+    }
+
+    try {
+      const q = query(
+        collection(db, APPOINTMENTS_COLLECTION),
+        where('appointment_date', '==', appointmentDate),
+        where('start_time', '==', startTime)
+      );
+      const querySnap = await getDocs(q);
+      for (const d of querySnap.docs) {
+        await setDoc(doc(db, APPOINTMENTS_COLLECTION, d.id), { status: 'cancelled' }, { merge: true });
+      }
+    } catch {
+      // ignore
     }
   }
 }

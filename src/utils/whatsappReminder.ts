@@ -69,29 +69,85 @@ export function formatIsraeliPhoneToE164(phone: string): string {
 export function getStoredReminderSettings(): WhatsAppReminderSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
-    if (!raw) return DEFAULT_REMINDER_SETTINGS;
-    const parsed = JSON.parse(raw);
-    
-    // Migrate provider to Telnyx
-    if (!parsed.provider || parsed.provider === 'twilio' || parsed.provider === 'direct') {
-      parsed.provider = 'telnyx';
+    let parsed: any = {};
+    if (raw) {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = {};
+      }
     }
+
+    // Always merge with alex_sms_reminder_settings_v2 for templates and times
+    const smsRaw = localStorage.getItem('alex_sms_reminder_settings_v2');
+    let smsParsed: any = {};
+    if (smsRaw) {
+      try {
+        smsParsed = JSON.parse(smsRaw);
+      } catch {
+        smsParsed = {};
+      }
+    }
+
+    const customerTodayTemplate =
+      smsParsed.morningTemplate ||
+      smsParsed.customerTodayTemplate ||
+      parsed.customerTodayTemplate ||
+      DEFAULT_REMINDER_SETTINGS.customerTodayTemplate;
+
+    const customer1DayTemplate =
+      smsParsed.eveningTemplate ||
+      smsParsed.customer1DayTemplate ||
+      parsed.customer1DayTemplate ||
+      DEFAULT_REMINDER_SETTINGS.customer1DayTemplate;
 
     // Default morning reminder time to exactly 08:00
-    if (!parsed.morningReminderTime) {
-      parsed.morningReminderTime = '08:00';
-    }
-    if (parsed.notifyCustomerToday === undefined) {
-      parsed.notifyCustomerToday = true;
-    }
-    if (parsed.notifyCustomer1DayBefore === undefined) {
-      parsed.notifyCustomer1DayBefore = true;
-    }
-    if (!parsed.eveningReminderTime) {
-      parsed.eveningReminderTime = '20:00';
-    }
+    const morningReminderTime =
+      smsParsed.morningReminderTime ||
+      parsed.morningReminderTime ||
+      '08:00';
 
-    return { ...DEFAULT_REMINDER_SETTINGS, ...parsed };
+    const eveningReminderTime =
+      smsParsed.eveningReminderTime ||
+      parsed.eveningReminderTime ||
+      '20:00';
+
+    const notifyCustomerToday =
+      smsParsed.notifyCustomerToday !== undefined
+        ? smsParsed.notifyCustomerToday
+        : parsed.notifyCustomerToday !== undefined
+        ? parsed.notifyCustomerToday
+        : true;
+
+    const notifyCustomer1DayBefore =
+      smsParsed.notifyCustomer1DayBefore !== undefined
+        ? smsParsed.notifyCustomer1DayBefore
+        : parsed.notifyCustomer1DayBefore !== undefined
+        ? parsed.notifyCustomer1DayBefore
+        : true;
+
+    const autoSendEnabled =
+      smsParsed.autoSendEnabled !== undefined
+        ? smsParsed.autoSendEnabled
+        : parsed.autoSendEnabled !== undefined
+        ? parsed.autoSendEnabled
+        : true;
+
+    return {
+      ...DEFAULT_REMINDER_SETTINGS,
+      ...parsed,
+      ...smsParsed,
+      provider: 'telnyx',
+      customerTodayTemplate,
+      customer1DayTemplate,
+      morningTemplate: customerTodayTemplate,
+      eveningTemplate: customer1DayTemplate,
+      morningReminderTime,
+      eveningReminderTime,
+      notifyCustomerToday,
+      notifyCustomer1DayBefore,
+      autoSendEnabled,
+    };
   } catch {
     return DEFAULT_REMINDER_SETTINGS;
   }
@@ -120,20 +176,33 @@ export async function getAdminApiHeaders(): Promise<Record<string, string>> {
 
 export async function saveReminderSettings(settings: WhatsAppReminderSettings): Promise<void> {
   try {
-    localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
+    const unifiedPayload = {
+      ...settings,
+      customerTodayTemplate: settings.customerTodayTemplate || (settings as any).morningTemplate,
+      customer1DayTemplate: settings.customer1DayTemplate || (settings as any).eveningTemplate,
+      morningTemplate: settings.customerTodayTemplate || (settings as any).morningTemplate,
+      eveningTemplate: settings.customer1DayTemplate || (settings as any).eveningTemplate,
+      morningReminderTime: settings.morningReminderTime || '08:00',
+      eveningReminderTime: settings.eveningReminderTime || '20:00',
+      notifyCustomerToday: settings.notifyCustomerToday !== false,
+      notifyCustomer1DayBefore: settings.notifyCustomer1DayBefore !== false,
+      autoSendEnabled: settings.autoSendEnabled !== false,
+      updatedAt: new Date().toISOString(),
+    };
+
+    localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(unifiedPayload));
+    try {
+      localStorage.setItem('alex_sms_reminder_settings_v2', JSON.stringify(unifiedPayload));
+    } catch {
+      // ignore
+    }
     
-    // 1. Direct Firestore persistence
+    // 1. Direct Firestore persistence to both collections
     try {
       if (db) {
         const { doc, setDoc } = await import('firebase/firestore');
-        await setDoc(doc(db, 'settings', 'reminders'), {
-          ...settings,
-          morningReminderTime: settings.morningReminderTime || '08:00',
-          eveningReminderTime: settings.eveningReminderTime || '20:00',
-          notifyCustomerToday: settings.notifyCustomerToday !== false,
-          notifyCustomer1DayBefore: settings.notifyCustomer1DayBefore !== false,
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
+        await setDoc(doc(db, 'settings', 'reminders'), unifiedPayload, { merge: true });
+        await setDoc(doc(db, 'settings', 'sms_reminders'), unifiedPayload, { merge: true });
       }
     } catch (fsErr) {
       console.warn('Could not save settings directly to Firestore:', fsErr);
@@ -142,10 +211,10 @@ export async function saveReminderSettings(settings: WhatsAppReminderSettings): 
     // 2. Server API sync with admin headers
     const headers = await getAdminApiHeaders();
 
-    await fetch('/api/whatsapp/sync-settings', {
+    await fetch('/api/sms/settings', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ settings }),
+      body: JSON.stringify({ settings: unifiedPayload }),
     });
   } catch (err) {
     console.error('Failed to save reminder settings:', err);

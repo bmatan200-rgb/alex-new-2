@@ -109,13 +109,47 @@ export async function getAdminApiHeaders(): Promise<Record<string, string>> {
 export function getStoredSmsSettings(): SmsReminderSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_SMS_SETTINGS);
-    if (!raw) return DEFAULT_SMS_SETTINGS;
-    const parsed = JSON.parse(raw);
+    let parsed: any = {};
+    if (raw) {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = {};
+      }
+    }
+
+    // Also check legacy/whatsapp settings key for custom templates if not set in v2
+    const legacyRaw = localStorage.getItem('alex_whatsapp_reminder_settings_v1');
+    let legacyParsed: any = {};
+    if (legacyRaw) {
+      try {
+        legacyParsed = JSON.parse(legacyRaw);
+      } catch {
+        legacyParsed = {};
+      }
+    }
+
+    const morningTemplate =
+      parsed.morningTemplate ||
+      legacyParsed.customerTodayTemplate ||
+      DEFAULT_SMS_SETTINGS.morningTemplate;
+
+    const eveningTemplate =
+      parsed.eveningTemplate ||
+      legacyParsed.customer1DayTemplate ||
+      DEFAULT_SMS_SETTINGS.eveningTemplate;
+
     return {
       ...DEFAULT_SMS_SETTINGS,
+      ...legacyParsed,
       ...parsed,
-      morningReminderTime: parsed.morningReminderTime || '08:00',
-      eveningReminderTime: parsed.eveningReminderTime || '20:00',
+      morningTemplate,
+      eveningTemplate,
+      morningReminderTime: parsed.morningReminderTime || legacyParsed.morningReminderTime || '08:00',
+      eveningReminderTime: parsed.eveningReminderTime || legacyParsed.eveningReminderTime || '20:00',
+      notifyCustomerToday: parsed.notifyCustomerToday !== undefined ? parsed.notifyCustomerToday : (legacyParsed.notifyCustomerToday !== undefined ? legacyParsed.notifyCustomerToday : true),
+      notifyCustomer1DayBefore: parsed.notifyCustomer1DayBefore !== undefined ? parsed.notifyCustomer1DayBefore : (legacyParsed.notifyCustomer1DayBefore !== undefined ? legacyParsed.notifyCustomer1DayBefore : true),
+      autoSendEnabled: parsed.autoSendEnabled !== undefined ? parsed.autoSendEnabled : (legacyParsed.autoSendEnabled !== undefined ? legacyParsed.autoSendEnabled : true),
     };
   } catch {
     return DEFAULT_SMS_SETTINGS;
@@ -124,27 +158,50 @@ export function getStoredSmsSettings(): SmsReminderSettings {
 
 export async function saveSmsSettings(settings: SmsReminderSettings): Promise<void> {
   try {
+    // 1. Save to primary SMS settings key
     localStorage.setItem(STORAGE_KEY_SMS_SETTINGS, JSON.stringify(settings));
 
-    // Save to Firestore
+    // 2. Also save to legacy WhatsApp/general reminder key to keep all views 100% in sync
+    try {
+      const legacyRaw = localStorage.getItem('alex_whatsapp_reminder_settings_v1');
+      const legacyParsed = legacyRaw ? JSON.parse(legacyRaw) : {};
+      const updatedLegacy = {
+        ...legacyParsed,
+        customerTodayTemplate: settings.morningTemplate,
+        customer1DayTemplate: settings.eveningTemplate,
+        morningReminderTime: settings.morningReminderTime || '08:00',
+        eveningReminderTime: settings.eveningReminderTime || '20:00',
+        notifyCustomerToday: settings.notifyCustomerToday !== false,
+        notifyCustomer1DayBefore: settings.notifyCustomer1DayBefore !== false,
+        autoSendEnabled: settings.autoSendEnabled !== false,
+        morningTemplate: settings.morningTemplate,
+        eveningTemplate: settings.eveningTemplate,
+        updatedAt: new Date().toISOString(),
+      };
+      localStorage.setItem('alex_whatsapp_reminder_settings_v1', JSON.stringify(updatedLegacy));
+    } catch {
+      // ignore
+    }
+
+    const payloadWithAliases = {
+      ...settings,
+      customerTodayTemplate: settings.morningTemplate,
+      customer1DayTemplate: settings.eveningTemplate,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // 3. Save to Firestore (both sms_reminders and reminders documents)
     try {
       if (db) {
         const { doc, setDoc } = await import('firebase/firestore');
         await setDoc(
           doc(db, 'settings', 'sms_reminders'),
-          {
-            ...settings,
-            updatedAt: new Date().toISOString(),
-          },
+          payloadWithAliases,
           { merge: true }
         );
-        // Also sync to legacy reminders doc for fallback
         await setDoc(
           doc(db, 'settings', 'reminders'),
-          {
-            ...settings,
-            updatedAt: new Date().toISOString(),
-          },
+          payloadWithAliases,
           { merge: true }
         );
       }
@@ -152,12 +209,12 @@ export async function saveSmsSettings(settings: SmsReminderSettings): Promise<vo
       console.warn('[SmsService] Could not save to Firestore:', fsErr);
     }
 
-    // Sync to backend server
+    // 4. Sync to backend server
     const headers = await getAdminApiHeaders();
     await fetch('/api/sms/settings', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ settings }),
+      body: JSON.stringify({ settings: payloadWithAliases }),
     });
   } catch (err) {
     console.error('[SmsService] Save error:', err);
@@ -172,8 +229,31 @@ export async function fetchServerSmsSettings(): Promise<SmsReminderSettings | nu
     if (res.ok) {
       const data = await res.json();
       if (data.settings) {
-        localStorage.setItem(STORAGE_KEY_SMS_SETTINGS, JSON.stringify(data.settings));
-        return data.settings;
+        const unifiedSettings: SmsReminderSettings = {
+          ...DEFAULT_SMS_SETTINGS,
+          ...data.settings,
+          morningTemplate: data.settings.morningTemplate || data.settings.customerTodayTemplate || DEFAULT_SMS_SETTINGS.morningTemplate,
+          eveningTemplate: data.settings.eveningTemplate || data.settings.customer1DayTemplate || DEFAULT_SMS_SETTINGS.eveningTemplate,
+        };
+        localStorage.setItem(STORAGE_KEY_SMS_SETTINGS, JSON.stringify(unifiedSettings));
+
+        try {
+          const legacyRaw = localStorage.getItem('alex_whatsapp_reminder_settings_v1');
+          const legacyParsed = legacyRaw ? JSON.parse(legacyRaw) : {};
+          localStorage.setItem(
+            'alex_whatsapp_reminder_settings_v1',
+            JSON.stringify({
+              ...legacyParsed,
+              ...unifiedSettings,
+              customerTodayTemplate: unifiedSettings.morningTemplate,
+              customer1DayTemplate: unifiedSettings.eveningTemplate,
+            })
+          );
+        } catch {
+          // ignore
+        }
+
+        return unifiedSettings;
       }
     }
   } catch (err) {

@@ -25,7 +25,7 @@ service cloud.firestore {
 
     match /settings/{docId} {
       allow read: if docId != 'admin_users';
-      allow write: if docId in ['services_config', 'schedule_settings'];
+      allow write: if docId in ['services_config', 'schedule_settings', 'sms_reminders', 'reminders'];
     }
 
     match /customers/{customerId} {

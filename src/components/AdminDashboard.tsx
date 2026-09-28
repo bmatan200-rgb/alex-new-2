@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Calendar,
   CalendarPlus,
@@ -71,6 +71,7 @@ import {
   getStoredReminderSettings,
   createWhatsAppDirectLink,
 } from '../utils/whatsappReminder';
+import { getStoredSmsSettings, fetchServerSmsSettings } from '../utils/smsService';
 
 interface AdminDashboardProps {
   appointments: Appointment[];
@@ -150,7 +151,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [sentLog, setSentLog] = useState<Record<string, { customerSentAt?: string; alexSentAt?: string }>>(() =>
     getSentRemindersLog()
   );
-  const [reminderSettings, setReminderSettings] = useState(() => getStoredReminderSettings());
+  const [reminderSettings, setReminderSettings] = useState(() => {
+    const rem = getStoredReminderSettings();
+    const sms = getStoredSmsSettings();
+    return {
+      ...rem,
+      ...sms,
+      customerTodayTemplate: sms.morningTemplate || rem.customerTodayTemplate,
+      customer1DayTemplate: sms.eveningTemplate || rem.customer1DayTemplate,
+      morningTemplate: sms.morningTemplate || rem.customerTodayTemplate,
+      eveningTemplate: sms.eveningTemplate || rem.customer1DayTemplate,
+      morningReminderTime: sms.morningReminderTime || rem.morningReminderTime,
+      eveningReminderTime: sms.eveningReminderTime || rem.eveningReminderTime,
+    };
+  });
+
+  // Keep reminder settings synchronized with server on mount
+  useEffect(() => {
+    fetchServerSmsSettings().then((remote) => {
+      if (remote) {
+        setReminderSettings((prev) => ({
+          ...prev,
+          ...remote,
+          customerTodayTemplate: remote.morningTemplate || prev.customerTodayTemplate,
+          customer1DayTemplate: remote.eveningTemplate || prev.customer1DayTemplate,
+          morningReminderTime: remote.morningReminderTime || prev.morningReminderTime,
+          eveningReminderTime: remote.eveningReminderTime || prev.eveningReminderTime,
+        }));
+      }
+    });
+  }, []);
 
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMessage({ text, type });
@@ -161,6 +191,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const key = `${appt.id}-${target}`;
     setSendingApptId(key);
     const settings = getStoredReminderSettings();
+    const smsSettings = getStoredSmsSettings();
     if (settings.provider === 'twilio') {
       settings.provider = 'telnyx';
     }
@@ -170,11 +201,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const isToday = appt.appointment_date === todayIso;
     const reminderType = isToday ? 'today' : '1day';
 
+    const activeTodayTemplate =
+      smsSettings.morningTemplate ||
+      settings.customerTodayTemplate ||
+      reminderSettings.customerTodayTemplate;
+
+    const active1DayTemplate =
+      smsSettings.eveningTemplate ||
+      settings.customer1DayTemplate ||
+      reminderSettings.customer1DayTemplate;
+
     let text = '';
     if (target === 'customer') {
       text = isToday
-        ? buildCustomerTodayReminderText(appt, settings.customerTodayTemplate)
-        : buildCustomer1DayReminderText(appt, settings.customer1DayTemplate);
+        ? buildCustomerTodayReminderText(appt, activeTodayTemplate)
+        : buildCustomer1DayReminderText(appt, active1DayTemplate);
     } else {
       text = buildAlex1DayReminderText(appt, settings.alexTemplate);
     }
@@ -443,7 +484,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
 
       if (filter === 'blocked') return isBlock && app.status === 'confirmed';
-      if (filter === 'today') return app.appointment_date === todayIso;
+      if (filter === 'today') return app.appointment_date === todayIso && app.status === 'confirmed';
       if (filter === 'upcoming') {
         return (
           app.appointment_date >= todayIso &&
@@ -709,7 +750,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         isOpen={isWhatsAppModalOpen}
         onClose={() => {
           setIsWhatsAppModalOpen(false);
-          setReminderSettings(getStoredReminderSettings());
+          const freshSms = getStoredSmsSettings();
+          const freshRem = getStoredReminderSettings();
+          setReminderSettings({
+            ...freshRem,
+            ...freshSms,
+            customerTodayTemplate: freshSms.morningTemplate || freshRem.customerTodayTemplate,
+            customer1DayTemplate: freshSms.eveningTemplate || freshRem.customer1DayTemplate,
+            morningReminderTime: freshSms.morningReminderTime || freshRem.morningReminderTime,
+            eveningReminderTime: freshSms.eveningReminderTime || freshRem.eveningReminderTime,
+          });
+        }}
+        onSaved={(freshSms) => {
+          const freshRem = getStoredReminderSettings();
+          setReminderSettings({
+            ...freshRem,
+            ...freshSms,
+            customerTodayTemplate: freshSms.morningTemplate || freshRem.customerTodayTemplate,
+            customer1DayTemplate: freshSms.eveningTemplate || freshRem.customer1DayTemplate,
+            morningReminderTime: freshSms.morningReminderTime || freshRem.morningReminderTime,
+            eveningReminderTime: freshSms.eveningReminderTime || freshRem.eveningReminderTime,
+          });
         }}
         initialTab={whatsAppModalTab === 'templates' ? 'templates' : 'timing'}
       />
@@ -1457,7 +1518,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               >
                 <span>היום</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'today' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>
-                  {appointments.filter((a) => a.appointment_date === todayIso).length}
+                  {appointments.filter((a) => a.appointment_date === todayIso && a.status === 'confirmed').length}
                 </span>
               </button>
 

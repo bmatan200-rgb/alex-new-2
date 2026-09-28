@@ -34,12 +34,14 @@ import { SALON_INFO } from '../utils/storage';
 interface SmsReminderModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onSaved?: (settings: SmsReminderSettings) => void;
   initialTab?: 'timing' | 'templates' | 'manual' | 'logs';
 }
 
 export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
   isOpen,
   onClose,
+  onSaved,
   initialTab = 'timing',
 }) => {
   const [activeTab, setActiveTab] = useState<'timing' | 'templates' | 'manual' | 'logs'>(initialTab);
@@ -63,6 +65,8 @@ export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setActiveTab(initialTab);
+      // Immediately initialize with latest local storage
+      setSettings(getStoredSmsSettings());
       fetchServerSmsSettings().then((remote) => {
         if (remote) setSettings(remote);
       });
@@ -85,6 +89,7 @@ export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
     try {
       await saveSmsSettings(settings);
       setSaveSuccess(true);
+      if (onSaved) onSaved(settings);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
       alert(`שגיאה בשמירת הגדרות: ${err?.message || 'אנא נסה שוב'}`);

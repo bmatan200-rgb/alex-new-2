@@ -30,6 +30,7 @@ import {
   createWhatsAppDirectLink,
   SentReminderLogEntry,
 } from '../utils/whatsappReminder';
+import { getStoredSmsSettings } from '../utils/smsService';
 import { toISODateString, toIsraeliDateString } from '../utils/dateUtils';
 
 interface WhatsApp2HourAlertBannerProps {
@@ -96,9 +97,13 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
     setSendingId(actionKey);
 
     const phone = appt.customer_phone;
+    const smsSettings = getStoredSmsSettings();
+    const activeTodayTemplate = smsSettings.morningTemplate || settings.customerTodayTemplate;
+    const active1DayTemplate = smsSettings.eveningTemplate || settings.customer1DayTemplate;
+
     const text = type === 'today'
-      ? buildCustomerTodayReminderText(appt, settings.customerTodayTemplate)
-      : buildCustomer1DayReminderText(appt, settings.customer1DayTemplate);
+      ? buildCustomerTodayReminderText(appt, activeTodayTemplate)
+      : buildCustomer1DayReminderText(appt, active1DayTemplate);
 
     try {
       const result = await dispatchAutomatedWhatsAppApi({
@@ -146,12 +151,15 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
     }
 
     let successCount = 0;
+    const smsSettings = getStoredSmsSettings();
+    const activeTodayTemplate = smsSettings.morningTemplate || settings.customerTodayTemplate;
+    const active1DayTemplate = smsSettings.eveningTemplate || settings.customer1DayTemplate;
 
     for (const appt of targetList) {
       const phone = appt.customer_phone;
       const text = targetGroup === 'today'
-        ? buildCustomerTodayReminderText(appt, settings.customerTodayTemplate)
-        : buildCustomer1DayReminderText(appt, settings.customer1DayTemplate);
+        ? buildCustomerTodayReminderText(appt, activeTodayTemplate)
+        : buildCustomer1DayReminderText(appt, active1DayTemplate);
 
       try {
         const result = await dispatchAutomatedWhatsAppApi({

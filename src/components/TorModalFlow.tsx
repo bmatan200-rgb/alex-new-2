@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   X,
   ChevronRight,
@@ -119,6 +119,10 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
   const [viewedYear, setViewedYear] = useState<number>(() => new Date().getFullYear());
   const [viewedMonth, setViewedMonth] = useState<number>(() => new Date().getMonth());
 
+  // Refs to reset scroll position when changing months or steps
+  const daysListRef = useRef<HTMLDivElement>(null);
+  const modalBodyRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (isOpen) {
       const now = new Date();
@@ -126,6 +130,16 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
       setViewedMonth(now.getMonth());
     }
   }, [isOpen]);
+
+  // Auto-scroll back to the top of the month whenever month, year or step changes
+  useEffect(() => {
+    if (daysListRef.current) {
+      daysListRef.current.scrollTo({ top: 0, behavior: 'instant' });
+    }
+    if (modalBodyRef.current) {
+      modalBodyRef.current.scrollTo({ top: 0, behavior: 'instant' });
+    }
+  }, [viewedMonth, viewedYear, step]);
 
   const userActiveBookingsCount = useMemo(() => {
     const rawPhone = customerPhone || currentUser?.phone || '';
@@ -429,7 +443,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         </div>
 
         {/* Modal Scrollable Body */}
-        <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-4">
+        <div ref={modalBodyRef} className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-4">
           
           {/* STEP 1: בחירת טיפול */}
           {step === 'treatment' && (
@@ -526,7 +540,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
               </div>
 
               {/* Vertical Day Buttons list for the viewed month */}
-              <div className="space-y-2.5 max-h-[46vh] overflow-y-auto pr-0.5">
+              <div ref={daysListRef} className="space-y-2.5 max-h-[46vh] overflow-y-auto pr-0.5">
                 {viewedMonthDays.map((day) => {
                   const isAvailable = day.isAvailable;
                   const shortDate = toShortIsraeliDateString(day.iso);

@@ -489,9 +489,6 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
             <div className="space-y-3.5 py-1">
               <div className="flex items-center justify-between px-1 text-xs text-slate-500 font-medium">
                 <span>טיפול: <strong className="text-purple-700 font-bold">{selectedService.name}</strong></span>
-                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
-                  יומן פתוח לחודשיים קדימה ✨
-                </span>
               </div>
 
               {/* Month Navigation Bar (Navigates months freely without auto-selecting a day) */}

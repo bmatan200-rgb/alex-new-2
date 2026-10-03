@@ -43,6 +43,7 @@ import {
   HEBREW_WEEKDAYS,
 } from '../utils/dateUtils';
 import { upsertCustomerToFirestore } from '../lib/firebase';
+import { useTenant } from '../context/TenantContext';
 
 interface AdminBookingModalProps {
   isOpen: boolean;
@@ -83,6 +84,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   initialMode = 'client',
   onShowToast,
 }) => {
+  const { tenantId } = useTenant();
   const [step, setStep] = useState<Step>('treatment');
   const [isBlockAction, setIsBlockAction] = useState<boolean>(initialMode === 'block');
   const [blockReason, setBlockReason] = useState<string>('חופש');
@@ -477,7 +479,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
             full_name: cleanName,
             phone: cleanPhone,
             notes: notes.trim() || undefined,
-          }).catch((err) => console.warn('[Admin Booking] upsertCustomer notice:', err));
+          }, tenantId).catch((err) => console.warn('[Admin Booking] upsertCustomer notice:', err));
         }
 
         await onAddAppointment(newAppt);

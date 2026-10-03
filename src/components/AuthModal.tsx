@@ -13,6 +13,7 @@ import { SALON_INFO } from '../utils/storage';
 import { upsertCustomerToFirestore } from '../lib/firebase';
 import { TermsOfServiceModal } from './TermsOfServiceModal';
 import { SignaturePad } from './SignaturePad';
+import { useTenant } from '../context/TenantContext';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -27,6 +28,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onLogin,
   canDismiss = false,
 }) => {
+  const { tenantId } = useTenant();
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
@@ -82,7 +84,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     upsertCustomerToFirestore({
       full_name: trimmedName,
       phone: phone.trim(),
-    }).catch((err) => {
+    }, tenantId).catch((err) => {
       console.warn('[Customer Directory] upsert notice:', err);
     });
 

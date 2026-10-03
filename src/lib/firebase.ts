@@ -81,37 +81,6 @@ export function subscribeAppointments(
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        // If snapshot from tenant path is empty and tenantId is alex_beauty, check root collection for backward compatibility
-        if (snapshot.empty && tenantId === 'alex_beauty') {
-          const rootQ = query(collection(db, 'appointments'), orderBy('appointment_date', 'asc'));
-          getDocs(rootQ).then((rootSnap) => {
-            const seenIds = new Set<string>();
-            const list: Appointment[] = [];
-            for (const docSnap of rootSnap.docs) {
-              const id = docSnap.id;
-              if (seenIds.has(id)) continue;
-              seenIds.add(id);
-              const data = docSnap.data();
-              if (data.status === 'cancelled') continue;
-              list.push({
-                id,
-                customer_name: data.customer_name || '',
-                customer_phone: data.customer_phone || '',
-                service_id: data.service_id || 1,
-                service_name: data.service_name || "לק ג'ל",
-                price: data.price || 150,
-                appointment_date: data.appointment_date,
-                start_time: data.start_time,
-                end_time: data.end_time,
-                status: data.status || 'confirmed',
-                notes: data.notes || '',
-                created_at: data.created_at || new Date().toISOString(),
-              });
-            }
-            onUpdate(deduplicateAppointments(list));
-          }).catch(() => {});
-        }
-
         const seenIds = new Set<string>();
         const list: Appointment[] = [];
         for (const docSnap of snapshot.docs) {
@@ -135,9 +104,7 @@ export function subscribeAppointments(
             created_at: data.created_at || new Date().toISOString(),
           });
         }
-        if (list.length > 0 || tenantId !== 'alex_beauty') {
-          onUpdate(deduplicateAppointments(list));
-        }
+        onUpdate(deduplicateAppointments(list));
       },
       (err) => {
         console.warn(`Firestore subscription error for tenant ${tenantId}:`, err);
@@ -193,8 +160,6 @@ export async function addAppointmentToFirestore(
   };
 
   const docRef = getTenantAppointmentDocRef(tenantId, docId);
-  const rootDocRef = doc(db, 'appointments', docId);
-
   await runTransaction(db, async (transaction) => {
     if (isNew) {
       const snap = await transaction.get(docRef);
@@ -207,9 +172,6 @@ export async function addAppointmentToFirestore(
       }
     }
     transaction.set(docRef, dataToSave, { merge: true });
-    if (tenantId === 'alex_beauty') {
-      transaction.set(rootDocRef, dataToSave, { merge: true });
-    }
   });
 
   return docId;
@@ -260,23 +222,11 @@ export async function cancelAppointmentInFirestore(
     } catch {}
   }
 
-  // Also root collection fallback for alex_beauty
-  if (tenantId === 'alex_beauty') {
-    try {
-      await deleteDoc(doc(db, 'appointments', idStr));
-    } catch {}
-  }
-
   if (appointmentDate && startTime) {
     const sDocId = slotDocId(appointmentDate, startTime);
     try {
       await deleteDoc(getTenantAppointmentDocRef(tenantId, sDocId));
     } catch {}
-    if (tenantId === 'alex_beauty') {
-      try {
-        await deleteDoc(doc(db, 'appointments', sDocId));
-      } catch {}
-    }
   }
 }
 
@@ -297,22 +247,12 @@ export async function deleteAppointmentInFirestore(
     console.warn('Direct Firestore delete failed for idStr:', err);
   }
 
-  if (tenantId === 'alex_beauty') {
-    try {
-      await deleteDoc(doc(db, 'appointments', idStr));
-    } catch {}
-  }
 
   if (appointmentDate && startTime) {
     const sDocId = slotDocId(appointmentDate, startTime);
     try {
       await deleteDoc(getTenantAppointmentDocRef(tenantId, sDocId));
     } catch {}
-    if (tenantId === 'alex_beauty') {
-      try {
-        await deleteDoc(doc(db, 'appointments', sDocId));
-      } catch {}
-    }
   }
 }
 
@@ -332,14 +272,6 @@ export function subscribeServices(
           onUpdate(data.services);
           return;
         }
-      }
-      // Fallback for alex_beauty
-      if (tenantId === 'alex_beauty') {
-        getDoc(doc(db, 'settings', 'services_config')).then((sSnap) => {
-          if (sSnap.exists() && sSnap.data().services) {
-            onUpdate(sSnap.data().services);
-          }
-        }).catch(() => {});
       }
     });
     return unsubscribe;
@@ -383,12 +315,6 @@ export async function saveServicesToFirestore(
       services,
       updatedAt: new Date().toISOString(),
     }, { merge: true });
-    if (tenantId === 'alex_beauty') {
-      await setDoc(doc(db, 'settings', 'services_config'), {
-        services,
-        updatedAt: new Date().toISOString(),
-      }, { merge: true });
-    }
   } catch (err) {
     console.warn('Error direct saving services to Firestore:', err);
   }
@@ -417,23 +343,6 @@ export function subscribeScheduleSettings(
           });
           return;
         }
-      }
-      // Fallback for alex_beauty
-      if (tenantId === 'alex_beauty') {
-        getDoc(doc(db, 'settings', 'schedule_settings')).then((sSnap) => {
-          if (sSnap.exists()) {
-            const d = sSnap.data();
-            if (d && d.businessOpen && d.businessClose) {
-              onUpdate({
-                businessOpen: d.businessOpen,
-                businessClose: d.businessClose,
-                fridayOpen: d.fridayOpen || '09:20',
-                fridayClose: d.fridayClose || '15:00',
-                durationMinutes: Number(d.durationMinutes) || 90,
-              });
-            }
-          }
-        }).catch(() => {});
       }
     });
     return unsubscribe;
@@ -482,16 +391,6 @@ export async function saveScheduleSettingsToFirestore(
       },
       updatedAt: new Date().toISOString(),
     }, { merge: true });
-    if (tenantId === 'alex_beauty') {
-      await setDoc(doc(db, 'settings', 'schedule_settings'), {
-        businessOpen: schedule.businessOpen,
-        businessClose: schedule.businessClose,
-        fridayOpen: schedule.fridayOpen || '09:20',
-        fridayClose: schedule.fridayClose || '15:00',
-        durationMinutes: Number(schedule.durationMinutes) || 90,
-        updatedAt: new Date().toISOString(),
-      }, { merge: true });
-    }
   } catch (err) {
     console.warn('Error saving schedule to Firestore:', err);
   }
@@ -639,7 +538,21 @@ export async function verifyAdminLoginInFirestore(credentials: {
 // ----------------------------------------------------
 // Customer Directory & Persistence Functions
 // ----------------------------------------------------
-export const CUSTOMERS_COLLECTION = 'customers';
+export function getCurrentTenantId(): string {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('tenant')?.trim();
+    if (q) return q;
+    return localStorage.getItem('active_tenant_id_v1')?.trim() || 'alex_beauty';
+  } catch { return 'alex_beauty'; }
+}
+
+export function getTenantCustomersCol(tenantId = getCurrentTenantId()) {
+  return collection(db, 'tenants', tenantId, 'customers');
+}
+export function getTenantCustomerDocRef(tenantId: string, customerId: string) {
+  return doc(db, 'tenants', tenantId, 'customers', customerId);
+}
 
 /**
  * שמירה או עדכון של לקוח ב-Firestore ובשרת.
@@ -649,7 +562,7 @@ export async function upsertCustomerToFirestore(data: {
   full_name: string;
   phone: string;
   notes?: string;
-}): Promise<void> {
+}, tenantId = getCurrentTenantId()): Promise<void> {
   const cleanPhone = (data.phone || '').replace(/\D/g, '');
   if (!cleanPhone || cleanPhone.length < 7) return;
 
@@ -659,7 +572,7 @@ export async function upsertCustomerToFirestore(data: {
 
   // 1. שמירה ישירה ל-Firestore
   try {
-    const docRef = doc(db, CUSTOMERS_COLLECTION, docId);
+    const docRef = getTenantCustomerDocRef(tenantId, docId);
     const snap = await getDoc(docRef);
     if (snap.exists()) {
       const existing = snap.data();
@@ -688,6 +601,7 @@ export async function upsertCustomerToFirestore(data: {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        tenantId,
         full_name: trimmedName,
         phone: data.phone.trim(),
         notes: data.notes,
@@ -701,7 +615,7 @@ export async function upsertCustomerToFirestore(data: {
 /**
  * משיכת רשימת לקוחות מלאה למנהלת בלבד דרך ה-API המאובטח
  */
-export async function fetchAdminCustomers(sessionToken?: string): Promise<Customer[]> {
+export async function fetchAdminCustomers(sessionToken?: string, tenantId = getCurrentTenantId()): Promise<Customer[]> {
   try {
     const session = getStoredAdminSession() || getStoredUserSession();
     let token = '';
@@ -718,7 +632,7 @@ export async function fetchAdminCustomers(sessionToken?: string): Promise<Custom
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const res = await fetch('/api/admin/customers', {
+    const res = await fetch(`/api/admin/customers?tenant=${encodeURIComponent(tenantId)}`, {
       method: 'GET',
       headers,
     });
@@ -736,7 +650,7 @@ export async function fetchAdminCustomers(sessionToken?: string): Promise<Custom
   // גיבוי ישיר מ-Firestore במידה והמנהלת מחוברת ב-Firebase Auth
   try {
     if (auth.currentUser) {
-      const snap = await getDocs(collection(db, CUSTOMERS_COLLECTION));
+      const snap = await getDocs(getTenantCustomersCol(tenantId));
       const list: Customer[] = [];
       snap.forEach((d) => {
         const item = d.data();
@@ -763,10 +677,11 @@ export async function fetchAdminCustomers(sessionToken?: string): Promise<Custom
  */
 export function subscribeCustomers(
   onUpdate: (customers: Customer[]) => void,
-  onError?: (error: Error) => void
+  onError?: (error: Error) => void,
+  tenantId = getCurrentTenantId()
 ): () => void {
   try {
-    const q = query(collection(db, CUSTOMERS_COLLECTION), orderBy('last_login_at', 'desc'));
+    const q = query(getTenantCustomersCol(tenantId), orderBy('last_login_at', 'desc'));
     return onSnapshot(
       q,
       (snapshot) => {
@@ -797,7 +712,7 @@ export function subscribeCustomers(
 /**
  * מחיקת לקוח מרשימת הלקוחות (למנהלת בלבד)
  */
-export async function deleteCustomer(customerId: string): Promise<boolean> {
+export async function deleteCustomer(customerId: string, tenantId = getCurrentTenantId()): Promise<boolean> {
   const session = getStoredAdminSession() || getStoredUserSession();
   let token = '';
   if (auth.currentUser) {
@@ -807,13 +722,13 @@ export async function deleteCustomer(customerId: string): Promise<boolean> {
   }
 
   try {
-    await deleteDoc(doc(db, CUSTOMERS_COLLECTION, customerId));
+    await deleteDoc(getTenantCustomerDocRef(tenantId, customerId));
   } catch {
     // Non-blocking, will try server
   }
 
   try {
-    const res = await fetch(`/api/admin/customers/${customerId}`, {
+    const res = await fetch(`/api/admin/customers/${customerId}?tenant=${encodeURIComponent(tenantId)}`, {
       method: 'DELETE',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -824,8 +739,4 @@ export async function deleteCustomer(customerId: string): Promise<boolean> {
     return false;
   }
 }
-export const getCurrentTenantId = () => {
-  const params = new URLSearchParams(window.location.search);
-  return params.get('tenant') || 'alex_beauty';
-};
 

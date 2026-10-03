@@ -143,6 +143,9 @@ app.post('/api/appointments/cancel', async (req, res) => {
   try {
     const { appointmentId, customerPhone } = req.body;
     if (!appointmentId) return res.status(400).json({ success: false, error: 'Missing appointmentId' });
+    const tenantId = String(req.body?.tenantId || req.tenantId || 'alex_beauty');
+    const appointmentsRef = getTenantAppointmentsRef(tenantId);
+    const appointmentRef = getTenantAppointmentDoc(tenantId, String(appointmentId));
 
     const idStr = String(appointmentId);
 
@@ -160,7 +163,7 @@ app.post('/api/appointments/cancel', async (req, res) => {
       }
     }
 
-    const snap = await getDoc(doc(db, 'appointments', idStr));
+    const snap = await getDoc(appointmentRef);
     const snapData = snap.exists() ? snap.data() : null;
 
     if (!isAdmin && snapData) {
@@ -175,11 +178,11 @@ app.post('/api/appointments/cancel', async (req, res) => {
     const nowIso = new Date().toISOString();
 
     try {
-      await deleteDoc(doc(db, 'appointments', idStr));
+      await deleteDoc(appointmentRef);
     } catch {
       if (snap.exists()) {
         try {
-          await setDoc(doc(db, 'appointments', idStr), { status: 'cancelled', updated_at: nowIso }, { merge: true });
+          await setDoc(appointmentRef, { status: 'cancelled', updated_at: nowIso }, { merge: true });
         } catch {
           // ignore
         }
@@ -192,7 +195,7 @@ app.post('/api/appointments/cancel', async (req, res) => {
       const sId = `appt_${apptDate}_${apptTime.replace(':', '')}`;
       if (sId !== idStr) {
         try {
-          await deleteDoc(doc(db, 'appointments', sId));
+          await deleteDoc(getTenantAppointmentDoc(tenantId, sId));
         } catch {
           // ignore
         }
@@ -201,14 +204,14 @@ app.post('/api/appointments/cancel', async (req, res) => {
       // Query and delete all matching documents in appointments collection for this date and time
       try {
         const q = query(
-          collection(db, 'appointments'),
+          appointmentsRef,
           where('appointment_date', '==', apptDate),
           where('start_time', '==', apptTime)
         );
         const querySnap = await getDocs(q);
         for (const docItem of querySnap.docs) {
           try {
-            await deleteDoc(doc(db, 'appointments', docItem.id));
+            await deleteDoc(doc(appointmentsRef, docItem.id));
           } catch {
             // ignore
           }
@@ -235,9 +238,11 @@ app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
     const { appointmentId, appointmentDate, startTime } = req.body;
     if (!appointmentId) return res.status(400).json({ success: false, error: 'Missing appointmentId' });
     
+    const tenantId = String(req.body?.tenantId || req.tenantId || 'alex_beauty');
+    const appointmentsRef = getTenantAppointmentsRef(tenantId);
     const idStr = String(appointmentId);
     try {
-      await deleteDoc(doc(db, 'appointments', idStr));
+      await deleteDoc(getTenantAppointmentDoc(tenantId, idStr));
     } catch {
       // ignore
     }
@@ -246,7 +251,7 @@ app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
       const sId = `appt_${appointmentDate}_${startTime.replace(':', '')}`;
       if (sId !== idStr) {
         try {
-          await deleteDoc(doc(db, 'appointments', sId));
+          await deleteDoc(getTenantAppointmentDoc(tenantId, sId));
         } catch {
           // ignore
         }
@@ -255,14 +260,14 @@ app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
       // Query and delete all matching documents in appointments collection for this date and time
       try {
         const q = query(
-          collection(db, 'appointments'),
+          appointmentsRef,
           where('appointment_date', '==', appointmentDate),
           where('start_time', '==', startTime)
         );
         const querySnap = await getDocs(q);
         for (const docItem of querySnap.docs) {
           try {
-            await deleteDoc(doc(db, 'appointments', docItem.id));
+            await deleteDoc(doc(appointmentsRef, docItem.id));
           } catch {
             // ignore
           }
@@ -293,7 +298,7 @@ app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
     // בדיוק למה שהלקוח קורא ב-subscribeServices, אחרת השמירה "תצליח"
     // אבל הנתונים לעולם לא ייקלטו באפליקציה.
     await setDoc(
-      doc(db, 'settings', 'services_config'),
+      getTenantSettingsDoc(String(req.body?.tenantId || req.tenantId || 'alex_beauty'), 'config'),
       { services, updatedAt: new Date().toISOString() },
       { merge: true }
     );
@@ -312,7 +317,7 @@ app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
     // הלקוח (subscribeScheduleSettings) קורא את השדות ישירות מהמסמך
     // 'schedule_settings', לא מתוך אובייקט מקונן.
     await setDoc(
-      doc(db, 'settings', 'schedule_settings'),
+      getTenantSettingsDoc(String(req.body?.tenantId || req.tenantId || 'alex_beauty'), 'config'),
       {
         businessOpen: schedule.businessOpen,
         businessClose: schedule.businessClose,
@@ -330,6 +335,53 @@ app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
 });
 
 // ----------------------------------------------------
+// One-time legacy data migration (old global collections -> primary tenant)
+// ----------------------------------------------------
+app.post('/api/admin/migrate-legacy-alex', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const targetTenantId = 'alex_beauty';
+    const [legacyAppointments, legacyCustomers] = await Promise.all([
+      getDocs(collection(db, 'appointments')),
+      getDocs(collection(db, 'customers')),
+    ]);
+
+    let appointmentsCopied = 0;
+    let customersCopied = 0;
+
+    for (const item of legacyAppointments.docs) {
+      const targetRef = getTenantAppointmentDoc(targetTenantId, item.id);
+      const existing = await getDoc(targetRef);
+      if (!existing.exists()) {
+        await setDoc(targetRef, { ...item.data(), tenantId: targetTenantId }, { merge: true });
+        appointmentsCopied++;
+      }
+    }
+
+    for (const item of legacyCustomers.docs) {
+      const targetRef = doc(db, 'tenants', targetTenantId, 'customers', item.id);
+      const existing = await getDoc(targetRef);
+      if (!existing.exists()) {
+        await setDoc(targetRef, { ...item.data(), tenantId: targetTenantId }, { merge: true });
+        customersCopied++;
+      }
+    }
+
+    return res.json({
+      success: true,
+      targetTenantId,
+      appointmentsFound: legacyAppointments.size,
+      customersFound: legacyCustomers.size,
+      appointmentsCopied,
+      customersCopied,
+      message: 'Legacy data copied to the primary tenant. Global collections were not deleted.',
+    });
+  } catch (err: any) {
+    console.error('[Legacy Migration] Error:', err);
+    return res.status(500).json({ success: false, error: err?.message || 'Migration failed' });
+  }
+});
+
+// ----------------------------------------------------
 // Customer Directory Endpoints
 // ----------------------------------------------------
 
@@ -340,6 +392,7 @@ app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
 app.post('/api/customers/upsert', async (req: Request, res: Response) => {
   try {
     const { full_name, phone, notes } = req.body;
+    const tenantId = String(req.body?.tenantId || req.tenantId || 'alex_beauty');
     const cleanPhone = normalizePhone(phone);
     if (!cleanPhone || cleanPhone.length < 7) {
       return res.status(400).json({ success: false, error: 'מספר טלפון לא תקין' });
@@ -348,7 +401,7 @@ app.post('/api/customers/upsert', async (req: Request, res: Response) => {
     const trimmedName = (full_name || '').trim();
     const docId = `cust_${cleanPhone}`;
     const nowIso = new Date().toISOString();
-    const customerRef = doc(db, 'customers', docId);
+    const customerRef = doc(db, 'tenants', tenantId, 'customers', docId);
 
     const snap = await getDoc(customerRef);
     if (snap.exists()) {
@@ -386,9 +439,10 @@ app.post('/api/customers/upsert', async (req: Request, res: Response) => {
  */
 app.get('/api/admin/customers', requireAdmin, async (req: Request, res: Response) => {
   try {
+    const tenantId = String(req.query?.tenant || req.tenantId || 'alex_beauty');
     const [custsSnap, apptsSnap] = await Promise.all([
-      getDocs(collection(db, 'customers')),
-      getDocs(collection(db, 'appointments')),
+      getDocs(collection(db, 'tenants', tenantId, 'customers')),
+      getDocs(getTenantAppointmentsRef(tenantId)),
     ]);
 
     // מיפוי תורים לפי מספר טלפון נקי
@@ -465,7 +519,7 @@ app.get('/api/admin/customers', requireAdmin, async (req: Request, res: Response
         customersMap.set(phone, autoCustomer);
 
         // שמירה אסינכרונית ברקע ב-Firestore כדי שיהיה מתועד באופן קבוע
-        setDoc(doc(db, 'customers', docId), {
+        setDoc(doc(db, 'tenants', tenantId, 'customers', docId), {
           full_name: autoCustomer.full_name,
           phone: autoCustomer.phone,
           created_at: autoCustomer.created_at,
@@ -492,8 +546,9 @@ app.get('/api/admin/customers', requireAdmin, async (req: Request, res: Response
 app.delete('/api/admin/customers/:id', requireAdmin, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const tenantId = String(req.query?.tenant || req.tenantId || 'alex_beauty');
     if (!id) return res.status(400).json({ success: false, error: 'Missing customer id' });
-    await deleteDoc(doc(db, 'customers', id));
+    await deleteDoc(doc(db, 'tenants', tenantId, 'customers', id));
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -585,7 +640,8 @@ interface ServerAppointment {
   status: string;
 }
 
-let serverAppointments: ServerAppointment[] = [];
+const serverAppointmentsByTenant: Record<string, ServerAppointment[]> = {};
+let serverAppointments: ServerAppointment[] = []; // legacy process-local mirror
 let recentSmsLogs: SmsLogEntry[] = [];
 
 const DEFAULT_SMS_SETTINGS = {
@@ -754,12 +810,12 @@ function formatMessageTemplate(template: string, appt: any): string {
 }
 
 // Fetch Confirmed Appointments from Firestore
-async function fetchAppointmentsForDate(targetDate: string): Promise<ServerAppointment[]> {
+async function fetchAppointmentsForDate(targetDate: string, tenantId = 'alex_beauty'): Promise<ServerAppointment[]> {
   const list: ServerAppointment[] = [];
   try {
     if (db) {
       const q = query(
-        collection(db, 'appointments'),
+        getTenantAppointmentsRef(tenantId),
         where('appointment_date', '==', targetDate),
         where('status', '==', 'confirmed')
       );
@@ -790,8 +846,9 @@ async function fetchAppointmentsForDate(targetDate: string): Promise<ServerAppoi
   }
 
   // Also include in-memory sync if present
-  if (serverAppointments.length > 0) {
-    for (const mem of serverAppointments) {
+  const tenantMemoryAppointments = serverAppointmentsByTenant[tenantId] || [];
+  if (tenantMemoryAppointments.length > 0) {
+    for (const mem of tenantMemoryAppointments) {
       if (
         mem.appointment_date === targetDate &&
         mem.status === 'confirmed' &&
@@ -1697,12 +1754,8 @@ app.get('/api/admin/tenant-data', async (req: Request, res: Response) => {
       const tenantSnap = await getDocs(getTenantAppointmentsRef(tenantId));
       tenantAppointments = tenantSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-      if (tenantAppointments.length === 0 && tenantId === 'alex_beauty') {
-        const rootSnap = await getDocs(collection(db, 'appointments'));
-        tenantAppointments = rootSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      }
     } catch {
-      tenantAppointments = serverAppointments;
+      tenantAppointments = serverAppointmentsByTenant[tenantId] || [];
     }
 
     return res.json({
@@ -1720,8 +1773,10 @@ app.get('/api/admin/tenant-data', async (req: Request, res: Response) => {
 // Sync in-memory appointments
 app.post('/api/whatsapp/sync-appointments', requireAdmin, (req: Request, res: Response) => {
   if (Array.isArray(req.body?.appointments)) {
+    const tenantId = String(req.body?.tenantId || req.tenantId || 'alex_beauty');
+    serverAppointmentsByTenant[tenantId] = req.body.appointments;
     serverAppointments = req.body.appointments;
-    return res.json({ success: true, count: serverAppointments.length });
+    return res.json({ success: true, count: req.body.appointments.length, tenantId });
   }
   return res.status(400).json({ success: false, error: 'Expected appointments array' });
 });

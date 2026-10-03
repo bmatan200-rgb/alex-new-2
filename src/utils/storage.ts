@@ -50,15 +50,46 @@ export const SERVICES: Service[] = [
   },
 ];
 
+function getStorageTenantId(): string {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const queryTenant = params.get('tenant')?.trim();
+    if (queryTenant) return queryTenant;
+    const active = localStorage.getItem('active_tenant_id_v1')?.trim();
+    if (active) return active;
+  } catch {}
+  return 'alex_beauty';
+}
+
+function tenantStorageKey(base: string, tenantId = getStorageTenantId()): string {
+  return `${base}__${tenantId}`;
+}
+
+function getTenantOrLegacyRaw(base: string, tenantId = getStorageTenantId()): string | null {
+  const namespacedKey = tenantStorageKey(base, tenantId);
+  const current = localStorage.getItem(namespacedKey);
+  if (current !== null) return current;
+  if (tenantId === 'alex_beauty') {
+    const legacy = localStorage.getItem(base);
+    if (legacy !== null) {
+      try { localStorage.setItem(namespacedKey, legacy); } catch {}
+      return legacy;
+    }
+  }
+  return null;
+}
+
 const STORAGE_KEY_SERVICES = 'alex_beauty_services_v2';
 const STORAGE_KEY_SCHEDULE_SETTINGS = 'alex_beauty_schedule_settings_v1';
 const STORAGE_KEY_APPOINTMENTS = 'alex_beauty_appointments_v5';
 const STORAGE_KEY_USER_SESSION = 'alex_customer_session_v6';
 const STORAGE_KEY_ADMIN_SESSION = 'alex_admin_auth_session_v6';
 
+export function getActiveTenantId(): string { return getStorageTenantId(); }
+
 export function getStoredScheduleSettings(): ScheduleSettings {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_SCHEDULE_SETTINGS);
+    const raw = getTenantOrLegacyRaw(STORAGE_KEY_SCHEDULE_SETTINGS);
     if (!raw) return DEFAULT_SCHEDULE_SETTINGS;
     const parsed = JSON.parse(raw);
     return {
@@ -75,7 +106,7 @@ export function getStoredScheduleSettings(): ScheduleSettings {
 
 export function saveStoredScheduleSettings(settings: ScheduleSettings): void {
   try {
-    localStorage.setItem(STORAGE_KEY_SCHEDULE_SETTINGS, JSON.stringify(settings));
+    localStorage.setItem(tenantStorageKey(STORAGE_KEY_SCHEDULE_SETTINGS), JSON.stringify(settings));
   } catch (err) {
     console.warn('Error saving schedule settings to localStorage:', err);
   }
@@ -83,7 +114,7 @@ export function saveStoredScheduleSettings(settings: ScheduleSettings): void {
 
 export function getStoredServices(): Service[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_SERVICES);
+    const raw = getTenantOrLegacyRaw(STORAGE_KEY_SERVICES);
     if (!raw) return SERVICES;
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
@@ -97,7 +128,7 @@ export function getStoredServices(): Service[] {
 
 export function saveStoredServices(services: Service[]): void {
   try {
-    localStorage.setItem(STORAGE_KEY_SERVICES, JSON.stringify(services));
+    localStorage.setItem(tenantStorageKey(STORAGE_KEY_SERVICES), JSON.stringify(services));
   } catch (err) {
     console.warn('Error saving services to localStorage:', err);
   }
@@ -105,7 +136,7 @@ export function saveStoredServices(services: Service[]): void {
 
 export function getStoredAppointments(): Appointment[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_APPOINTMENTS);
+    const raw = getTenantOrLegacyRaw(STORAGE_KEY_APPOINTMENTS);
     if (!raw) {
       return [];
     }
@@ -129,7 +160,7 @@ export function saveAppointment(appointment: Appointment): void {
     return true;
   });
   const updated = deduplicateAppointments([appointment, ...filtered]);
-  localStorage.setItem(STORAGE_KEY_APPOINTMENTS, JSON.stringify(updated));
+  localStorage.setItem(tenantStorageKey(STORAGE_KEY_APPOINTMENTS), JSON.stringify(updated));
 }
 
 export function cancelAppointment(appointmentId: number | string): void {
@@ -149,7 +180,7 @@ export function deleteAppointmentPermanently(appointmentId: number | string): vo
     return true;
   });
   const deduped = deduplicateAppointments(updated);
-  localStorage.setItem(STORAGE_KEY_APPOINTMENTS, JSON.stringify(deduped));
+  localStorage.setItem(tenantStorageKey(STORAGE_KEY_APPOINTMENTS), JSON.stringify(deduped));
 }
 
 export function getStoredUserSession(): UserSession | null {
@@ -167,7 +198,7 @@ export function getStoredUserSession(): UserSession | null {
       } catch {}
     });
 
-    const raw = localStorage.getItem(STORAGE_KEY_USER_SESSION);
+    const raw = getTenantOrLegacyRaw(STORAGE_KEY_USER_SESSION);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && parsed.phone && parsed.name) {
@@ -192,7 +223,7 @@ export function saveUserSession(session: UserSession): void {
       phone: (session.phone || '').trim(),
       loggedInAt: session.loggedInAt || new Date().toISOString(),
     };
-    localStorage.setItem(STORAGE_KEY_USER_SESSION, JSON.stringify(sessionToSave));
+    localStorage.setItem(tenantStorageKey(STORAGE_KEY_USER_SESSION), JSON.stringify(sessionToSave));
   } catch {
     // Ignore storage errors
   }
@@ -239,7 +270,7 @@ export function clearAdminSession(): void {
 
 export function clearUserSession(): void {
   try {
-    localStorage.removeItem(STORAGE_KEY_USER_SESSION);
+    localStorage.removeItem(tenantStorageKey(STORAGE_KEY_USER_SESSION));
     localStorage.removeItem(STORAGE_KEY_ADMIN_SESSION);
     localStorage.removeItem('alex_admin_session_token');
     [

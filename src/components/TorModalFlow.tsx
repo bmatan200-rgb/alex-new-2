@@ -42,6 +42,7 @@ import { SALON_INFO, saveUserSession } from '../utils/storage';
 import { addAppointmentToFirestore, upsertCustomerToFirestore } from '../lib/firebase';
 import { ExistingBookingChoiceModal } from './ExistingBookingChoiceModal';
 import { CancelAppointmentConfirmModal } from './CancelAppointmentConfirmModal';
+import { useTenant } from '../context/TenantContext';
 
 interface TorModalFlowProps {
   isOpen: boolean;
@@ -66,6 +67,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
   scheduleSettings,
   onCancelAppointment,
 }) => {
+  const { tenantId } = useTenant();
   const [step, setStep] = useState<Step>('treatment');
   const [selectedService, setSelectedService] = useState<Service>(services[0] || {
     id: 1,
@@ -324,7 +326,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
       }
 
       // Save to Firestore & local storage
-      const savedId = await addAppointmentToFirestore(newAppt as any);
+      const savedId = await addAppointmentToFirestore(newAppt as any, tenantId);
 
       setIsSubmitting(false);
       onBookSuccess({ ...newAppt, id: savedId } as Appointment);

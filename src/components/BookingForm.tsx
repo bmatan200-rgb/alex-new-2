@@ -34,6 +34,7 @@ import { addAppointmentToFirestore, upsertCustomerToFirestore } from '../lib/fir
 import { ServiceSelector } from './ServiceSelector';
 import { DatePickerCarousel } from './DatePickerCarousel';
 import { SlotSelector } from './SlotSelector';
+import { useTenant } from '../context/TenantContext';
 
 interface BookingFormProps {
   services: Service[];
@@ -50,6 +51,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
   currentUser,
   onBackToHome,
 }) => {
+  const { tenantId } = useTenant();
   const days: DayInfo[] = useMemo(() => buildNextDays(60), []);
 
   // Step 1: Selected service (Default: לק ג'ל)
@@ -168,7 +170,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
 
       let savedId: string | number = `appt_${Date.now()}`;
       try {
-        savedId = await addAppointmentToFirestore(newAppt as any);
+        savedId = await addAppointmentToFirestore(newAppt as any, tenantId);
       } catch (err: any) {
         if (err?.name === 'SlotTakenError' || err?.message?.includes('השעה הזו כבר נתפסה')) {
           setFormError('השעה הזו כבר נתפסה, בבקשה לבחור שעה אחרת');

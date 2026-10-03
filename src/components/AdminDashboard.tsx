@@ -444,7 +444,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         full_name: manualName.trim(),
         phone: manualPhone.trim(),
         notes: manualNotes.trim() || undefined,
-      }).catch((err) => {
+      }, tenantId).catch((err) => {
         console.warn('[Customer Directory] manual appointment customer upsert:', err);
       });
     }

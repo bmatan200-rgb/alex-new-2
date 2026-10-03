@@ -31,6 +31,7 @@ import {
 } from '../lib/firebase';
 import { SALON_INFO } from '../utils/storage';
 import { toIsraeliDateString } from '../utils/dateUtils';
+import { useTenant } from '../context/TenantContext';
 
 interface CustomerDirectoryProps {
   appointments: Appointment[];
@@ -43,6 +44,7 @@ export const CustomerDirectory: React.FC<CustomerDirectoryProps> = ({
   onOpenManualBookingForCustomer,
   onShowToast,
 }) => {
+  const { tenantId } = useTenant();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -62,7 +64,7 @@ export const CustomerDirectory: React.FC<CustomerDirectoryProps> = ({
   const loadCustomers = async () => {
     setIsLoading(true);
     try {
-      const data = await fetchAdminCustomers();
+      const data = await fetchAdminCustomers(undefined, tenantId);
       if (data && data.length > 0) {
         setCustomers(data);
       }
@@ -101,7 +103,8 @@ export const CustomerDirectory: React.FC<CustomerDirectoryProps> = ({
         },
         (error) => {
           console.warn('[CustomerDirectory] Realtime subscription notice:', error?.message);
-        }
+        },
+        tenantId
       );
     } catch {
       // ignore
@@ -110,7 +113,7 @@ export const CustomerDirectory: React.FC<CustomerDirectoryProps> = ({
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, []);
+  }, [tenantId]);
 
   // 2. Cross-reference appointments with customers to ensure real-time accuracy
   const enrichedCustomers = useMemo(() => {
@@ -291,7 +294,7 @@ export const CustomerDirectory: React.FC<CustomerDirectoryProps> = ({
   // Delete customer handler
   const handleDeleteCustomer = async (customerId: string, name: string) => {
     try {
-      const success = await deleteCustomer(customerId);
+      const success = await deleteCustomer(customerId, tenantId);
       if (success) {
         setCustomers((prev) => prev.filter((c) => c.id !== customerId));
         onShowToast(`הלקוח/ה "${name}" הוסר/ה מהרשימה`, 'info');

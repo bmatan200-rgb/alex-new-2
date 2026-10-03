@@ -18,3 +18,9 @@ View your app in AI Studio: https://ai.studio/apps/0ace37ff-f441-4c64-bdb6-3ba85
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+
+## Multi-tenant data isolation
+
+Appointments and customers are now stored only under `/tenants/{tenantId}/...`.
+For an existing installation that still has legacy global `/appointments` and `/customers`, call the authenticated one-time endpoint `POST /api/admin/migrate-legacy-alex` before removing legacy collections. The migration copies (does not delete) legacy records into `alex_beauty`.

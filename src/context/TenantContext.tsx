@@ -81,7 +81,7 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   const fetchTenantData = useCallback(async () => {
     const queryTenant = getActiveQueryTenant();
-    const targetTenantId = queryTenant || 'alex_beauty';
+    const targetTenantId = queryTenant || (typeof window !== 'undefined' ? localStorage.getItem('active_tenant_id_v1') : '') || 'alex_beauty';
 
     try {
       setLoading(true);
@@ -197,6 +197,10 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   };
 
   const effectiveTenantId = activeQuery || tenant.id || 'alex_beauty';
+
+  useEffect(() => {
+    try { localStorage.setItem('active_tenant_id_v1', effectiveTenantId); } catch {}
+  }, [effectiveTenantId]);
 
   return (
     <TenantContext.Provider

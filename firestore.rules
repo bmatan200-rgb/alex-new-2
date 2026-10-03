@@ -20,6 +20,11 @@ service cloud.firestore {
         allow write: if true;
       }
 
+      // Tenant Customers
+      match /customers/{customerId} {
+        allow read, write: if true;
+      }
+
       // Tenant Appointments
       match /appointments/{appointmentId} {
         allow read: if true;
@@ -38,7 +43,8 @@ service cloud.firestore {
       }
     }
 
-    // Backwards compatibility root collections
+    // Legacy root collections are kept only for the one-time migration endpoint.
+    // Application code no longer reads or writes these collections.
     match /appointments/{appointmentId} {
       allow read, write: if true;
     }
@@ -48,6 +54,8 @@ service cloud.firestore {
     match /customers/{customerId} {
       allow read, write: if true;
     }
+
+    // Shared operational logs
     match /reminder_locks/{lockId} {
       allow read, write: if true;
     }

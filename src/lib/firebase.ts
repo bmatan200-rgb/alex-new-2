@@ -824,5 +824,8 @@ export async function deleteCustomer(customerId: string): Promise<boolean> {
     return false;
   }
 }
-
+export const getCurrentTenantId = () => {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('tenant') || 'alex_beauty';
+};
 

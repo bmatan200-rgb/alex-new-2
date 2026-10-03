@@ -830,6 +830,8 @@ export const SuperAdminPage: React.FC = () => {
                             onChange={(e) => handleUpdateService(idx, 'duration_minutes', Number(e.target.value))}
                             className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-purple-500 font-bold"
                           >
+                            <option value={15}>15 דק׳</option>
+                            <option value={20}>20 דק׳</option>
                             <option value={30}>30 דק׳</option>
                             <option value={45}>45 דק׳</option>
                             <option value={60}>שעה (60 דק׳)</option>

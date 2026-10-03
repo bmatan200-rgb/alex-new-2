@@ -34,6 +34,8 @@ interface ServiceDurationModalProps {
 }
 
 const PRESET_DURATIONS = [
+  { minutes: 15, label: '15 דק׳' },
+  { minutes: 20, label: '20 דק׳' },
   { minutes: 60, label: 'שעה (60 דק׳)' },
   { minutes: 75, label: 'שעה ו-15 דק׳ (75 דק׳)' },
   { minutes: 90, label: 'שעה וחצי (90 דק׳) ⭐' },
@@ -247,7 +249,7 @@ export const ServiceDurationModal: React.FC<ServiceDurationModalProps> = ({
 
               <input
                 type="range"
-                min="30"
+                min="15"
                 max="240"
                 step="5"
                 value={durationMinutes}
@@ -255,7 +257,7 @@ export const ServiceDurationModal: React.FC<ServiceDurationModalProps> = ({
                 className="w-full accent-purple-600 cursor-pointer"
               />
               <div className="flex justify-between text-[10px] text-slate-500 font-bold px-1">
-                <span>30 דק׳</span>
+                <span>15 דק׳</span>
                 <span>60 דק׳ (שעה)</span>
                 <span className="text-purple-700 font-black">90 דק׳ (1:30)</span>
                 <span>120 דק׳ (שעתיים)</span>

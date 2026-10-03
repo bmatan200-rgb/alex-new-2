@@ -746,20 +746,6 @@ function MainApp() {
                   >
                     תקנון ותנאי שימוש
                   </button>
-                  <span>•</span>
-                  <Link
-                    to={`/admin?tenant=${tenantId}`}
-                    className="text-slate-400 hover:text-purple-700 underline transition font-medium"
-                  >
-                    כניסת מנהלת
-                  </Link>
-                  <span>•</span>
-                  <Link
-                    to="/super-admin"
-                    className="text-slate-400 hover:text-indigo-600 underline transition font-medium text-xs font-mono"
-                  >
-                    Super Admin ⚡
-                  </Link>
                 </div>
               </footer>
 

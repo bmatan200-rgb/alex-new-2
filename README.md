@@ -43,3 +43,8 @@ For an existing installation that still has legacy global `/appointments` and `/
 - Existing tenant profile, branding, cover, services and working hours can be loaded and updated.
 - Tenant ID is locked during editing to protect tenant data isolation.
 - Added GET/PUT Super Admin tenant endpoints and custom-domain remapping on edit.
+
+## v9 updates
+- Removed public customer-page footer links to Tenant Admin and Super Admin.
+- Added 15-minute and 20-minute treatment duration options to business creation/editing.
+- Added 15/20-minute quick presets in the admin treatment-duration settings and extended the duration slider down to 15 minutes.

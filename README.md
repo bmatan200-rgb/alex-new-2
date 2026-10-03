@@ -31,3 +31,8 @@ For an existing installation that still has legacy global `/appointments` and `/
 - Existing appointment actions remain available: call, SMS reminder, cancel, unblock.
 - Existing booking, block-time, SMS settings, service duration/price and customer directory modals are retained.
 - Legacy stacked calendar/list UI remains in source for compatibility but is no longer rendered.
+
+
+## v4
+- Added an explicit **שחרור תפיסה** button to blocked/seized slots in the redesigned daily admin calendar.
+- Releasing a seized slot uses the existing tenant-scoped cancellation flow and immediately returns the slot to availability.

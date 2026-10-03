@@ -760,7 +760,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         {!isBlock && appt.customer_phone && <a href={`tel:${appt.customer_phone}`} className="w-9 h-9 rounded-xl bg-white border border-slate-200 flex items-center justify-center" title="חיוג"><Phone className="w-4 h-4" /></a>}
                         {!isBlock && <button type="button" onClick={() => handleSendReminderAutomated(appt, 'customer')} disabled={sendingApptId === `${appt.id}-customer`} className="h-9 px-3 rounded-xl bg-white border border-slate-200 text-xs font-bold hover:border-purple-300 disabled:opacity-50">SMS</button>}
                         {isBlock ? (
-                          <button type="button" onClick={() => onCancelAppointment(appt.id)} className="h-9 px-3 rounded-xl bg-white border border-slate-200 text-xs font-bold">שחרור</button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onCancelAppointment(appt.id);
+                              showToast('תפיסת התור שוחררה והשעה חזרה להיות פנויה', 'success');
+                            }}
+                            className="h-9 px-3 rounded-xl bg-purple-600 hover:bg-purple-700 text-white border border-purple-600 text-xs font-black flex items-center gap-1.5"
+                            title="שחרור תפיסת השעה והחזרתה לזמינות ללקוחות"
+                          >
+                            <Unlock className="w-3.5 h-3.5" />
+                            שחרור תפיסה
+                          </button>
                         ) : (
                           <button type="button" onClick={() => setAppointmentToCancel(appt)} className="h-9 px-3 rounded-xl bg-white border border-red-200 text-red-600 text-xs font-bold">ביטול</button>
                         )}

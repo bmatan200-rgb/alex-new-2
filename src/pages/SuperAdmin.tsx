@@ -41,12 +41,16 @@ import { Appointment, Service, TenantInfo, ScheduleSettings } from '../types';
 import { formatILS } from '../utils/dateUtils';
 
 const COLOR_PALETTES = [
-  { name: 'סגול מלכותי (Purple)', value: '#9333ea', bgClass: 'bg-purple-600' },
-  { name: 'ורוד מגנטה (Rose)', value: '#ec4899', bgClass: 'bg-pink-600' },
-  { name: 'טורקיז אוקיינוס (Teal)', value: '#0d9488', bgClass: 'bg-teal-600' },
-  { name: 'כחול שמיים (Sky)', value: '#0ea5e9', bgClass: 'bg-sky-600' },
-  { name: 'זהב ענבר (Amber)', value: '#d97706', bgClass: 'bg-amber-600' },
-  { name: 'אינדיגו פרימיום (Indigo)', value: '#4f46e5', bgClass: 'bg-indigo-600' },
+  { name: 'סגול + לילך', value: '#7c3aed', secondary: '#c4b5fd' },
+  { name: 'ורוד + אפרסק', value: '#db2777', secondary: '#fdba74' },
+  { name: 'טורקיז + מנטה', value: '#0f766e', secondary: '#6ee7b7' },
+  { name: 'כחול + תכלת', value: '#2563eb', secondary: '#7dd3fc' },
+  { name: 'שחור + זהב', value: '#18181b', secondary: '#f59e0b' },
+  { name: 'בורדו + ורוד', value: '#9f1239', secondary: '#fda4af' },
+  { name: 'ירוק + ליים', value: '#15803d', secondary: '#bef264' },
+  { name: 'כתום + שמנת', value: '#ea580c', secondary: '#fed7aa' },
+  { name: 'אינדיגו + סגול', value: '#4338ca', secondary: '#a78bfa' },
+  { name: 'אפור + כחול', value: '#334155', secondary: '#38bdf8' },
 ];
 
 export const SuperAdminPage: React.FC = () => {
@@ -66,19 +70,17 @@ export const SuperAdminPage: React.FC = () => {
   const [city, setCity] = useState('');
   const [address, setAddress] = useState('');
   const [customDomain, setCustomDomain] = useState('');
-  const [primaryColor, setPrimaryColor] = useState('#9333ea');
+  const [primaryColor, setPrimaryColor] = useState('#7c3aed');
+  const [secondaryColor, setSecondaryColor] = useState('#c4b5fd');
   const [plan, setPlan] = useState<'starter' | 'pro' | 'enterprise'>('pro');
 
   // Dynamic Services List in Onboarding Form
-  const [services, setServices] = useState<Array<{ id: number; name: string; price: number; duration_minutes: number; description?: string }>>([
-    { id: 1, name: "לק ג'ל", price: 150, duration_minutes: 90, description: 'מניקור יסודי ומריחת לק ג׳ל מקצועי' },
-    { id: 2, name: 'מניקור ספא ומבנה אנטומי', price: 180, duration_minutes: 105, description: 'חיזוק ציפורן טבעית ומבנה אנטומי מושלם' },
-  ]);
+  const [services, setServices] = useState<Array<{ id: number; name: string; price: number; duration_minutes: number; description?: string }>>([]);
 
-  const [businessOpen, setBusinessOpen] = useState('09:20');
-  const [businessClose, setBusinessClose] = useState('20:30');
-  const [fridayOpen, setFridayOpen] = useState('09:20');
-  const [fridayClose, setFridayClose] = useState('15:00');
+  const [businessOpen, setBusinessOpen] = useState('');
+  const [businessClose, setBusinessClose] = useState('');
+  const [fridayOpen, setFridayOpen] = useState('');
+  const [fridayClose, setFridayClose] = useState('');
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdResult, setCreatedResult] = useState<{
@@ -176,16 +178,12 @@ export const SuperAdminPage: React.FC = () => {
     const nextId = services.length > 0 ? Math.max(...services.map((s) => s.id)) + 1 : 1;
     setServices([
       ...services,
-      { id: nextId, name: 'טיפול חדש', price: 150, duration_minutes: 60, description: 'תיאור השירות' },
+      { id: nextId, name: '', price: 0, duration_minutes: 60, description: '' },
     ]);
   };
 
   // Remove Service
   const handleRemoveService = (index: number) => {
-    if (services.length <= 1) {
-      alert('חובה לפחות שירות אחד עבור הסלון');
-      return;
-    }
     setServices(services.filter((_, i) => i !== index));
   };
 
@@ -215,13 +213,14 @@ export const SuperAdminPage: React.FC = () => {
       const payload = {
         tenantId: finalTenantId,
         name: name.trim(),
-        tagline: tagline.trim() || 'סטודיו לטיפוח ויופי',
+        tagline: tagline.trim(),
         ownerName: (ownerName || name).trim(),
         phone: phone.trim(),
         email: email.trim(),
         city: city.trim(),
         address: address.trim(),
         primaryColor,
+        secondaryColor,
         customDomain: customDomain.trim().toLowerCase(),
         plan,
         services,
@@ -230,7 +229,7 @@ export const SuperAdminPage: React.FC = () => {
           businessClose,
           fridayOpen,
           fridayClose,
-          durationMinutes: services[0]?.duration_minutes || 90,
+          durationMinutes: services[0]?.duration_minutes || 60,
         },
       };
 
@@ -499,7 +498,7 @@ export const SuperAdminPage: React.FC = () => {
                         required
                         value={tenantId}
                         onChange={(e) => setTenantId(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_'))}
-                        placeholder="bella_beauty"
+                        placeholder="לדוגמה: david_barber"
                         className="w-full bg-slate-950 border border-slate-700 font-mono text-purple-300 rounded-xl px-3.5 py-2.5 focus:border-purple-500 focus:outline-none font-bold"
                       />
                       <span className="text-[10px] text-slate-500 mt-1 block">משמש ב-URL: ?tenant={tenantId || 'slug'}</span>
@@ -511,7 +510,7 @@ export const SuperAdminPage: React.FC = () => {
                         type="text"
                         value={tagline}
                         onChange={(e) => setTagline(e.target.value)}
-                        placeholder="מניקור פרימיום וטיפוח"
+                        placeholder="לדוגמה: מקצועיות, שירות וחוויה"
                         className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-white font-medium focus:border-purple-500 focus:outline-none"
                       />
                     </div>
@@ -612,11 +611,18 @@ export const SuperAdminPage: React.FC = () => {
                           onChange={(e) => setPrimaryColor(e.target.value)}
                           className="bg-slate-900 border border-slate-700 font-mono text-xs rounded-xl px-3 py-2 text-white w-28 uppercase"
                         />
+                        <input
+                          type="color"
+                          value={secondaryColor}
+                          onChange={(e) => setSecondaryColor(e.target.value)}
+                          className="w-12 h-12 rounded-xl cursor-pointer border border-slate-700 bg-transparent p-1"
+                          title="צבע משני"
+                        />
                         <div
                           className="flex-1 py-2 px-3 rounded-xl text-white font-bold text-center shadow-sm"
-                          style={{ backgroundColor: primaryColor }}
+                          style={{ background: `linear-gradient(135deg, ${primaryColor}, ${secondaryColor})` }}
                         >
-                          תצוגה מקדימה של כפתור
+                          תצוגה מקדימה
                         </div>
                       </div>
 
@@ -627,11 +633,12 @@ export const SuperAdminPage: React.FC = () => {
                           <button
                             key={c.value}
                             type="button"
-                            onClick={() => setPrimaryColor(c.value)}
-                            className={`w-7 h-7 rounded-lg ${c.bgClass} border-2 transition ${
+                            onClick={() => { setPrimaryColor(c.value); setSecondaryColor(c.secondary); }}
+                            className={`w-8 h-8 rounded-lg border-2 transition ${
                               primaryColor === c.value ? 'border-white scale-110 shadow-md' : 'border-transparent opacity-80 hover:opacity-100'
                             }`}
                             title={c.name}
+                            style={{ background: `linear-gradient(135deg, ${c.value} 0 50%, ${c.secondary} 50% 100%)` }}
                           />
                         ))}
                       </div>

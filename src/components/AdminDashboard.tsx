@@ -444,7 +444,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         full_name: manualName.trim(),
         phone: manualPhone.trim(),
         notes: manualNotes.trim() || undefined,
-      }, tenantId).catch((err) => {
+      }, tenant.id).catch((err) => {
         console.warn('[Customer Directory] manual appointment customer upsert:', err);
       });
     }
@@ -523,7 +523,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
 
   return (
-    <div className="space-y-6 pb-16">
+    <div className="space-y-5 pb-16 bg-slate-50/70 rounded-[2rem] p-2 sm:p-4" dir="rtl">
       {/* Toast Alert */}
       {toastMessage && (
         <div
@@ -551,8 +551,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
+      {/* Clean dashboard overview — all existing actions remain available below */}
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+          <div className="text-[11px] font-bold text-slate-500">תורים היום</div>
+          <div className="text-2xl font-black text-slate-900 mt-1">{appointments.filter(a => a.appointment_date === todayIso && a.status === 'confirmed').length}</div>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+          <div className="text-[11px] font-bold text-slate-500">תורים קרובים</div>
+          <div className="text-2xl font-black text-slate-900 mt-1">{appointments.filter(a => a.appointment_date >= todayIso && a.status === 'confirmed').length}</div>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+          <div className="text-[11px] font-bold text-slate-500">שירותים פעילים</div>
+          <div className="text-2xl font-black text-slate-900 mt-1">{services.length}</div>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+          <div className="text-[11px] font-bold text-slate-500">העסק</div>
+          <div className="text-base font-black text-slate-900 mt-2 truncate">{tenant.name || salonInfo.name}</div>
+        </div>
+      </div>
+
       {/* Top Banner */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-5 sm:p-6 rounded-3xl border border-slate-200 shadow-sm">
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
         <div>
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-slate-900 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">

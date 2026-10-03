@@ -126,6 +126,7 @@ export interface TenantInfo {
   address?: string;
   city?: string;
   primaryColor?: string;
+  secondaryColor?: string;
   status: 'active' | 'trial' | 'suspended';
   plan: 'starter' | 'pro' | 'enterprise';
   createdAt: string;

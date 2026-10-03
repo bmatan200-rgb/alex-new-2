@@ -1607,6 +1607,7 @@ app.post('/api/super-admin/tenants', async (req: Request, res: Response) => {
       city,
       address,
       primaryColor,
+      secondaryColor,
       customDomain,
       services,
       scheduleSettings,
@@ -1629,13 +1630,14 @@ app.post('/api/super-admin/tenants', async (req: Request, res: Response) => {
     const tenantProfile = {
       id: tenantId,
       name: sanitizedName,
-      tagline: String(tagline || 'סטודיו לטיפוח ויופי').trim(),
+      tagline: String(tagline || '').trim(),
       ownerName: String(ownerName || sanitizedName).trim(),
       phone: sanitizedPhone,
       email: req.body?.email || `${tenantId}@beauty.co.il`,
       city: String(city || '').trim(),
       address: String(address || '').trim(),
-      primaryColor: primaryColor || '#9333ea',
+      primaryColor: primaryColor || '#7c3aed',
+      secondaryColor: secondaryColor || '#c4b5fd',
       customDomain: customDomain ? String(customDomain).trim().toLowerCase() : '',
       plan: plan || 'pro',
       status: 'active',
@@ -1644,22 +1646,14 @@ app.post('/api/super-admin/tenants', async (req: Request, res: Response) => {
     };
 
     const tenantConfig = {
-      services: Array.isArray(services) && services.length > 0 ? services : [
-        {
-          id: 1,
-          name: "לק ג'ל",
-          duration_minutes: 90,
-          price: 150,
-          category: 'nails',
-          description: 'טיפול מניקור יסודי ומריחת לק ג׳ל מקצועי',
-        },
-      ],
+      // New tenants start clean: never inherit Alex Beauty services or business hours.
+      services: Array.isArray(services) ? services.filter((s: any) => String(s?.name || '').trim()) : [],
       scheduleSettings: scheduleSettings || {
-        businessOpen: '09:20',
-        businessClose: '20:30',
-        fridayOpen: '09:20',
-        fridayClose: '15:00',
-        durationMinutes: 90,
+        businessOpen: '',
+        businessClose: '',
+        fridayOpen: '',
+        fridayClose: '',
+        durationMinutes: 60,
       },
       updatedAt: new Date().toISOString(),
     };

@@ -1695,6 +1695,81 @@ app.post('/api/super-admin/tenants', async (req: Request, res: Response) => {
   }
 });
 
+// 9.4 Super Admin: load one tenant for editing
+app.get('/api/super-admin/tenants/:tenantId', async (req: Request, res: Response) => {
+  try {
+    const tenantId = String(req.params.tenantId || '').trim();
+    if (!tenantId) return res.status(400).json({ success: false, error: 'Tenant ID is required' });
+    const [tenantSnap, configSnap] = await Promise.all([
+      getDoc(getTenantDoc(tenantId)),
+      getDoc(getTenantSettingsDoc(tenantId, 'config')),
+    ]);
+    if (!tenantSnap.exists()) return res.status(404).json({ success: false, error: 'Tenant not found' });
+    return res.json({
+      success: true,
+      tenant: { id: tenantSnap.id, ...tenantSnap.data() },
+      config: configSnap.exists() ? configSnap.data() : { services: [], scheduleSettings: {} },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// 9.45 Super Admin: update an existing tenant. Tenant ID stays immutable.
+app.put('/api/super-admin/tenants/:tenantId', async (req: Request, res: Response) => {
+  try {
+    const tenantId = String(req.params.tenantId || '').trim();
+    if (!tenantId) return res.status(400).json({ success: false, error: 'Tenant ID is required' });
+    const existingSnap = await getDoc(getTenantDoc(tenantId));
+    if (!existingSnap.exists()) return res.status(404).json({ success: false, error: 'Tenant not found' });
+    const existing: any = existingSnap.data();
+    const name = String(req.body?.name || '').trim();
+    const phone = String(req.body?.phone || '').trim();
+    if (!name || !phone) return res.status(400).json({ success: false, error: 'Name and phone are required' });
+
+    const customDomain = String(req.body?.customDomain || '').trim().toLowerCase();
+    const tenantProfile = {
+      name,
+      tagline: String(req.body?.tagline || '').trim(),
+      ownerName: String(req.body?.ownerName || name).trim(),
+      phone,
+      email: String(req.body?.email || '').trim(),
+      city: String(req.body?.city || '').trim(),
+      address: String(req.body?.address || '').trim(),
+      primaryColor: req.body?.primaryColor || existing.primaryColor || '#7c3aed',
+      secondaryColor: req.body?.secondaryColor || existing.secondaryColor || '#c4b5fd',
+      customDomain,
+      coverImage: String(req.body?.coverImage || '').trim(),
+      plan: req.body?.plan || existing.plan || 'pro',
+      updatedAt: new Date().toISOString(),
+    };
+    const tenantConfig = {
+      services: Array.isArray(req.body?.services) ? req.body.services.filter((x: any) => String(x?.name || '').trim()) : [],
+      scheduleSettings: req.body?.scheduleSettings || {},
+      updatedAt: new Date().toISOString(),
+    };
+
+    await setDoc(getTenantDoc(tenantId), tenantProfile, { merge: true });
+    await setDoc(getTenantSettingsDoc(tenantId, 'config'), tenantConfig, { merge: true });
+
+    const oldDomain = String(existing.customDomain || '').trim().toLowerCase();
+    if (oldDomain && oldDomain !== customDomain) {
+      try { await deleteDoc(doc(db, 'domains', oldDomain)); } catch (_) {}
+      delete domainToTenantCache[oldDomain];
+    }
+    if (customDomain) {
+      await setDoc(doc(db, 'domains', customDomain), { tenantId, hostname: customDomain, updatedAt: new Date().toISOString() }, { merge: true });
+      domainToTenantCache[customDomain] = tenantId;
+    }
+
+    return res.json({ success: true, tenantId, tenant: { id: tenantId, ...existing, ...tenantProfile }, config: tenantConfig,
+      testUrl: `http://localhost:3000?tenant=${tenantId}`, adminUrl: `http://localhost:3000/admin?tenant=${tenantId}` });
+  } catch (err: any) {
+    console.error('[Super Admin API] Error updating tenant:', err);
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
 // 9.5 Delete Tenant Endpoint
 app.delete('/api/super-admin/tenants/:tenantId', async (req: Request, res: Response) => {
   try {

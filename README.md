@@ -36,3 +36,10 @@ For an existing installation that still has legacy global `/appointments` and `/
 ## v4
 - Added an explicit **שחרור תפיסה** button to blocked/seized slots in the redesigned daily admin calendar.
 - Releasing a seized slot uses the existing tenant-scoped cancellation flow and immediately returns the slot to availability.
+
+## v8 – Super Admin business editing
+- Removed the "קביעת תור" CTA from the new-business branding preview.
+- Added "עריכת עסק" to every tenant card in Super Admin.
+- Existing tenant profile, branding, cover, services and working hours can be loaded and updated.
+- Tenant ID is locked during editing to protect tenant data isolation.
+- Added GET/PUT Super Admin tenant endpoints and custom-domain remapping on edit.

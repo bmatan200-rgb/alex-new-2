@@ -77,6 +77,9 @@ export const SuperAdminPage: React.FC = () => {
   const [plan, setPlan] = useState<'starter' | 'pro' | 'enterprise'>('pro');
   const [coverImage, setCoverImage] = useState('');
   const [coverImageError, setCoverImageError] = useState('');
+  const [editingTenantId, setEditingTenantId] = useState<string | null>(null);
+  const [isLoadingEdit, setIsLoadingEdit] = useState(false);
+  const [lastSaveWasEdit, setLastSaveWasEdit] = useState(false);
 
   // Dynamic Services List in Onboarding Form
   const [services, setServices] = useState<Array<{ id: number; name: string; price: number; duration_minutes: number; description?: string }>>([]);
@@ -227,6 +230,40 @@ export const SuperAdminPage: React.FC = () => {
     reader.readAsDataURL(file);
   };
 
+  const resetTenantForm = () => {
+    setEditingTenantId(null);
+    setTenantId(''); setName(''); setTagline(''); setOwnerName(''); setPhone(''); setEmail('');
+    setCity(''); setAddress(''); setCustomDomain(''); setPrimaryColor('#7c3aed'); setSecondaryColor('#c4b5fd');
+    setPlan('pro'); setCoverImage(''); setCoverImageError(''); setServices([]);
+    setBusinessOpen(''); setBusinessClose(''); setFridayOpen(''); setFridayClose(''); setCreatedResult(null);
+  };
+
+  const handleEditTenant = async (tenant: TenantInfo) => {
+    setIsLoadingEdit(true);
+    try {
+      const res = await fetch(`/api/super-admin/tenants/${encodeURIComponent(tenant.id)}`);
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'לא ניתן לטעון את העסק');
+      const t = data.tenant || tenant;
+      const c = data.config || {};
+      setEditingTenantId(tenant.id);
+      setTenantId(tenant.id);
+      setName(t.name || ''); setTagline(t.tagline || ''); setOwnerName(t.ownerName || ''); setPhone(t.phone || '');
+      setEmail(t.email || ''); setCity(t.city || ''); setAddress(t.address || ''); setCustomDomain(t.customDomain || '');
+      setPrimaryColor(t.primaryColor || '#7c3aed'); setSecondaryColor(t.secondaryColor || '#c4b5fd');
+      setPlan(t.plan || 'pro'); setCoverImage(t.coverImage || '');
+      setServices(Array.isArray(c.services) ? c.services : []);
+      const sch = c.scheduleSettings || {};
+      setBusinessOpen(sch.businessOpen || ''); setBusinessClose(sch.businessClose || '');
+      setFridayOpen(sch.fridayOpen || ''); setFridayClose(sch.fridayClose || '');
+      setCreatedResult(null);
+      setActiveTab('onboarding');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err: any) {
+      alert('שגיאה בטעינת העסק לעריכה: ' + (err?.message || 'שגיאה לא ידועה'));
+    } finally { setIsLoadingEdit(false); }
+  };
+
   // Submit new tenant
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -267,16 +304,17 @@ export const SuperAdminPage: React.FC = () => {
         },
       };
 
-      const res = await fetch('/api/super-admin/tenants', {
-        method: 'POST',
+      const res = await fetch(editingTenantId ? `/api/super-admin/tenants/${encodeURIComponent(editingTenantId)}` : '/api/super-admin/tenants', {
+        method: editingTenantId ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
       const data = await res.json();
       if (data.success) {
+        setLastSaveWasEdit(!!editingTenantId);
         setCreatedResult({
-          tenantId: finalTenantId,
+          tenantId: editingTenantId || finalTenantId,
           testUrl: data.testUrl || `http://localhost:3000?tenant=${finalTenantId}`,
           adminUrl: data.adminUrl || `http://localhost:3000/admin?tenant=${finalTenantId}`,
           name: name.trim(),
@@ -284,7 +322,7 @@ export const SuperAdminPage: React.FC = () => {
         });
         fetchTenants();
       } else {
-        alert('שגיאה ביצירת סלון: ' + (data.error || 'נא לנסות שוב'));
+        alert((editingTenantId ? 'שגיאה בשמירת העסק: ' : 'שגיאה ביצירת סלון: ') + (data.error || 'נא לנסות שוב'));
       }
     } catch (err: any) {
       alert('שגיאת תקשורת עם השרת: ' + err?.message);
@@ -431,7 +469,7 @@ export const SuperAdminPage: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="text-lg font-black text-emerald-200 font-['Rubik',sans-serif]">
-                      הסלון &quot;{createdResult.name}&quot; נוצר בהצלחה במערכת! 🎉
+                      {lastSaveWasEdit ? 'השינויים בעסק ' : 'הסלון '}&quot;{createdResult.name}&quot;{lastSaveWasEdit ? ' נשמרו בהצלחה! ✅' : ' נוצר בהצלחה במערכת! 🎉'}
                     </h3>
                     <p className="text-xs text-emerald-300">
                       הקונפיגורציה נשמרה ב-Firestore תחת <code>/tenants/{createdResult.tenantId}</code> והדומיין מופה.
@@ -508,7 +546,7 @@ export const SuperAdminPage: React.FC = () => {
               <div className="space-y-1 border-b border-slate-800 pb-4">
                 <h2 className="text-xl sm:text-2xl font-black text-white font-['Rubik',sans-serif] flex items-center gap-2">
                   <Sparkles className="w-6 h-6 text-purple-400" />
-                  <span>הגדרת סלון ועסק חדש ב-SaaS Multi-Tenant</span>
+                  <span>{editingTenantId ? `עריכת העסק: ${name || editingTenantId}` : 'הגדרת סלון ועסק חדש ב-SaaS Multi-Tenant'}</span>
                 </h2>
                 <p className="text-xs sm:text-sm text-slate-400">
                   הזינו את פרטי הסלון, בחרו צבעי מיתוג, הגדירו שירותים וקבלו באופן מיידי סביבת עבודה נפרדת עם ניתוב מבודד.
@@ -545,6 +583,7 @@ export const SuperAdminPage: React.FC = () => {
                         type="text"
                         required
                         value={tenantId}
+                        disabled={!!editingTenantId}
                         onChange={(e) => setTenantId(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_'))}
                         placeholder="לדוגמה: david_barber"
                         className="w-full bg-slate-950 border border-slate-700 font-mono text-purple-300 rounded-xl px-3.5 py-2.5 focus:border-purple-500 focus:outline-none font-bold"
@@ -653,7 +692,6 @@ export const SuperAdminPage: React.FC = () => {
                       <div className="absolute bottom-0 right-0 left-0 p-5 text-white">
                         <div className="text-2xl font-black">{name || 'שם העסק'}</div>
                         <div className="text-sm text-white/80">{tagline || 'הזמנת תורים אונליין'}</div>
-                        <div className="mt-3 inline-flex rounded-full bg-white px-5 py-2 text-xs font-black" style={{ color: primaryColor }}>קביעת תור</div>
                       </div>
                     </div>
                     <div className="rounded-3xl border border-slate-800 bg-slate-950 p-4 space-y-3">
@@ -880,12 +918,17 @@ export const SuperAdminPage: React.FC = () => {
 
                 {/* SUBMIT BUTTON */}
                 <div className="pt-6 border-t border-slate-800 flex items-center justify-end gap-3">
+                  {editingTenantId && (
+                    <button type="button" onClick={resetTenantForm} className="px-5 py-3 rounded-2xl border border-slate-700 bg-slate-900 text-slate-200 font-bold text-sm hover:bg-slate-800">
+                      ביטול עריכה
+                    </button>
+                  )}
                   <button
                     type="submit"
                     disabled={isSubmitting}
                     className="px-8 py-3.5 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-500 hover:to-indigo-500 text-white font-black text-sm shadow-xl shadow-purple-600/30 transition-all cursor-pointer active:scale-95 disabled:opacity-50"
                   >
-                    {isSubmitting ? 'יוצר סלון ושומר הגדרות...' : '🚀 יצירת סלון ופריסת סביבה חדשה'}
+                    {isSubmitting ? (editingTenantId ? 'שומר שינויים...' : 'יוצר סלון ושומר הגדרות...') : (editingTenantId ? '💾 שמירת שינויים בעסק' : '🚀 יצירת סלון ופריסת סביבה חדשה')}
                   </button>
                 </div>
               </form>
@@ -993,6 +1036,16 @@ export const SuperAdminPage: React.FC = () => {
                           <ExternalLink className="w-3 h-3 text-purple-400" />
                           <span>אתר לקוחות (?tenant={tenantSlug})</span>
                         </a>
+
+                        <button
+                          type="button"
+                          disabled={isLoadingEdit}
+                          onClick={() => handleEditTenant(t)}
+                          className="px-3 py-1.5 bg-indigo-950 hover:bg-indigo-700 text-indigo-200 hover:text-white border border-indigo-800 rounded-lg text-xs font-bold flex items-center gap-1 transition disabled:opacity-50"
+                        >
+                          <Settings className="w-3 h-3" />
+                          <span>עריכת עסק</span>
+                        </button>
 
                         <Link
                           to={`/admin?tenant=${t.tenantSlug || t.id}`}

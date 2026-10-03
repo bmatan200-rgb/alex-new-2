@@ -127,6 +127,7 @@ export interface TenantInfo {
   city?: string;
   primaryColor?: string;
   secondaryColor?: string;
+  coverImage?: string; // tenant-specific hero/cover image (URL or compressed data URL)
   status: 'active' | 'trial' | 'suspended';
   plan: 'starter' | 'pro' | 'enterprise';
   createdAt: string;

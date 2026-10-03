@@ -34,6 +34,8 @@ import {
   Palette,
   Globe,
   X,
+  Image as ImageIcon,
+  Upload,
 } from 'lucide-react';
 import { doc, deleteDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -58,7 +60,7 @@ export const SuperAdminPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'trial' | 'suspended'>('all');
-  const [activeTab, setActiveTab] = useState<'onboarding' | 'tenants' | 'system'>('onboarding');
+  const [activeTab, setActiveTab] = useState<'onboarding' | 'tenants' | 'system'>('tenants');
 
   // Form State
   const [tenantId, setTenantId] = useState('');
@@ -73,6 +75,8 @@ export const SuperAdminPage: React.FC = () => {
   const [primaryColor, setPrimaryColor] = useState('#7c3aed');
   const [secondaryColor, setSecondaryColor] = useState('#c4b5fd');
   const [plan, setPlan] = useState<'starter' | 'pro' | 'enterprise'>('pro');
+  const [coverImage, setCoverImage] = useState('');
+  const [coverImageError, setCoverImageError] = useState('');
 
   // Dynamic Services List in Onboarding Form
   const [services, setServices] = useState<Array<{ id: number; name: string; price: number; duration_minutes: number; description?: string }>>([]);
@@ -194,6 +198,35 @@ export const SuperAdminPage: React.FC = () => {
     setServices(updated);
   };
 
+  const handleCoverUpload = (file?: File) => {
+    if (!file) return;
+    setCoverImageError('');
+    if (!file.type.startsWith('image/')) { setCoverImageError('יש לבחור קובץ תמונה'); return; }
+    if (file.size > 8 * 1024 * 1024) { setCoverImageError('התמונה גדולה מדי. עד 8MB לפני דחיסה.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 1600;
+        const scale = Math.min(1, maxW / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+        if (dataUrl.length > 850000) {
+          setCoverImageError('לאחר דחיסה התמונה עדיין גדולה. נסה תמונה קטנה יותר.');
+          return;
+        }
+        setCoverImage(dataUrl);
+      };
+      img.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  };
+
   // Submit new tenant
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -222,6 +255,7 @@ export const SuperAdminPage: React.FC = () => {
         primaryColor,
         secondaryColor,
         customDomain: customDomain.trim().toLowerCase(),
+        coverImage,
         plan,
         services,
         scheduleSettings: {
@@ -280,9 +314,9 @@ export const SuperAdminPage: React.FC = () => {
   }, [tenants, searchQuery, statusFilter]);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-['Heebo',sans-serif]" dir="rtl">
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-['Heebo',sans-serif]" dir="rtl">
       {/* Top Navbar */}
-      <header className="bg-slate-900 border-b border-purple-900/40 sticky top-0 z-30 shadow-xl backdrop-blur-md bg-slate-900/90">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xl backdrop-blur-md bg-white/90">
         <div className="max-w-7xl mx-auto px-4 sm:px-8 py-3.5 flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-purple-600 via-indigo-600 to-purple-800 flex items-center justify-center font-black text-white text-base shadow-lg shadow-purple-600/30 border border-purple-400/30">
@@ -290,14 +324,14 @@ export const SuperAdminPage: React.FC = () => {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-base sm:text-lg font-black text-white font-['Rubik',sans-serif]">
+                <h1 className="text-base sm:text-lg font-black text-slate-950 font-['Rubik',sans-serif]">
                   Super Admin • Multi-Tenant SaaS Platform
                 </h1>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/30">
                   גרסת SaaS ללא הגבלה ⚡
                 </span>
               </div>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500">
                 מרכז שליטה ובקרת מרובה סלונים, יצירת עסקים והגדרת דומיינים מותאמים
               </p>
             </div>
@@ -326,6 +360,20 @@ export const SuperAdminPage: React.FC = () => {
       {/* Main Container */}
       <main className="max-w-7xl mx-auto px-4 sm:px-8 py-6 sm:py-8 space-y-6">
         
+        <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {[
+            { label: 'עסקים במערכת', value: tenants.length, icon: Building2 },
+            { label: 'עסקים פעילים', value: tenants.filter(t => t.status === 'active').length, icon: Activity },
+            { label: 'סה״כ תורים', value: tenants.reduce((n,t) => n + (t.totalAppointments || 0), 0), icon: Calendar },
+            { label: 'הכנסות מדווחות', value: formatILS(tenants.reduce((n,t) => n + (t.totalRevenue || 0), 0)), icon: TrendingUp },
+          ].map(({label,value,icon:Icon}) => (
+            <div key={label} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-2xl bg-purple-50 text-purple-600"><Icon className="h-5 w-5" /></div>
+              <div className="text-2xl font-black text-slate-950">{value}</div><div className="text-xs font-bold text-slate-500">{label}</div>
+            </div>
+          ))}
+        </section>
+
         {/* Navigation Tabs */}
         <div className="flex items-center justify-between gap-4 flex-wrap border-b border-slate-800 pb-3">
           <div className="flex items-center gap-2">
@@ -593,6 +641,33 @@ export const SuperAdminPage: React.FC = () => {
                     <Palette className="w-4 h-4" />
                     <span>2. מיתוג ויזואלי ודומיין מותאם (Custom Domain)</span>
                   </h3>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_.65fr] gap-4">
+                    <div className="relative min-h-56 overflow-hidden rounded-3xl border border-slate-700 bg-slate-950 shadow-xl">
+                      {coverImage ? (
+                        <img src={coverImage} alt="תמונת כותרת" className="absolute inset-0 h-full w-full object-cover" />
+                      ) : (
+                        <div className="absolute inset-0" style={{ background: `linear-gradient(135deg, ${primaryColor}, ${secondaryColor})` }} />
+                      )}
+                      <div className="absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-950/20 to-transparent" />
+                      <div className="absolute bottom-0 right-0 left-0 p-5 text-white">
+                        <div className="text-2xl font-black">{name || 'שם העסק'}</div>
+                        <div className="text-sm text-white/80">{tagline || 'הזמנת תורים אונליין'}</div>
+                        <div className="mt-3 inline-flex rounded-full bg-white px-5 py-2 text-xs font-black" style={{ color: primaryColor }}>קביעת תור</div>
+                      </div>
+                    </div>
+                    <div className="rounded-3xl border border-slate-800 bg-slate-950 p-4 space-y-3">
+                      <div className="flex items-center gap-2 font-black text-white"><ImageIcon className="w-4 h-4 text-purple-400" /> תמונת Cover של העסק</div>
+                      <p className="text-[11px] text-slate-400">תופיע בראש אפליקציית הלקוחות עם תנועה עדינה. אם לא תועלה תמונה, יוצג Gradient מצבעי העסק.</p>
+                      <label className="flex cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-purple-500/60 bg-purple-500/10 px-4 py-4 font-bold text-purple-200 hover:bg-purple-500/20">
+                        <Upload className="w-4 h-4" /> העלאת תמונה
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => handleCoverUpload(e.target.files?.[0])} />
+                      </label>
+                      <input value={coverImage.startsWith('data:') ? '' : coverImage} onChange={(e) => setCoverImage(e.target.value)} placeholder="או הדבק קישור לתמונה" className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
+                      {coverImage && <button type="button" onClick={() => setCoverImage('')} className="text-xs font-bold text-rose-300">הסר תמונה</button>}
+                      {coverImageError && <p className="text-[11px] font-bold text-rose-400">{coverImageError}</p>}
+                    </div>
+                  </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs">
                     {/* Color Picker */}

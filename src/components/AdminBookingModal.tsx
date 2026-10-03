@@ -52,6 +52,7 @@ interface AdminBookingModalProps {
   appointments: Appointment[];
   scheduleSettings?: ScheduleSettings;
   onAddAppointment: (appointment: Omit<Appointment, 'id'>) => Promise<void> | void;
+  onReleaseBlockedAppointment?: (appointmentId: string) => Promise<void> | void;
   initialDate?: string;
   initialSlot?: string;
   initialCustomerName?: string;
@@ -76,6 +77,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   appointments,
   scheduleSettings,
   onAddAppointment,
+  onReleaseBlockedAppointment,
   initialDate,
   initialSlot,
   initialCustomerName = '',
@@ -1085,6 +1087,25 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                   <div className="text-[10px] font-semibold text-slate-400 relative z-10">
                                     <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
                                   </div>
+                                  {slot.status === 'blocked' && slot.appointment && onReleaseBlockedAppointment && (
+                                    <button
+                                      type="button"
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        try {
+                                          await onReleaseBlockedAppointment(slot.appointment!.id);
+                                          onShowToast(`התפיסה בשעה ${slot.time} שוחררה`, 'success');
+                                        } catch (error) {
+                                          console.error('Failed to release blocked appointment', error);
+                                          onShowToast('לא ניתן היה לשחרר את התפיסה. נסה שוב.', 'error');
+                                        }
+                                      }}
+                                      className="relative z-20 mt-2 w-full rounded-xl border border-purple-200 bg-white px-2.5 py-1.5 text-[10px] font-black text-purple-700 hover:bg-purple-50 hover:border-purple-300 transition cursor-pointer"
+                                      title="שחרור תפיסת השעה והחזרתה לזמינות"
+                                    >
+                                      🔓 שחרר תפיסה
+                                    </button>
+                                  )}
                                 </div>
                               );
                             }
@@ -1180,6 +1201,25 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                   <div className="text-[10px] font-semibold text-slate-400 relative z-10">
                                     <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
                                   </div>
+                                  {slot.status === 'blocked' && slot.appointment && onReleaseBlockedAppointment && (
+                                    <button
+                                      type="button"
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        try {
+                                          await onReleaseBlockedAppointment(slot.appointment!.id);
+                                          onShowToast(`התפיסה בשעה ${slot.time} שוחררה`, 'success');
+                                        } catch (error) {
+                                          console.error('Failed to release blocked appointment', error);
+                                          onShowToast('לא ניתן היה לשחרר את התפיסה. נסה שוב.', 'error');
+                                        }
+                                      }}
+                                      className="relative z-20 mt-2 w-full rounded-xl border border-purple-200 bg-white px-2.5 py-1.5 text-[10px] font-black text-purple-700 hover:bg-purple-50 hover:border-purple-300 transition cursor-pointer"
+                                      title="שחרור תפיסת השעה והחזרתה לזמינות"
+                                    >
+                                      🔓 שחרר תפיסה
+                                    </button>
+                                  )}
                                 </div>
                               );
                             }
@@ -1273,6 +1313,25 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                   <div className="text-[10px] font-semibold text-slate-400 relative z-10">
                                     <span className="line-through decoration-red-400/60 text-slate-400">עד {slot.endTime}</span>
                                   </div>
+                                  {slot.status === 'blocked' && slot.appointment && onReleaseBlockedAppointment && (
+                                    <button
+                                      type="button"
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        try {
+                                          await onReleaseBlockedAppointment(slot.appointment!.id);
+                                          onShowToast(`התפיסה בשעה ${slot.time} שוחררה`, 'success');
+                                        } catch (error) {
+                                          console.error('Failed to release blocked appointment', error);
+                                          onShowToast('לא ניתן היה לשחרר את התפיסה. נסה שוב.', 'error');
+                                        }
+                                      }}
+                                      className="relative z-20 mt-2 w-full rounded-xl border border-purple-200 bg-white px-2.5 py-1.5 text-[10px] font-black text-purple-700 hover:bg-purple-50 hover:border-purple-300 transition cursor-pointer"
+                                      title="שחרור תפיסת השעה והחזרתה לזמינות"
+                                    >
+                                      🔓 שחרר תפיסה
+                                    </button>
+                                  )}
                                 </div>
                               );
                             }

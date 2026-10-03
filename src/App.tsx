@@ -515,6 +515,21 @@ function MainApp() {
               {/* Main Content Container */}
               <main className="flex-1 max-w-xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-10 space-y-6">
                 <div className="space-y-6 animate-in fade-in duration-300">
+                  {/* Tenant-specific animated hero / cover */}
+                  <section className="relative overflow-hidden rounded-[2rem] min-h-[230px] shadow-xl border border-white/70">
+                    {tenant.coverImage ? (
+                      <img src={tenant.coverImage} alt={tenant.name} className="absolute inset-0 h-full w-full object-cover animate-[tenantHero_14s_ease-in-out_infinite_alternate]" />
+                    ) : (
+                      <div className="absolute inset-0" style={{ background: `linear-gradient(135deg, ${primaryColor}, ${tenant.secondaryColor || '#c4b5fd'})` }} />
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-900/20 to-transparent" />
+                    <div className="relative z-10 flex min-h-[230px] flex-col items-center justify-end p-6 text-center text-white">
+                      <div className="mb-1 text-3xl font-black drop-shadow-lg">{tenant.name}</div>
+                      <div className="text-sm font-bold text-white/85">{tenant.tagline || 'הזמנת תורים אונליין'}</div>
+                      <button type="button" onClick={handleRequestBooking} className="mt-4 rounded-full bg-white px-7 py-2.5 text-sm font-black shadow-lg active:scale-95" style={{ color: primaryColor }}>קביעת תור</button>
+                    </div>
+                  </section>
+
                   {/* Salon Brand Title */}
                   <div className="text-center space-y-2">
                     <div

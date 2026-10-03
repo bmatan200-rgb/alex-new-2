@@ -75,3 +75,11 @@
   animation: delicate-purple-halo 2.4s ease-in-out 0.2s forwards;
 }
 
+
+@keyframes tenantHero {
+  from { transform: scale(1.02) translateY(0); }
+  to { transform: scale(1.08) translateY(-4px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  [class*="tenantHero"] { animation: none !important; }
+}

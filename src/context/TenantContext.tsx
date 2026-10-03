@@ -103,6 +103,8 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             address: tData.address || '',
             city: tData.city || '',
             primaryColor: tData.primaryColor || '#9333ea',
+            secondaryColor: tData.secondaryColor || '#c4b5fd',
+            coverImage: tData.coverImage || '',
             status: tData.status || 'active',
             plan: tData.plan || 'pro',
             createdAt: tData.createdAt || '2024-01-01',

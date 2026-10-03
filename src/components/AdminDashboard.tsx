@@ -911,6 +911,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         appointments={appointments}
         scheduleSettings={scheduleSettings}
         onAddAppointment={onAddAppointment}
+        onReleaseBlockedAppointment={(appointmentId) => onCancelAppointment(appointmentId)}
         initialDate={adminBookingPrefill.date}
         initialSlot={adminBookingPrefill.slot}
         initialCustomerName={adminBookingPrefill.customerName}

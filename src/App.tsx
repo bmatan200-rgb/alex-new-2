@@ -526,7 +526,6 @@ function MainApp() {
                     <div className="relative z-10 flex min-h-[230px] flex-col items-center justify-end p-6 text-center text-white">
                       <div className="mb-1 text-3xl font-black drop-shadow-lg">{tenant.name}</div>
                       <div className="text-sm font-bold text-white/85">{tenant.tagline || 'הזמנת תורים אונליין'}</div>
-                      <button type="button" onClick={handleRequestBooking} className="mt-4 rounded-full bg-white px-7 py-2.5 text-sm font-black shadow-lg active:scale-95" style={{ color: primaryColor }}>קביעת תור</button>
                     </div>
                   </section>
 

@@ -551,8 +551,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* Clean dashboard overview — all existing actions remain available below */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+      {/* Legacy overview hidden in the redesigned workspace */}
+      <div className="hidden grid-cols-2 xl:grid-cols-4 gap-3">
         <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
           <div className="text-[11px] font-bold text-slate-500">תורים היום</div>
           <div className="text-2xl font-black text-slate-900 mt-1">{appointments.filter(a => a.appointment_date === todayIso && a.status === 'confirmed').length}</div>
@@ -571,8 +571,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       </div>
 
-      {/* Top Banner */}
-      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+      {/* Legacy top banner hidden in the redesigned workspace */}
+      <div className="hidden flex-col xl:flex-row xl:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
         <div>
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-slate-900 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">
@@ -722,6 +722,88 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         />
       ) : (
         <>
+      {/* Modern daily workspace */}
+      <section className="grid xl:grid-cols-[minmax(0,1fr)_300px] gap-4">
+        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div className="text-[11px] font-bold text-purple-600 mb-1">היומן שלי</div>
+              <h2 className="text-xl sm:text-2xl font-black text-slate-900">{formatHebrewFullDate(selectedDate)}</h2>
+              <p className="text-xs text-slate-500 mt-1">{activeDayAppointments.length} תורים · {formatILS(dailyRevenue)} הכנסה צפויה</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => { const d = new Date(selectedDate + 'T12:00:00'); d.setDate(d.getDate()-1); setSelectedDate(toISODateString(d)); }} className="w-10 h-10 rounded-xl border border-slate-200 hover:bg-slate-50 font-black">‹</button>
+              <button type="button" onClick={() => setSelectedDate(todayIso)} className="h-10 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-black">היום</button>
+              <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-xs font-bold outline-none focus:border-purple-400" />
+              <button type="button" onClick={() => { const d = new Date(selectedDate + 'T12:00:00'); d.setDate(d.getDate()+1); setSelectedDate(toISODateString(d)); }} className="w-10 h-10 rounded-xl border border-slate-200 hover:bg-slate-50 font-black">›</button>
+            </div>
+          </div>
+
+          <div className="p-3 sm:p-5 space-y-2 max-h-[680px] overflow-y-auto">
+            {dailySlotsOccupancy.map((slot) => {
+              const appt = slot.appointment;
+              const isBlock = appt ? isBlockedAppointment(appt) : false;
+              const isBusy = !!appt && appt.status === 'confirmed';
+              return (
+                <div key={slot.time} className="grid grid-cols-[64px_minmax(0,1fr)] gap-3 items-stretch">
+                  <div className="text-xs font-black text-slate-500 pt-4 text-left" dir="ltr">{slot.time}</div>
+                  {isBusy && appt ? (
+                    <div className={`rounded-2xl border p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${isBlock ? 'bg-slate-50 border-slate-300' : 'bg-purple-50/70 border-purple-200'}`}>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-black text-sm text-slate-900">{isBlock ? '🔒 ' : ''}{appt.customer_name}</span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600" dir="ltr">{appt.start_time}–{appt.end_time}</span>
+                        </div>
+                        <div className="text-xs text-slate-500 mt-1 truncate">{appt.service_name}{appt.price > 0 ? ` · ${formatILS(appt.price)}` : ''}{!isBlock && appt.customer_phone ? ` · ${appt.customer_phone}` : ''}</div>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {!isBlock && appt.customer_phone && <a href={`tel:${appt.customer_phone}`} className="w-9 h-9 rounded-xl bg-white border border-slate-200 flex items-center justify-center" title="חיוג"><Phone className="w-4 h-4" /></a>}
+                        {!isBlock && <button type="button" onClick={() => handleSendReminderAutomated(appt, 'customer')} disabled={sendingApptId === `${appt.id}-customer`} className="h-9 px-3 rounded-xl bg-white border border-slate-200 text-xs font-bold hover:border-purple-300 disabled:opacity-50">SMS</button>}
+                        {isBlock ? (
+                          <button type="button" onClick={() => onCancelAppointment(appt.id)} className="h-9 px-3 rounded-xl bg-white border border-slate-200 text-xs font-bold">שחרור</button>
+                        ) : (
+                          <button type="button" onClick={() => setAppointmentToCancel(appt)} className="h-9 px-3 rounded-xl bg-white border border-red-200 text-red-600 text-xs font-bold">ביטול</button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => openAdminBooking({ date: selectedDate, slot: slot.time, mode: 'client' })} className="min-h-[54px] rounded-2xl border border-dashed border-slate-200 hover:border-purple-300 hover:bg-purple-50/40 text-right px-4 text-xs text-slate-400 hover:text-purple-700 transition">+ שעה פנויה</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <aside className="space-y-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4">
+            <button type="button" onClick={() => openAdminBooking({ date: selectedDate, mode: 'client' })} className="w-full h-12 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-black text-sm flex items-center justify-center gap-2"><PlusCircle className="w-4 h-4" />תור חדש</button>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <button type="button" onClick={() => openAdminBooking({ date: selectedDate, mode: 'block' })} className="h-20 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold flex flex-col items-center justify-center gap-2"><Lock className="w-4 h-4 text-purple-600" />חסימת זמן</button>
+              <button type="button" onClick={() => setIsDurationModalOpen(true)} className="h-20 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold flex flex-col items-center justify-center gap-2"><Clock className="w-4 h-4 text-purple-600" />שירותים ומחיר</button>
+              <button type="button" onClick={() => { setWhatsAppModalTab('templates'); setIsWhatsAppModalOpen(true); }} className="h-20 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold flex flex-col items-center justify-center gap-2"><Smartphone className="w-4 h-4 text-purple-600" />SMS</button>
+              <button type="button" onClick={() => setAdminTab('customers')} className="h-20 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold flex flex-col items-center justify-center gap-2"><Users className="w-4 h-4 text-purple-600" />לקוחות</button>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4">
+            <div className="font-black text-sm text-slate-900 mb-3">היום במספרים</div>
+            <div className="space-y-3 text-xs">
+              <div className="flex justify-between"><span className="text-slate-500">תורים</span><b>{activeDayAppointments.length}</b></div>
+              <div className="flex justify-between"><span className="text-slate-500">הכנסה צפויה</span><b className="text-emerald-600">{formatILS(dailyRevenue)}</b></div>
+              <div className="flex justify-between"><span className="text-slate-500">שעות חסומות</span><b>{dayAppointments.filter(isBlockedAppointment).length}</b></div>
+              <div className="flex justify-between"><span className="text-slate-500">SMS ערב</span><b>{reminderSettings.eveningReminderTime || '20:00'}</b></div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-2">
+            {onSwitchToClientView && <button type="button" onClick={onSwitchToClientView} className="w-full h-10 rounded-xl border border-slate-200 text-xs font-bold">תצוגת לקוח/ה</button>}
+            {onLogout && <button type="button" onClick={onLogout} className="w-full h-10 rounded-xl border border-red-100 bg-red-50 text-red-600 text-xs font-bold">התנתקות</button>}
+          </div>
+        </aside>
+      </section>
+
+      {false && <>
       {/* 2-Hour WhatsApp Live Alert & Countdown Tracker */}
       <WhatsApp2HourAlertBanner
         appointments={appointments}
@@ -767,6 +849,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <span>עריכת נוסח תזכורות SMS</span>
         </button>
       </div>
+      </>}
 
       {/* SMS Automation & Reminder Modal */}
       <SmsReminderModal
@@ -924,7 +1007,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* Manual Action Modal (Block Slot vs Add Client) */}
+      {false && <>
+      {/* Legacy manual/calendar/list retained in source for compatibility */}
       {isAddingManual && (
         <div className="bg-white rounded-2xl p-5 sm:p-6 border-2 border-purple-400 shadow-xl space-y-4 animate-in fade-in duration-200">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -1864,6 +1948,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         )}
       </div>
+      </>}
         </>
       )}
     </div>

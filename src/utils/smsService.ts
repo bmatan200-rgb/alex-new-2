@@ -1,4 +1,4 @@
-import { auth, db } from '../lib/firebase';
+import { auth, db, getCurrentTenantId } from '../lib/firebase';
 import { SALON_INFO, getStoredAdminSession } from './storage';
 
 export interface SmsReminderSettings {
@@ -86,9 +86,11 @@ export function createWhatsAppDirectLink(phone: string, text: string = ''): stri
 }
 
 export async function getAdminApiHeaders(): Promise<Record<string, string>> {
+  const tid = getCurrentTenantId();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-admin-request': 'true',
+    'x-tenant-id': tid,
   };
 
   try {
@@ -190,17 +192,18 @@ export async function saveSmsSettings(settings: SmsReminderSettings): Promise<vo
       updatedAt: new Date().toISOString(),
     };
 
-    // 3. Save to Firestore (both sms_reminders and reminders documents)
+    // 3. Save to Firestore (both sms_reminders and config documents under tenant)
     try {
       if (db) {
         const { doc, setDoc } = await import('firebase/firestore');
+        const tid = getCurrentTenantId();
         await setDoc(
-          doc(db, 'settings', 'sms_reminders'),
+          doc(db, 'tenants', tid, 'settings', 'sms_reminders'),
           payloadWithAliases,
           { merge: true }
         );
         await setDoc(
-          doc(db, 'settings', 'reminders'),
+          doc(db, 'tenants', tid, 'settings', 'config'),
           payloadWithAliases,
           { merge: true }
         );

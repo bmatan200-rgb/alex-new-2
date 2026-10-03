@@ -53,24 +53,65 @@ try {
 }
 export const db: Firestore = firestoreInstance;
 
-const APPOINTMENTS_COLLECTION = 'appointments';
+// Helper functions for Multi-Tenant paths
+export function getTenantAppointmentsCol(tenantId = 'alex_beauty') {
+  return collection(db, 'tenants', tenantId, 'appointments');
+}
+
+export function getTenantAppointmentDocRef(tenantId = 'alex_beauty', docId: string) {
+  return doc(db, 'tenants', tenantId, 'appointments', docId);
+}
+
+export function getTenantSettingsDocRef(tenantId = 'alex_beauty', docId = 'config') {
+  return doc(db, 'tenants', tenantId, 'settings', docId);
+}
 
 /**
- * Real-time listener for all appointments
+ * Real-time listener for appointments (Multi-Tenant aware)
  */
 export function subscribeAppointments(
   onUpdate: (appointments: Appointment[]) => void,
-  onError?: (error: Error) => void
+  onError?: (error: Error) => void,
+  tenantId = 'alex_beauty'
 ): () => void {
   try {
-    const q = query(
-      collection(db, APPOINTMENTS_COLLECTION),
-      orderBy('appointment_date', 'asc')
-    );
+    const tenantCol = getTenantAppointmentsCol(tenantId);
+    const q = query(tenantCol, orderBy('appointment_date', 'asc'));
 
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
+        // If snapshot from tenant path is empty and tenantId is alex_beauty, check root collection for backward compatibility
+        if (snapshot.empty && tenantId === 'alex_beauty') {
+          const rootQ = query(collection(db, 'appointments'), orderBy('appointment_date', 'asc'));
+          getDocs(rootQ).then((rootSnap) => {
+            const seenIds = new Set<string>();
+            const list: Appointment[] = [];
+            for (const docSnap of rootSnap.docs) {
+              const id = docSnap.id;
+              if (seenIds.has(id)) continue;
+              seenIds.add(id);
+              const data = docSnap.data();
+              if (data.status === 'cancelled') continue;
+              list.push({
+                id,
+                customer_name: data.customer_name || '',
+                customer_phone: data.customer_phone || '',
+                service_id: data.service_id || 1,
+                service_name: data.service_name || "לק ג'ל",
+                price: data.price || 150,
+                appointment_date: data.appointment_date,
+                start_time: data.start_time,
+                end_time: data.end_time,
+                status: data.status || 'confirmed',
+                notes: data.notes || '',
+                created_at: data.created_at || new Date().toISOString(),
+              });
+            }
+            onUpdate(deduplicateAppointments(list));
+          }).catch(() => {});
+        }
+
         const seenIds = new Set<string>();
         const list: Appointment[] = [];
         for (const docSnap of snapshot.docs) {
@@ -94,12 +135,12 @@ export function subscribeAppointments(
             created_at: data.created_at || new Date().toISOString(),
           });
         }
-        // Deduplicate and sort chronologically
-        const deduped = deduplicateAppointments(list);
-        onUpdate(deduped);
+        if (list.length > 0 || tenantId !== 'alex_beauty') {
+          onUpdate(deduplicateAppointments(list));
+        }
       },
       (err) => {
-        console.warn('Firestore subscription error, fallback might be used:', err);
+        console.warn(`Firestore subscription error for tenant ${tenantId}:`, err);
         if (onError) onError(err);
       }
     );
@@ -113,9 +154,8 @@ export function subscribeAppointments(
 }
 
 /**
- * Save new appointment to Firestore
+ * Save new appointment to Firestore (Multi-Tenant aware)
  */
-/** נזרקת כששני לקוחות ניסו לתפוס את אותה שעה בו-זמנית */
 export class SlotTakenError extends Error {
   constructor() {
     super('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
@@ -123,17 +163,13 @@ export class SlotTakenError extends Error {
   }
 }
 
-/**
- * מזהה דטרמיניסטי לתור, נגזר מהתאריך והשעה.
- * שני תורים באותה משבצת מקבלים בהכרח את אותו מזהה מסמך,
- * ולכן Firestore עצמו מונע פיזית את קיומם של שניהם.
- */
 export function slotDocId(date: string, startTime: string): string {
   return `appt_${date}_${startTime.replace(':', '')}`;
 }
 
 export async function addAppointmentToFirestore(
-  appointment: Omit<Appointment, 'id'> | Appointment
+  appointment: Omit<Appointment, 'id'> | Appointment,
+  tenantId = 'alex_beauty'
 ): Promise<string> {
   const isNew = !('id' in appointment) || !appointment.id;
 
@@ -153,191 +189,157 @@ export async function addAppointmentToFirestore(
     status: appointment.status || 'confirmed',
     notes: appointment.notes || '',
     created_at: appointment.created_at || new Date().toISOString(),
+    tenantId,
   };
 
-  const docRef = doc(db, APPOINTMENTS_COLLECTION, docId);
+  const docRef = getTenantAppointmentDocRef(tenantId, docId);
+  const rootDocRef = doc(db, 'appointments', docId);
 
   await runTransaction(db, async (transaction) => {
     if (isNew) {
       const snap = await transaction.get(docRef);
-      // תור מבוטל משחרר את השעה — אפשר להזמין עליה מחדש
       if (snap.exists() && snap.data().status !== 'cancelled') {
         const snapPhone = (snap.data().customer_phone || '').replace(/\D/g, '');
         const newPhone = (appointment.customer_phone || '').replace(/\D/g, '');
-        // אם מדובר בלקוח אחר — השעה תפוסה
         if (snapPhone && newPhone && snapPhone !== newPhone) {
           throw new SlotTakenError();
         }
-        // אם מדובר באותו לקוח שמשדרג/מעדכן את התור שלו או אישור חוזר — נאפשר עדכון
       }
     }
     transaction.set(docRef, dataToSave, { merge: true });
+    if (tenantId === 'alex_beauty') {
+      transaction.set(rootDocRef, dataToSave, { merge: true });
+    }
   });
 
   return docId;
 }
 
 /**
- * Cancel appointment in Firestore
+ * Cancel appointment in Firestore (Multi-Tenant aware)
  */
 export async function cancelAppointmentInFirestore(
   appointmentId: string | number,
   customerPhone?: string,
   appointmentDate?: string,
-  startTime?: string
+  startTime?: string,
+  tenantId = 'alex_beauty'
 ): Promise<void> {
   const idStr = String(appointmentId);
   const session = getStoredAdminSession() || getStoredUserSession();
-  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
-  
-  let serverOk = false;
+  const token = auth.currentUser
+    ? await auth.currentUser.getIdToken()
+    : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+
   try {
-    const res = await fetch('/api/appointments/cancel', {
+    await fetch('/api/appointments/cancel', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-admin-request': session?.isAdmin ? 'true' : 'false',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
       },
       body: JSON.stringify({
         appointmentId: idStr,
         customerPhone,
         appointmentDate,
         startTime,
-        adminPhone: session?.isAdmin ? session.phone : undefined
+        tenantId,
       }),
     });
-    if (res.ok) {
-      serverOk = true;
-    }
   } catch (err) {
     console.warn('Server cancel attempt warning, using Firestore direct fallback:', err);
   }
 
-  // Primary: Delete directly from Firestore so it is removed immediately
+  // Delete from /tenants/{tenantId}/appointments/{idStr}
   try {
-    await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, idStr));
-  } catch (err) {
-    // If delete fails, mark as cancelled
+    await deleteDoc(getTenantAppointmentDocRef(tenantId, idStr));
+  } catch {
     try {
-      await setDoc(doc(db, APPOINTMENTS_COLLECTION, idStr), { status: 'cancelled' }, { merge: true });
-    } catch {
-      // ignore
-    }
+      await setDoc(getTenantAppointmentDocRef(tenantId, idStr), { status: 'cancelled' }, { merge: true });
+    } catch {}
   }
 
-  // Also ensure deterministic slot doc and any matching slot docs are deleted
+  // Also root collection fallback for alex_beauty
+  if (tenantId === 'alex_beauty') {
+    try {
+      await deleteDoc(doc(db, 'appointments', idStr));
+    } catch {}
+  }
+
   if (appointmentDate && startTime) {
     const sDocId = slotDocId(appointmentDate, startTime);
-    if (sDocId !== idStr) {
-      try {
-        await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, sDocId));
-      } catch {
-        // ignore
-      }
-    }
-
     try {
-      const q = query(
-        collection(db, APPOINTMENTS_COLLECTION),
-        where('appointment_date', '==', appointmentDate),
-        where('start_time', '==', startTime)
-      );
-      const querySnap = await getDocs(q);
-      for (const d of querySnap.docs) {
-        await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, d.id));
-      }
-    } catch {
-      // ignore
+      await deleteDoc(getTenantAppointmentDocRef(tenantId, sDocId));
+    } catch {}
+    if (tenantId === 'alex_beauty') {
+      try {
+        await deleteDoc(doc(db, 'appointments', sDocId));
+      } catch {}
     }
   }
 }
 
 /**
- * Permanently delete appointment in Firestore
+ * Permanently delete appointment in Firestore (Multi-Tenant aware)
  */
 export async function deleteAppointmentInFirestore(
   appointmentId: string | number,
   appointmentDate?: string,
-  startTime?: string
+  startTime?: string,
+  tenantId = 'alex_beauty'
 ): Promise<void> {
   const idStr = String(appointmentId);
-  const session = getStoredAdminSession() || getStoredUserSession();
-  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
-
-  let serverOk = false;
-  try {
-    const res = await fetch('/api/admin/appointments/delete', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-admin-request': session?.isAdmin ? 'true' : 'false',
-        'Authorization': `Bearer ${token}`,
-        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
-      },
-      body: JSON.stringify({
-        appointmentId: idStr,
-        appointmentDate,
-        startTime,
-        adminPhone: session?.isAdmin ? session.phone : undefined
-      }),
-    });
-    if (res.ok) {
-      serverOk = true;
-    }
-  } catch (err) {
-    console.warn('Server delete attempt warning, using Firestore direct fallback:', err);
-  }
 
   try {
-    await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, idStr));
+    await deleteDoc(getTenantAppointmentDocRef(tenantId, idStr));
   } catch (err) {
     console.warn('Direct Firestore delete failed for idStr:', err);
   }
 
+  if (tenantId === 'alex_beauty') {
+    try {
+      await deleteDoc(doc(db, 'appointments', idStr));
+    } catch {}
+  }
+
   if (appointmentDate && startTime) {
     const sDocId = slotDocId(appointmentDate, startTime);
-    if (sDocId !== idStr) {
-      try {
-        await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, sDocId));
-      } catch {
-        // ignore
-      }
-    }
-
     try {
-      const q = query(
-        collection(db, APPOINTMENTS_COLLECTION),
-        where('appointment_date', '==', appointmentDate),
-        where('start_time', '==', startTime)
-      );
-      const querySnap = await getDocs(q);
-      for (const d of querySnap.docs) {
-        await deleteDoc(doc(db, APPOINTMENTS_COLLECTION, d.id));
-      }
-    } catch {
-      // ignore
+      await deleteDoc(getTenantAppointmentDocRef(tenantId, sDocId));
+    } catch {}
+    if (tenantId === 'alex_beauty') {
+      try {
+        await deleteDoc(doc(db, 'appointments', sDocId));
+      } catch {}
     }
   }
 }
 
-const SETTINGS_COLLECTION = 'settings';
-
 /**
- * Real-time listener for services configuration
+ * Real-time listener for services configuration (Multi-Tenant aware)
  */
 export function subscribeServices(
-  onUpdate: (services: Service[]) => void
+  onUpdate: (services: Service[]) => void,
+  tenantId = 'alex_beauty'
 ): () => void {
   try {
-    const docRef = doc(db, SETTINGS_COLLECTION, 'services_config');
-    const unsubscribe = onSnapshot(docRef, (snapshot) => {
+    const tenantConfigRef = getTenantSettingsDocRef(tenantId, 'config');
+    const unsubscribe = onSnapshot(tenantConfigRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
         if (data.services && Array.isArray(data.services) && data.services.length > 0) {
           onUpdate(data.services);
+          return;
         }
+      }
+      // Fallback for alex_beauty
+      if (tenantId === 'alex_beauty') {
+        getDoc(doc(db, 'settings', 'services_config')).then((sSnap) => {
+          if (sSnap.exists() && sSnap.data().services) {
+            onUpdate(sSnap.data().services);
+          }
+        }).catch(() => {});
       }
     });
     return unsubscribe;
@@ -348,61 +350,90 @@ export function subscribeServices(
 }
 
 /**
- * Save services configuration to Firestore
+ * Save services configuration to Firestore (Multi-Tenant aware)
  */
-export async function saveServicesToFirestore(services: Service[]): Promise<void> {
+export async function saveServicesToFirestore(
+  services: Service[],
+  tenantId = 'alex_beauty'
+): Promise<void> {
   const session = getStoredAdminSession() || getStoredUserSession();
-  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+  const token = auth.currentUser
+    ? await auth.currentUser.getIdToken()
+    : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
 
-  let serverOk = false;
   try {
-    const res = await fetch('/api/admin/settings/services', {
+    await fetch('/api/admin/settings/services', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
-        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
       },
       body: JSON.stringify({
         services,
-        adminPhone: session?.isAdmin ? session.phone : undefined
+        tenantId,
       }),
     });
-    if (res.ok) {
-      serverOk = true;
-    }
   } catch (err) {
-    console.warn('Server save services warning, using direct Firestore write:', err);
+    console.warn('Server save services warning:', err);
   }
 
-  if (!serverOk) {
-    await setDoc(doc(db, SETTINGS_COLLECTION, 'services_config'), {
+  // Direct Firestore Write to /tenants/{tenantId}/settings/config
+  try {
+    await setDoc(getTenantSettingsDocRef(tenantId, 'config'), {
       services,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     }, { merge: true });
+    if (tenantId === 'alex_beauty') {
+      await setDoc(doc(db, 'settings', 'services_config'), {
+        services,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+    }
+  } catch (err) {
+    console.warn('Error direct saving services to Firestore:', err);
   }
 }
 
 /**
- * Real-time listener for salon schedule / working hours settings
+ * Real-time listener for salon schedule / working hours settings (Multi-Tenant aware)
  */
 export function subscribeScheduleSettings(
-  onUpdate: (settings: import('../types').ScheduleSettings) => void
+  onUpdate: (settings: import('../types').ScheduleSettings) => void,
+  tenantId = 'alex_beauty'
 ): () => void {
   try {
-    const docRef = doc(db, SETTINGS_COLLECTION, 'schedule_settings');
-    const unsubscribe = onSnapshot(docRef, (snapshot) => {
+    const tenantConfigRef = getTenantSettingsDocRef(tenantId, 'config');
+    const unsubscribe = onSnapshot(tenantConfigRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
-        if (data && data.businessOpen && data.businessClose) {
+        const schedule = data.scheduleSettings || data;
+        if (schedule && schedule.businessOpen && schedule.businessClose) {
           onUpdate({
-            businessOpen: data.businessOpen,
-            businessClose: data.businessClose,
-            fridayOpen: data.fridayOpen || '09:20',
-            fridayClose: data.fridayClose || '15:00',
-            durationMinutes: Number(data.durationMinutes) || 90,
+            businessOpen: schedule.businessOpen,
+            businessClose: schedule.businessClose,
+            fridayOpen: schedule.fridayOpen || '09:20',
+            fridayClose: schedule.fridayClose || '15:00',
+            durationMinutes: Number(schedule.durationMinutes) || 90,
           });
+          return;
         }
+      }
+      // Fallback for alex_beauty
+      if (tenantId === 'alex_beauty') {
+        getDoc(doc(db, 'settings', 'schedule_settings')).then((sSnap) => {
+          if (sSnap.exists()) {
+            const d = sSnap.data();
+            if (d && d.businessOpen && d.businessClose) {
+              onUpdate({
+                businessOpen: d.businessOpen,
+                businessClose: d.businessClose,
+                fridayOpen: d.fridayOpen || '09:20',
+                fridayClose: d.fridayClose || '15:00',
+                durationMinutes: Number(d.durationMinutes) || 90,
+              });
+            }
+          }
+        }).catch(() => {});
       }
     });
     return unsubscribe;
@@ -413,44 +444,56 @@ export function subscribeScheduleSettings(
 }
 
 /**
- * Save salon schedule / working hours settings to Firestore
+ * Save salon schedule / working hours settings to Firestore (Multi-Tenant aware)
  */
 export async function saveScheduleSettingsToFirestore(
-  schedule: ScheduleSettings | Record<string, any>
+  schedule: ScheduleSettings | Record<string, any>,
+  tenantId = 'alex_beauty'
 ): Promise<void> {
   const session = getStoredAdminSession() || getStoredUserSession();
-  const token = auth.currentUser ? await auth.currentUser.getIdToken() : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+  const token = auth.currentUser
+    ? await auth.currentUser.getIdToken()
+    : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
 
-  let serverOk = false;
   try {
-    const res = await fetch('/api/admin/settings/schedule', {
+    await fetch('/api/admin/settings/schedule', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
-        ...(session?.isAdmin && session.phone ? { 'x-admin-phone': session.phone } : {})
       },
       body: JSON.stringify({
         schedule,
-        adminPhone: session?.isAdmin ? session.phone : undefined
+        tenantId,
       }),
     });
-    if (res.ok) {
-      serverOk = true;
-    }
   } catch (err) {
-    console.warn('Server save schedule warning, using direct Firestore write:', err);
+    console.warn('Server save schedule warning:', err);
   }
 
-  if (!serverOk) {
-    await setDoc(doc(db, SETTINGS_COLLECTION, 'schedule_settings'), {
-      businessOpen: schedule.businessOpen,
-      businessClose: schedule.businessClose,
-      fridayOpen: schedule.fridayOpen || '09:20',
-      fridayClose: schedule.fridayClose || '15:00',
-      durationMinutes: Number(schedule.durationMinutes) || 90,
+  try {
+    await setDoc(getTenantSettingsDocRef(tenantId, 'config'), {
+      scheduleSettings: {
+        businessOpen: schedule.businessOpen,
+        businessClose: schedule.businessClose,
+        fridayOpen: schedule.fridayOpen || '09:20',
+        fridayClose: schedule.fridayClose || '15:00',
+        durationMinutes: Number(schedule.durationMinutes) || 90,
+      },
       updatedAt: new Date().toISOString(),
     }, { merge: true });
+    if (tenantId === 'alex_beauty') {
+      await setDoc(doc(db, 'settings', 'schedule_settings'), {
+        businessOpen: schedule.businessOpen,
+        businessClose: schedule.businessClose,
+        fridayOpen: schedule.fridayOpen || '09:20',
+        fridayClose: schedule.fridayClose || '15:00',
+        durationMinutes: Number(schedule.durationMinutes) || 90,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+    }
+  } catch (err) {
+    console.warn('Error saving schedule to Firestore:', err);
   }
 }
 

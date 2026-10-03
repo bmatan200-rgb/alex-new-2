@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, Navigate, useNavigate, Link } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import {
   Sparkles,
   Calendar,
@@ -13,6 +13,8 @@ import {
   Search,
   MapPin,
   Trash2,
+  Building2,
+  Layers,
 } from 'lucide-react';
 import { Appointment, ScheduleSettings, Service, UserSession } from './types';
 import {
@@ -46,20 +48,190 @@ import {
   signOut,
 } from './lib/firebase';
 import { formatILS, deduplicateAppointments, isAppointmentInPast } from './utils/dateUtils';
+import { TenantProvider, useTenant } from './context/TenantContext';
 import { Header } from './components/Header';
 import { TorModalFlow } from './components/TorModalFlow';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { CancelAppointmentConfirmModal } from './components/CancelAppointmentConfirmModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import { AdminLoginPage } from './components/AdminLoginPage';
+import { SuperAdminPage } from './pages/SuperAdmin';
 import { MyBookingModal } from './components/MyBookingModal';
 import { SalonInfoSection } from './components/SalonInfoSection';
 import { AuthModal } from './components/AuthModal';
 import { TermsOfServiceModal } from './components/TermsOfServiceModal';
 import { ExistingBookingChoiceModal } from './components/ExistingBookingChoiceModal';
 
-export default function App() {
+// Explicit Tenant Admin Route View handling Local Development & Multi-Tenant param
+function AdminRouteView({
+  appointments,
+  services,
+  scheduleSettings,
+  adminSession,
+  onAdminLoginSuccess,
+  onAdminLogout,
+  onAddAppointment,
+  onCancelAppointment,
+  onDeleteAppointment,
+  onUpdateServices,
+  onUpdateScheduleSettings,
+}: {
+  appointments: Appointment[];
+  services: Service[];
+  scheduleSettings: ScheduleSettings;
+  adminSession: UserSession | null;
+  onAdminLoginSuccess: (session: UserSession) => void;
+  onAdminLogout: () => void;
+  onAddAppointment: (a: Omit<Appointment, 'id'>) => Promise<void>;
+  onCancelAppointment: (id: string | number) => Promise<void>;
+  onDeleteAppointment: (id: string | number) => Promise<void>;
+  onUpdateServices: (s: Service[]) => Promise<void>;
+  onUpdateScheduleSettings: (s: ScheduleSettings) => Promise<void>;
+}) {
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { tenant, tenantId } = useTenant();
+  const urlTenant = searchParams.get('tenant') || (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('tenant') : '');
+  const tenantParam = urlTenant || tenantId || tenant.id || 'alex_beauty';
+
+  // Check if in local development environment
+  const isLocalDev = Boolean(
+    (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') ||
+    (import.meta as any).env?.DEV ||
+    (typeof window !== 'undefined' &&
+      (window.location.hostname === 'localhost' ||
+        window.location.hostname === '127.0.0.1' ||
+        window.location.port === '3000'))
+  );
+
+  // In local environment (process.env.NODE_ENV !== 'production'):
+  // Fetch the admin data for the specified tenant even if user session is not fully validated
+  useEffect(() => {
+    if (isLocalDev && (!adminSession || !adminSession.isAdmin)) {
+      const devAdminSession: UserSession = {
+        name: tenantParam === 'alex_beauty' ? 'אלכסנדרה ביטון (מנהלת מקומית)' : `${tenant.ownerName || tenant.name || tenantParam} (מנהלת)`,
+        phone: tenant.phone || SALON_INFO.phone,
+        email: tenant.email || `${tenantParam}@beauty.co.il`,
+        isAdmin: true,
+        loggedInAt: new Date().toISOString(),
+      };
+      saveAdminSession(devAdminSession);
+      onAdminLoginSuccess(devAdminSession);
+    }
+
+    // Trigger tenant data fetch endpoint
+    if (tenantParam) {
+      fetch(`/api/admin/tenant-data?tenant=${encodeURIComponent(tenantParam)}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data && data.success) {
+            console.log(`[Local Dev] Admin data loaded for tenant: ${tenantParam}`);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isLocalDev, tenantParam, adminSession, tenant]);
+
+  const canAccess = isLocalDev || Boolean(adminSession && adminSession.isAdmin);
+
+  if (!canAccess) {
+    return <AdminLoginPage onLoginSuccess={onAdminLoginSuccess} />;
+  }
+
+  const salonTitle = tenant.name || (tenantParam === 'alex_beauty' ? SALON_INFO.name : `סלון ${tenantParam}`);
+
+  return (
+    <div className="min-h-screen bg-[#f8f9fa] text-slate-800 font-['Heebo',sans-serif]" dir="rtl">
+      {/* Admin Top Banner / Navbar */}
+      <header className="bg-slate-950 text-white px-4 sm:px-8 py-3.5 border-b border-purple-900/40 sticky top-0 z-30 shadow-md">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div
+              className="relative w-8 h-8 rounded-xl flex items-center justify-center font-bold text-white text-xs shadow-xs"
+              style={{ backgroundColor: tenant.primaryColor || '#9333ea' }}
+            >
+              {salonTitle.charAt(0)}
+              <span className="w-2 h-2 rounded-full bg-emerald-400 absolute -top-0.5 -right-0.5 border border-slate-950 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 font-black text-sm text-purple-200">
+                  <ShieldCheck className="w-4 h-4 text-purple-400" />
+                  <span>לוח ניהול ובקרה • {salonTitle}</span>
+                </div>
+                {isLocalDev && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                    Tenant: {tenantParam} (Local Dev ⚡)
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-400 font-medium">
+                מחוברת כמנהלת: {adminSession?.email || adminSession?.name || tenant.ownerName || 'אלכסנדרה ביטון'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <Link
+              to="/super-admin"
+              className="px-3 py-1.5 rounded-xl bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 hover:text-white border border-indigo-800/80 text-xs font-bold transition flex items-center gap-1.5"
+              title="כניסה ללוח Super Admin מרובה סלונים"
+            >
+              <Layers className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Super Admin</span>
+            </Link>
+
+            <Link
+              to={`/?tenant=${tenantParam}`}
+              className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-purple-200 hover:text-white border border-slate-800 text-xs font-bold transition flex items-center gap-1.5"
+              title="צפייה באתר הלקוחות"
+            >
+              <ArrowRight className="w-3.5 h-3.5 text-purple-400" />
+              <span>לאתר הלקוחות</span>
+            </Link>
+
+            <button
+              type="button"
+              onClick={onAdminLogout}
+              className="px-3 py-1.5 rounded-xl bg-red-950/70 hover:bg-red-900 text-red-200 border border-red-800/80 text-xs font-bold transition cursor-pointer"
+              title="התנתקות מלוח הבקרה"
+            >
+              התנתקות
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-3 sm:px-6 py-6 sm:py-8">
+        <AdminDashboard
+          appointments={appointments}
+          services={services}
+          onAddAppointment={onAddAppointment}
+          onCancelAppointment={onCancelAppointment}
+          onDeleteAppointment={onDeleteAppointment}
+          onSwitchToClientView={() => navigate(`/?tenant=${tenantParam}`)}
+          onLogout={onAdminLogout}
+          onUpdateServices={onUpdateServices}
+          scheduleSettings={scheduleSettings}
+          onUpdateScheduleSettings={onUpdateScheduleSettings}
+        />
+      </main>
+    </div>
+  );
+}
+
+function MainApp() {
+  const navigate = useNavigate();
+  const {
+    tenantId,
+    tenant,
+    salonInfo,
+    services,
+    scheduleSettings,
+    primaryColor,
+    updateServices,
+    updateScheduleSettings,
+  } = useTenant();
 
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
   const [adminSession, setAdminSession] = useState<UserSession | null>(() => getStoredAdminSession());
@@ -70,8 +242,6 @@ export default function App() {
   const [isChoiceModalOpen, setIsChoiceModalOpen] = useState(false);
   const [confirmedAppointment, setConfirmedAppointment] = useState<Appointment | null>(null);
   const [appointments, setAppointments] = useState<Appointment[]>(() => getStoredAppointments());
-  const [services, setServices] = useState<Service[]>(() => getStoredServices());
-  const [scheduleSettings, setScheduleSettings] = useState<ScheduleSettings>(() => getStoredScheduleSettings());
   const [isMyBookingOpen, setIsMyBookingOpen] = useState(false);
   const [customerApptToCancel, setCustomerApptToCancel] = useState<Appointment | null>(null);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -81,38 +251,36 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // Subscribe to real-time Firestore appointments & services & scheduleSettings updates
+  // Subscribe to real-time Firestore appointments for the dynamic tenantId
   useEffect(() => {
     const unsubscribeAppointments = subscribeAppointments((remoteAppointments) => {
       const deduped = deduplicateAppointments(remoteAppointments);
       setAppointments(deduped);
       try {
-        localStorage.setItem('alex_beauty_appointments_v5', JSON.stringify(deduped));
-      } catch {
-        // Ignore localStorage quota errors
-      }
-    });
+        localStorage.setItem(`appointments_${tenantId}`, JSON.stringify(deduped));
+      } catch {}
+    }, undefined, tenantId);
 
     const unsubscribeServices = subscribeServices((remoteServices) => {
       if (remoteServices && remoteServices.length > 0) {
-        setServices(remoteServices);
+        updateServices(remoteServices);
         saveStoredServices(remoteServices);
       }
-    });
+    }, tenantId);
 
     const unsubscribeSchedule = subscribeScheduleSettings((remoteSettings) => {
       if (remoteSettings) {
-        setScheduleSettings(remoteSettings);
+        updateScheduleSettings(remoteSettings);
         saveStoredScheduleSettings(remoteSettings);
       }
-    });
+    }, tenantId);
 
     return () => {
       unsubscribeAppointments();
       unsubscribeServices();
       unsubscribeSchedule();
     };
-  }, []);
+  }, [tenantId]);
 
   // Synchronize Firebase Auth state for Admin session
   useEffect(() => {
@@ -121,9 +289,9 @@ export default function App() {
         const storedAdmin = getStoredAdminSession();
         if (!storedAdmin) {
           const newAdminSession: UserSession = {
-            name: firebaseUser.displayName || 'אלכסנדרה ביטון (מנהלת)',
-            phone: SALON_INFO.phone,
-            email: firebaseUser.email || 'alex@beauty.co.il',
+            name: firebaseUser.displayName || `${tenant.ownerName} (מנהלת)`,
+            phone: salonInfo.phone,
+            email: firebaseUser.email || tenant.email || 'alex@beauty.co.il',
             isAdmin: true,
             loggedInAt: new Date().toISOString(),
           };
@@ -137,29 +305,26 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [tenant, salonInfo]);
 
   // Background pulse for automatic SMS reminder checks
   useEffect(() => {
     const triggerDueRemindersCheck = () => {
-      fetch('/api/sms/check-due')
+      fetch(`/api/sms/check-due?tenant=${encodeURIComponent(tenantId)}`)
         .then((r) => r.json())
         .catch(() => {});
     };
 
-    // Initial check on mount
     triggerDueRemindersCheck();
-
-    // Check periodically every 60 seconds
     const interval = setInterval(triggerDueRemindersCheck, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [tenantId]);
 
   // Customer Login / Registration callback
   const handleCustomerLogin = (session: UserSession) => {
     const cleanSession: UserSession = {
       ...session,
-      isAdmin: false, // Customer login is always regular customer
+      isAdmin: false,
     };
     saveUserSession(cleanSession);
     setCurrentUser(cleanSession);
@@ -167,21 +332,21 @@ export default function App() {
     showToast(`שלום ${cleanSession.name}! כעת ניתן לקבוע תור.`);
   };
 
-  // Customer Logout handler (Used exclusively on the customer page)
+  // Customer Logout handler
   const handleCustomerLogout = () => {
     clearUserSession();
     setCurrentUser(null);
     showToast('התנתקת מחשבון הלקוח');
   };
 
-  // Admin Login callback from dedicated /admin route
+  // Admin Login callback
   const handleAdminLoginSuccess = (session: UserSession) => {
     saveAdminSession(session);
     setAdminSession(session);
     showToast(`שלום ${session.name}, התחברת בהצלחה לממשק המנהל!`);
   };
 
-  // Admin Logout handler (Used exclusively in the Admin Dashboard)
+  // Admin Logout handler
   const handleAdminLogout = async () => {
     try {
       await signOut(auth);
@@ -191,7 +356,7 @@ export default function App() {
     clearAdminSession();
     setAdminSession(null);
     showToast('התנתקת בהצלחה מממשק המנהל');
-    navigate('/admin');
+    navigate(`/admin?tenant=${tenantId}`);
   };
 
   const handleBookSuccess = async (newAppointment: Appointment) => {
@@ -223,12 +388,14 @@ export default function App() {
         idStr,
         apptToCancel?.customer_phone,
         apptToCancel?.appointment_date,
-        apptToCancel?.start_time
+        apptToCancel?.start_time,
+        tenantId
       );
       await deleteAppointmentInFirestore(
         idStr,
         apptToCancel?.appointment_date,
-        apptToCancel?.start_time
+        apptToCancel?.start_time,
+        tenantId
       );
     } catch (err) {
       console.error('Error cancelling appointment in Firestore:', err);
@@ -256,7 +423,8 @@ export default function App() {
       await deleteAppointmentInFirestore(
         idStr,
         apptToDelete?.appointment_date,
-        apptToDelete?.start_time
+        apptToDelete?.start_time,
+        tenantId
       );
     } catch (err) {
       console.error('Error deleting appointment in Firestore:', err);
@@ -265,7 +433,7 @@ export default function App() {
 
   const handleAddManualAppointment = async (newApp: Omit<Appointment, 'id'>) => {
     try {
-      const savedId = await addAppointmentToFirestore(newApp as any);
+      const savedId = await addAppointmentToFirestore(newApp as any, tenantId);
       const appWithId = { ...newApp, id: savedId } as Appointment;
       saveAppointment(appWithId);
       setAppointments((prev) => deduplicateAppointments([appWithId, ...prev]));
@@ -276,22 +444,22 @@ export default function App() {
   };
 
   const handleUpdateServices = async (updatedServices: Service[]) => {
-    setServices(updatedServices);
+    updateServices(updatedServices);
     saveStoredServices(updatedServices);
 
     try {
-      await saveServicesToFirestore(updatedServices);
+      await saveServicesToFirestore(updatedServices, tenantId);
     } catch (err) {
       console.error('Error saving updated services to Firestore:', err);
     }
   };
 
   const handleUpdateScheduleSettings = async (updatedSettings: ScheduleSettings) => {
-    setScheduleSettings(updatedSettings);
+    updateScheduleSettings(updatedSettings);
     saveStoredScheduleSettings(updatedSettings);
 
     try {
-      await saveScheduleSettingsToFirestore(updatedSettings);
+      await saveScheduleSettingsToFirestore(updatedSettings, tenantId);
     } catch (err) {
       console.error('Error saving schedule settings to Firestore:', err);
     }
@@ -324,13 +492,11 @@ export default function App() {
     }
   };
 
-  const isUserAdmin = Boolean(adminSession && adminSession.isAdmin);
-
   return (
     <>
       <Routes>
         {/* ==================================================================== */}
-        {/* ROUTE 1: CLIENT MAIN SCREEN (/) - CLEAN CUSTOMER BOOKING EXPERIENCE   */}
+        {/* ROUTE 1: CLIENT MAIN SCREEN (/) - DYNAMIC MULTI-TENANT BOOKING       */}
         {/* ==================================================================== */}
         <Route
           path="/"
@@ -351,22 +517,35 @@ export default function App() {
                 <div className="space-y-6 animate-in fade-in duration-300">
                   {/* Salon Brand Title */}
                   <div className="text-center space-y-2">
-                    <div className="inline-flex items-center gap-2 bg-purple-100/80 text-purple-900 text-xs font-black px-3.5 py-1 rounded-full border border-purple-200">
-                      <Sparkles className="w-3.5 h-3.5 text-purple-600" />
-                      <span>מערכת הזמנת תורים אונליין</span>
+                    <div
+                      className="inline-flex items-center gap-2 text-xs font-black px-3.5 py-1 rounded-full border shadow-2xs"
+                      style={{
+                        backgroundColor: `${primaryColor}15`,
+                        color: primaryColor,
+                        borderColor: `${primaryColor}30`,
+                      }}
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>{tenant.tagline || 'מערכת הזמנת תורים אונליין'}</span>
                     </div>
                     <h1 className="text-3xl sm:text-4xl font-black text-slate-950 tracking-tight font-['Rubik',sans-serif]">
-                      <span className="text-purple-600">Alex</span> <span>טיפוח ויופי</span>
+                      <span style={{ color: primaryColor }}>{tenant.name}</span>
                     </h1>
                   </div>
 
-                  {/* Active Customer Bookings Alert Card with Direct Cancel Action & Add Another Appointment */}
+                  {/* Active Customer Bookings Alert Card */}
                   {customerActiveBookings.length > 0 && (
-                    <div className="bg-purple-50/80 border-2 border-purple-200 rounded-3xl p-4 sm:p-5 space-y-3 shadow-xs animate-in fade-in">
+                    <div
+                      className="border-2 rounded-3xl p-4 sm:p-5 space-y-3 shadow-xs animate-in fade-in"
+                      style={{
+                        backgroundColor: `${primaryColor}0c`,
+                        borderColor: `${primaryColor}30`,
+                      }}
+                    >
                       <div className="flex items-center justify-between gap-2 flex-wrap">
                         <div className="flex items-center gap-2">
                           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                          <span className="text-xs font-black text-purple-950">
+                          <span className="text-xs font-black text-slate-900">
                             יש לך {customerActiveBookings.length === 1 ? 'תור משוריין במערכת' : `${customerActiveBookings.length} תורים משוריינים במערכת`}
                           </span>
                         </div>
@@ -374,7 +553,8 @@ export default function App() {
                           <button
                             type="button"
                             onClick={handleRequestBooking}
-                            className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+                            className="px-3 py-1 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+                            style={{ backgroundColor: primaryColor }}
                           >
                             <CalendarPlus className="w-3.5 h-3.5" />
                             <span>קביעת תור נוסף</span>
@@ -382,7 +562,8 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() => setIsMyBookingOpen(true)}
-                            className="text-xs text-purple-700 hover:text-purple-900 font-bold underline cursor-pointer"
+                            className="text-xs hover:underline font-bold cursor-pointer"
+                            style={{ color: primaryColor }}
                           >
                             הצג הכל
                           </button>
@@ -393,19 +574,25 @@ export default function App() {
                         {customerActiveBookings.map((app) => (
                           <div
                             key={app.id}
-                            className="bg-white rounded-2xl p-3.5 border border-purple-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
+                            className="bg-white rounded-2xl p-3.5 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
                           >
                             <div className="space-y-1">
                               <div className="flex items-center gap-2">
                                 <span className="font-bold text-sm text-slate-900">
                                   {app.service_name}
                                 </span>
-                                <span className="text-[11px] bg-purple-100 text-purple-800 font-bold px-2 py-0.5 rounded-md">
+                                <span
+                                  className="text-[11px] font-bold px-2 py-0.5 rounded-md"
+                                  style={{
+                                    backgroundColor: `${primaryColor}18`,
+                                    color: primaryColor,
+                                  }}
+                                >
                                   {app.start_time} - {app.end_time}
                                 </span>
                               </div>
                               <div className="text-xs text-slate-600 flex items-center gap-1.5 font-medium">
-                                <Calendar className="w-3.5 h-3.5 text-purple-600" />
+                                <Calendar className="w-3.5 h-3.5" style={{ color: primaryColor }} />
                                 <span>תאריך: {app.appointment_date}</span>
                               </div>
                             </div>
@@ -427,32 +614,48 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Interactive Booking Button Card with delicate 2-pulse purple halo animation */}
+                  {/* Interactive Booking Button Card */}
                   <div className="space-y-3">
                     <button
                       id="main-book-button"
                       type="button"
                       onClick={handleRequestBooking}
-                      className="group w-full bg-white rounded-[28px] sm:rounded-[34px] py-6 px-5 sm:py-8 sm:px-7 border-[2.5px] border-purple-500 hover:border-purple-600 transition-all duration-300 flex items-center justify-between gap-4 sm:gap-6 cursor-pointer shadow-md hover:shadow-xl hover:shadow-purple-500/20 active:scale-[0.99] text-right relative z-10 animate-delicate-purple-halo"
+                      className="group w-full bg-white rounded-[28px] sm:rounded-[34px] py-6 px-5 sm:py-8 sm:px-7 border-[2.5px] transition-all duration-300 flex items-center justify-between gap-4 sm:gap-6 cursor-pointer shadow-md hover:shadow-xl active:scale-[0.99] text-right relative z-10"
+                      style={{
+                        borderColor: primaryColor,
+                        boxShadow: `0 10px 25px -5px ${primaryColor}25`,
+                      }}
                     >
-                      {/* Right: Purple squircle icon + Titles */}
+                      {/* Right: Tenant Icon + Titles */}
                       <div className="flex items-center gap-4 sm:gap-5">
-                        <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl sm:rounded-3xl bg-gradient-to-br from-purple-600 to-purple-700 flex items-center justify-center text-white shadow-lg shadow-purple-600/35 group-hover:scale-105 transition-transform shrink-0">
+                        <div
+                          className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl sm:rounded-3xl flex items-center justify-center text-white shadow-lg group-hover:scale-105 transition-transform shrink-0"
+                          style={{
+                            background: `linear-gradient(135deg, ${primaryColor} 0%, #1e1b4b 100%)`,
+                          }}
+                        >
                           <Calendar className="w-8 h-8 sm:w-10 sm:h-10" />
                         </div>
 
                         <div className="text-right">
-                          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-black text-slate-900 tracking-tight font-['Rubik',sans-serif] group-hover:text-purple-700 transition-colors">
+                          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-black text-slate-900 tracking-tight font-['Rubik',sans-serif]">
                             קביעת תור
                           </h2>
-                          <p className="text-sm sm:text-base text-purple-700 font-bold mt-1 sm:mt-1.5" dir="rtl">
+                          <p className="text-sm sm:text-base font-bold mt-1 sm:mt-1.5" style={{ color: primaryColor }} dir="rtl">
                             {mainService.name ? `${mainService.name} • ` : ''}{mainService.price || 150} ש״ח
                           </p>
                         </div>
                       </div>
 
                       {/* Left: Chevron button in circle */}
-                      <div className="w-11 h-11 sm:w-13 sm:h-13 rounded-full bg-purple-50 group-hover:bg-purple-100 border border-purple-100 flex items-center justify-center text-purple-600 group-hover:-translate-x-1 transition-all shrink-0 shadow-xs">
+                      <div
+                        className="w-11 h-11 sm:w-13 sm:h-13 rounded-full border flex items-center justify-center group-hover:-translate-x-1 transition-all shrink-0 shadow-xs"
+                        style={{
+                          backgroundColor: `${primaryColor}12`,
+                          borderColor: `${primaryColor}30`,
+                          color: primaryColor,
+                        }}
+                      >
                         <ChevronLeft className="w-6 h-6 sm:w-7 sm:h-7" />
                       </div>
                     </button>
@@ -461,43 +664,49 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setIsMyBookingOpen(true)}
-                      className="flex items-center justify-center gap-1.5 text-xs text-slate-500 hover:text-purple-700 font-bold transition cursor-pointer mx-auto py-1"
+                      className="flex items-center justify-center gap-1.5 text-xs text-slate-500 hover:text-slate-900 font-bold transition cursor-pointer mx-auto py-1"
                     >
                       <Search className="w-3.5 h-3.5 text-slate-400" />
                       <span>בירור או ביטול תור קיים</span>
                     </button>
                   </div>
 
-                  {/* 2 Quick Info Badges matching the design */}
+                  {/* 2 Quick Info Badges */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/80 shadow-xs flex flex-col items-center text-center space-y-1">
-                      <div className="w-7 h-7 rounded-full bg-purple-50 text-purple-600 flex items-center justify-center mb-0.5">
+                      <div
+                        className="w-7 h-7 rounded-full flex items-center justify-center mb-0.5"
+                        style={{ backgroundColor: `${primaryColor}15`, color: primaryColor }}
+                      >
                         <MapPin className="w-3.5 h-3.5" />
                       </div>
                       <span className="text-[11px] font-bold text-slate-700">כתובת</span>
-                      <span className="text-xs text-slate-500 font-medium">{SALON_INFO.address}</span>
+                      <span className="text-xs text-slate-500 font-medium">{salonInfo.address || 'הסלון המרכזי'}</span>
                     </div>
 
                     <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/80 shadow-xs flex flex-col items-center text-center space-y-1">
-                      <div className="w-7 h-7 rounded-full bg-purple-50 text-purple-600 flex items-center justify-center mb-0.5">
+                      <div
+                        className="w-7 h-7 rounded-full flex items-center justify-center mb-0.5"
+                        style={{ backgroundColor: `${primaryColor}15`, color: primaryColor }}
+                      >
                         <Clock className="w-3.5 h-3.5" />
                       </div>
                       <span className="text-[11px] font-bold text-slate-700">שעות פתיחה</span>
-                      <span className="text-xs text-slate-500 font-medium">א'-ה' 09:20-20:30</span>
+                      <span className="text-xs text-slate-500 font-medium">א׳-ה׳ {scheduleSettings.businessOpen}-{scheduleSettings.businessClose}</span>
                     </div>
                   </div>
 
                   {/* Salon Details & Address Card */}
-                  <SalonInfoSection />
+                  <SalonInfoSection scheduleSettings={scheduleSettings} />
                 </div>
               </main>
 
               {/* Client Footer */}
               <footer className="bg-white border-t border-slate-200/90 py-8 px-4 mt-12 text-center text-xs text-slate-500 space-y-3 shadow-xs">
                 <div className="flex items-center justify-center gap-2 text-slate-800 font-bold">
-                  <Sparkles className="w-4 h-4 text-purple-600" />
+                  <Sparkles className="w-4 h-4" style={{ color: primaryColor }} />
                   <span className="text-sm text-slate-900 font-bold">
-                    <span className="text-purple-600 font-black">Alex</span> <span>טיפוח ויופי</span>
+                    <span style={{ color: primaryColor }}>{tenant.name}</span>
                   </span>
                   <span>•</span>
                   <span>קביעת תורים חכמה ומהירה</span>
@@ -505,29 +714,37 @@ export default function App() {
                 <p className="text-slate-600">
                   טלפון לבירורים:{' '}
                   <a
-                    href={`tel:${SALON_INFO.phone}`}
-                    className="text-purple-700 hover:underline font-bold"
+                    href={`tel:${salonInfo.phone}`}
+                    className="hover:underline font-bold"
+                    style={{ color: primaryColor }}
                     dir="ltr"
                   >
-                    {SALON_INFO.phone}
+                    {salonInfo.phone}
                   </a>
                 </p>
                 <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 pt-2 text-slate-400">
-                  <span>© {new Date().getFullYear()} כל הזכויות שמורות ל-{SALON_INFO.name}</span>
+                  <span>© {new Date().getFullYear()} כל הזכויות שמורות ל-{tenant.name}</span>
                   <span>•</span>
                   <button
                     type="button"
                     onClick={() => setIsTermsOpen(true)}
-                    className="hover:text-purple-700 underline cursor-pointer transition font-medium text-slate-500"
+                    className="hover:text-slate-700 underline cursor-pointer transition font-medium text-slate-500"
                   >
                     תקנון ותנאי שימוש
                   </button>
                   <span>•</span>
                   <Link
-                    to="/admin"
+                    to={`/admin?tenant=${tenantId}`}
                     className="text-slate-400 hover:text-purple-700 underline transition font-medium"
                   >
                     כניסת מנהלת
+                  </Link>
+                  <span>•</span>
+                  <Link
+                    to="/super-admin"
+                    className="text-slate-400 hover:text-indigo-600 underline transition font-medium text-xs font-mono"
+                  >
+                    Super Admin ⚡
                   </Link>
                 </div>
               </footer>
@@ -603,88 +820,53 @@ export default function App() {
         />
 
         {/* ==================================================================== */}
-        {/* ROUTE 2: DEDICATED ADMIN LOGIN PAGE (/admin)                         */}
+        {/* ROUTE 2: TENANT ADMIN DASHBOARD (/admin)                             */}
         {/* ==================================================================== */}
         <Route
           path="/admin"
           element={
-            isUserAdmin ? (
-              <Navigate to="/admin/dashboard" replace />
-            ) : (
-              <AdminLoginPage onLoginSuccess={handleAdminLoginSuccess} />
-            )
+            <AdminRouteView
+              appointments={appointments}
+              services={services}
+              scheduleSettings={scheduleSettings}
+              adminSession={adminSession}
+              onAdminLoginSuccess={handleAdminLoginSuccess}
+              onAdminLogout={handleAdminLogout}
+              onAddAppointment={handleAddManualAppointment}
+              onCancelAppointment={handleCancelAppointment}
+              onDeleteAppointment={handleDeleteAppointment}
+              onUpdateServices={handleUpdateServices}
+              onUpdateScheduleSettings={handleUpdateScheduleSettings}
+            />
           }
         />
 
         {/* ==================================================================== */}
-        {/* ROUTE 3: PROTECTED ADMIN DASHBOARD (/admin/dashboard)                */}
+        {/* ROUTE 3: ALIAS FOR ADMIN DASHBOARD (/admin/dashboard)                */}
         {/* ==================================================================== */}
         <Route
           path="/admin/dashboard"
           element={
-            isUserAdmin ? (
-              <div className="min-h-screen bg-[#f8f9fa] text-slate-800 font-['Heebo',sans-serif]" dir="rtl">
-                {/* Admin Top Banner / Navbar */}
-                <header className="bg-slate-950 text-white px-4 sm:px-8 py-3.5 border-b border-purple-900/40 sticky top-0 z-30 shadow-md">
-                  <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <div className="relative w-8 h-8 rounded-xl bg-purple-600 flex items-center justify-center font-bold text-white text-xs shadow-xs">
-                        A
-                        <span className="w-2 h-2 rounded-full bg-emerald-400 absolute -top-0.5 -right-0.5 border border-slate-950 animate-pulse" />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-1.5 font-black text-sm text-purple-200">
-                          <ShieldCheck className="w-4 h-4 text-purple-400" />
-                          <span>לוח ניהול ובקרה • {SALON_INFO.name}</span>
-                        </div>
-                        <p className="text-[11px] text-slate-400 font-medium">
-                          מחוברת כמנהלת: {adminSession?.email || adminSession?.name || 'אלכסנדרה ביטון'}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <Link
-                        to="/"
-                        className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-purple-200 hover:text-white border border-slate-800 text-xs font-bold transition flex items-center gap-1.5"
-                        title="צפייה באתר הלקוחות הרגיל"
-                      >
-                        <ArrowRight className="w-3.5 h-3.5 text-purple-400" />
-                        <span>לאתר הלקוחות</span>
-                      </Link>
-
-                      <button
-                        type="button"
-                        onClick={handleAdminLogout}
-                        className="px-3 py-1.5 rounded-xl bg-red-950/70 hover:bg-red-900 text-red-200 border border-red-800/80 text-xs font-bold transition cursor-pointer"
-                        title="התנתקות מלוח הבקרה"
-                      >
-                        התנתקות
-                      </button>
-                    </div>
-                  </div>
-                </header>
-
-                <main className="max-w-7xl mx-auto px-3 sm:px-6 py-6 sm:py-8">
-                  <AdminDashboard
-                    appointments={appointments}
-                    services={services}
-                    onAddAppointment={handleAddManualAppointment}
-                    onCancelAppointment={handleCancelAppointment}
-                    onDeleteAppointment={handleDeleteAppointment}
-                    onSwitchToClientView={() => navigate('/')}
-                    onLogout={handleAdminLogout}
-                    onUpdateServices={handleUpdateServices}
-                    scheduleSettings={scheduleSettings}
-                    onUpdateScheduleSettings={handleUpdateScheduleSettings}
-                  />
-                </main>
-              </div>
-            ) : (
-              <Navigate to="/admin" replace />
-            )
+            <AdminRouteView
+              appointments={appointments}
+              services={services}
+              scheduleSettings={scheduleSettings}
+              adminSession={adminSession}
+              onAdminLoginSuccess={handleAdminLoginSuccess}
+              onAdminLogout={handleAdminLogout}
+              onAddAppointment={handleAddManualAppointment}
+              onCancelAppointment={handleCancelAppointment}
+              onDeleteAppointment={handleDeleteAppointment}
+              onUpdateServices={handleUpdateServices}
+              onUpdateScheduleSettings={handleUpdateScheduleSettings}
+            />
           }
         />
+
+        {/* ==================================================================== */}
+        {/* ROUTE 4: SUPER ADMIN MULTI-TENANT SAAS ONBOARDING (/super-admin)     */}
+        {/* ==================================================================== */}
+        <Route path="/super-admin" element={<SuperAdminPage />} />
 
         {/* Fallback Catch-all Route */}
         <Route path="*" element={<Navigate to="/" replace />} />
@@ -705,5 +887,13 @@ export default function App() {
         </div>
       )}
     </>
+  );
+}
+
+export default function App() {
+  return (
+    <TenantProvider>
+      <MainApp />
+    </TenantProvider>
   );
 }

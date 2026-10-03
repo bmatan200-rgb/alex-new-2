@@ -58,6 +58,82 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// ----------------------------------------------------
+// Multi-Tenant Domain & Query Resolver Middleware
+// ----------------------------------------------------
+declare global {
+  namespace Express {
+    interface Request {
+      tenantId?: string;
+    }
+  }
+}
+
+const domainToTenantCache: Record<string, string> = {
+  'localhost': 'alex_beauty',
+  '127.0.0.1': 'alex_beauty',
+};
+
+// Helper Firestore Path Getters for Multi-Tenant Data
+export function getTenantAppointmentsRef(tenantId: string) {
+  return collection(db, 'tenants', tenantId, 'appointments');
+}
+
+export function getTenantAppointmentDoc(tenantId: string, appointmentId: string) {
+  return doc(db, 'tenants', tenantId, 'appointments', appointmentId);
+}
+
+export function getTenantSettingsDoc(tenantId: string, docId = 'config') {
+  return doc(db, 'tenants', tenantId, 'settings', docId);
+}
+
+export function getTenantDoc(tenantId: string) {
+  return doc(db, 'tenants', tenantId);
+}
+
+async function resolveTenantDomain(req: Request, res: Response, next: NextFunction) {
+  try {
+    // 1. Check for ?tenant=TENANT_ID in query string (for local testing)
+    const queryTenant = req.query.tenant as string | undefined;
+    if (queryTenant && typeof queryTenant === 'string' && queryTenant.trim()) {
+      req.tenantId = queryTenant.trim();
+      return next();
+    }
+
+    // 2. Otherwise, extract req.headers.host and query /domains/{hostname}
+    const rawHost = (req.headers.host || '').split(':')[0].toLowerCase().trim();
+    if (rawHost && domainToTenantCache[rawHost]) {
+      req.tenantId = domainToTenantCache[rawHost];
+      return next();
+    }
+
+    if (rawHost && rawHost !== 'localhost' && rawHost !== '127.0.0.1') {
+      try {
+        const domainSnap = await getDoc(doc(db, 'domains', rawHost));
+        if (domainSnap.exists()) {
+          const mappedTenant = domainSnap.data()?.tenantId;
+          if (mappedTenant) {
+            domainToTenantCache[rawHost] = mappedTenant;
+            req.tenantId = mappedTenant;
+            return next();
+          }
+        }
+      } catch (err) {
+        console.warn(`[Tenant Resolver] Notice reading domain ${rawHost}:`, err);
+      }
+    }
+
+    // 3. Fallback default tenant
+    req.tenantId = 'alex_beauty';
+    next();
+  } catch (err) {
+    req.tenantId = 'alex_beauty';
+    next();
+  }
+}
+
+app.use(resolveTenantDomain);
+
 
 
 // ----------------------------------------------------
@@ -1279,6 +1355,366 @@ app.post('/api/sms/test', requireAdmin, async (req: Request, res: Response) => {
 // 6. Get Recent Logs
 app.get('/api/sms/logs', requireAdmin, (req: Request, res: Response) => {
   res.json({ success: true, logs: recentSmsLogs });
+});
+
+// 7. Multi-Tenant List
+const deletedTenantIds = new Set<string>();
+
+app.get('/api/tenants', async (req: Request, res: Response) => {
+  const defaultTenants = [
+    {
+      id: 'alex_beauty',
+      tenantSlug: 'alex_beauty',
+      name: 'Alex טיפוח ויופי',
+      tagline: 'מניקור מקצועי ולק ג׳ל',
+      ownerName: 'אלכסנדרה ביטון',
+      phone: '054-6307114',
+      email: 'alex@beauty.co.il',
+      address: 'הנרי קנדל 12',
+      city: 'באר שבע',
+      primaryColor: '#9333ea',
+      status: 'active',
+      plan: 'pro',
+      createdAt: '2024-01-15',
+      isPrimary: true,
+    },
+    {
+      id: 'yossibarber',
+      tenantSlug: 'yossibarber',
+      name: 'יוסי ברברשופ • Barber & Cuts',
+      tagline: 'עיצוב שיער וזקן לגברים, דירוגים וטיפוח',
+      ownerName: 'יוסי כהן',
+      phone: '052-7788990',
+      email: 'yosi@barber.co.il',
+      address: 'רוטשילד 32',
+      city: 'ראשון לציון',
+      primaryColor: '#2563eb',
+      status: 'active',
+      plan: 'pro',
+      createdAt: '2024-02-20',
+    },
+    {
+      id: 'glam_studio_tlv',
+      tenantSlug: 'glam_studio_tlv',
+      name: 'Glam Studio TLV',
+      tagline: 'עיצוב גבות, ריסים ומניקור פרימיום',
+      ownerName: 'מיה שטרן',
+      phone: '052-8899123',
+      email: 'mia@glamstudio.co.il',
+      address: 'דיזנגוף 140',
+      city: 'תל אביב',
+      primaryColor: '#ec4899',
+      status: 'active',
+      plan: 'enterprise',
+      createdAt: '2024-03-10',
+    },
+    {
+      id: 'maya_nails_haifa',
+      tenantSlug: 'maya_nails_haifa',
+      name: 'Maya Nails & Spa',
+      tagline: 'מניקור פדיקור רפואי וטיפוח',
+      ownerName: 'מאיה לוי',
+      phone: '050-4455667',
+      email: 'maya@mayanails.co.il',
+      address: 'מוריה 45',
+      city: 'חיפה',
+      primaryColor: '#0ea5e9',
+      status: 'active',
+      plan: 'starter',
+      createdAt: '2024-06-01',
+    },
+    {
+      id: 'noa_beauty_herzliya',
+      tenantSlug: 'noa_beauty_herzliya',
+      name: 'נועה בוטיק יופי',
+      tagline: 'קליניקה לאסתטיקה וטיפולי פנים מתקדמים',
+      ownerName: 'נועה אברהם',
+      phone: '054-1122334',
+      email: 'noa@noabeauty.co.il',
+      address: 'שנקר 14',
+      city: 'הרצליה פיתוח',
+      primaryColor: '#f59e0b',
+      status: 'trial',
+      plan: 'pro',
+      createdAt: '2024-09-12',
+    },
+  ];
+
+  try {
+    const snap = await getDocs(collection(db, 'tenants'));
+    const firestoreTenants = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    
+    // Merge firestore tenants with default tenants (avoid duplicates)
+    const combined = [...firestoreTenants];
+    for (const def of defaultTenants) {
+      if (!combined.some((t: any) => t.id === def.id)) {
+        combined.push(def);
+      }
+    }
+    const filtered = combined.filter((t: any) => !deletedTenantIds.has(t.id));
+    return res.json({ success: true, tenants: filtered });
+  } catch (err) {
+    const filtered = defaultTenants.filter((t: any) => !deletedTenantIds.has(t.id));
+    return res.json({ success: true, tenants: filtered });
+  }
+});
+
+// 8. Current Tenant Profile & Branding Endpoint (/api/tenant/current)
+app.get('/api/tenant/current', async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.tenantId || 'alex_beauty';
+
+    // Fetch tenant profile from /tenants/{tenantId}
+    let tenantProfile: any = null;
+    try {
+      const tSnap = await getDoc(getTenantDoc(tenantId));
+      if (tSnap.exists()) {
+        tenantProfile = { id: tSnap.id, ...tSnap.data() };
+      }
+    } catch (err) {
+      console.warn(`[Tenant API] Warning fetching /tenants/${tenantId}:`, err);
+    }
+
+    // Fetch tenant config from /tenants/{tenantId}/settings/config
+    let tenantConfig: any = null;
+    try {
+      const cSnap = await getDoc(getTenantSettingsDoc(tenantId, 'config'));
+      if (cSnap.exists()) {
+        tenantConfig = cSnap.data();
+      }
+    } catch (err) {
+      console.warn(`[Tenant API] Warning fetching /tenants/${tenantId}/settings/config:`, err);
+    }
+
+    // Default Fallbacks
+    if (!tenantProfile) {
+      const isAlex = tenantId === 'alex_beauty';
+      tenantProfile = {
+        id: tenantId,
+        name: isAlex ? 'Alex טיפוח ויופי' : `סטודיו ${tenantId}`,
+        tagline: isAlex ? 'מניקור מקצועי ולק ג׳ל' : 'הזמנת תורים אונליין',
+        ownerName: isAlex ? 'אלכסנדרה ביטון' : 'מנהלת סטודיו',
+        phone: isAlex ? '054-6307114' : '050-0000000',
+        email: isAlex ? 'alex@beauty.co.il' : `${tenantId}@beauty.co.il`,
+        city: isAlex ? 'באר שבע' : 'ישראל',
+        address: isAlex ? 'הנרי קנדל 12' : '',
+        primaryColor: '#9333ea', // default purple
+        status: 'active',
+        plan: 'pro',
+        createdAt: '2024-01-15',
+      };
+    }
+
+    if (!tenantConfig) {
+      tenantConfig = {
+        services: [
+          {
+            id: 1,
+            name: "לק ג'ל",
+            duration_minutes: 90,
+            price: 150,
+            category: 'nails',
+            description: 'מניקור יסודי משולב ומריחת לק ג׳ל איכותי בגימור מושלם',
+          },
+        ],
+        scheduleSettings: {
+          businessOpen: '09:20',
+          businessClose: '20:30',
+          fridayOpen: '09:20',
+          fridayClose: '15:00',
+          durationMinutes: 90,
+        },
+      };
+    }
+
+    return res.json({
+      success: true,
+      tenantId,
+      tenant: tenantProfile,
+      config: tenantConfig,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// 9. Super Admin Tenant Onboarding & Domain Mapping Endpoint
+app.post('/api/super-admin/tenants', async (req: Request, res: Response) => {
+  try {
+    const {
+      tenantId: rawTenantId,
+      name,
+      phone,
+      tagline,
+      ownerName,
+      city,
+      address,
+      primaryColor,
+      customDomain,
+      services,
+      scheduleSettings,
+      plan,
+    } = req.body;
+
+    const tenantId = String(rawTenantId || name || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, '_')
+      .replace(/_+/g, '_') || `tenant_${Date.now()}`;
+
+    const sanitizedName = String(name || '').trim();
+    const sanitizedPhone = String(phone || '').trim();
+
+    if (!sanitizedName || !sanitizedPhone) {
+      return res.status(400).json({ success: false, error: 'Name and phone are required' });
+    }
+
+    const tenantProfile = {
+      id: tenantId,
+      name: sanitizedName,
+      tagline: String(tagline || 'סטודיו לטיפוח ויופי').trim(),
+      ownerName: String(ownerName || sanitizedName).trim(),
+      phone: sanitizedPhone,
+      email: req.body?.email || `${tenantId}@beauty.co.il`,
+      city: String(city || '').trim(),
+      address: String(address || '').trim(),
+      primaryColor: primaryColor || '#9333ea',
+      customDomain: customDomain ? String(customDomain).trim().toLowerCase() : '',
+      plan: plan || 'pro',
+      status: 'active',
+      createdAt: new Date().toISOString().split('T')[0],
+      updatedAt: new Date().toISOString(),
+    };
+
+    const tenantConfig = {
+      services: Array.isArray(services) && services.length > 0 ? services : [
+        {
+          id: 1,
+          name: "לק ג'ל",
+          duration_minutes: 90,
+          price: 150,
+          category: 'nails',
+          description: 'טיפול מניקור יסודי ומריחת לק ג׳ל מקצועי',
+        },
+      ],
+      scheduleSettings: scheduleSettings || {
+        businessOpen: '09:20',
+        businessClose: '20:30',
+        fridayOpen: '09:20',
+        fridayClose: '15:00',
+        durationMinutes: 90,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+
+    // 1. Write to /tenants/{tenantId}
+    deletedTenantIds.delete(tenantId);
+    await setDoc(getTenantDoc(tenantId), tenantProfile, { merge: true });
+
+    // 2. Write to /tenants/{tenantId}/settings/config
+    await setDoc(getTenantSettingsDoc(tenantId, 'config'), tenantConfig, { merge: true });
+
+    // 3. If customDomain is provided, write to /domains/{hostname}
+    if (tenantProfile.customDomain) {
+      await setDoc(doc(db, 'domains', tenantProfile.customDomain), {
+        tenantId,
+        hostname: tenantProfile.customDomain,
+        createdAt: new Date().toISOString(),
+      }, { merge: true });
+      domainToTenantCache[tenantProfile.customDomain] = tenantId;
+    }
+
+    const testUrl = `http://localhost:3000?tenant=${tenantId}`;
+    const adminUrl = `http://localhost:3000/admin?tenant=${tenantId}`;
+
+    return res.json({
+      success: true,
+      tenantId,
+      tenant: tenantProfile,
+      config: tenantConfig,
+      testUrl,
+      adminUrl,
+      message: `Tenant ${tenantId} registered successfully`,
+    });
+  } catch (err: any) {
+    console.error('[Super Admin API] Error creating tenant:', err);
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// 9.5 Delete Tenant Endpoint
+app.delete('/api/super-admin/tenants/:tenantId', async (req: Request, res: Response) => {
+  try {
+    const { tenantId } = req.params;
+    if (!tenantId || tenantId === 'alex_beauty') {
+      return res.status(400).json({ success: false, error: 'Cannot delete default tenant' });
+    }
+
+    deletedTenantIds.add(tenantId);
+
+    try {
+      await deleteDoc(getTenantDoc(tenantId));
+    } catch (e) {
+      console.warn(`[Delete Tenant] Warning deleting doc /tenants/${tenantId}:`, e);
+    }
+
+    try {
+      await deleteDoc(getTenantSettingsDoc(tenantId, 'config'));
+    } catch (e) {
+      console.warn(`[Delete Tenant] Warning deleting doc /tenants/${tenantId}/settings/config:`, e);
+    }
+
+    return res.json({
+      success: true,
+      message: `Tenant ${tenantId} deleted successfully`,
+    });
+  } catch (err: any) {
+    console.error('[Delete Tenant API] Error:', err);
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// 10. Tenant Admin Data Endpoint (Local dev bypass support)
+app.get('/api/admin/tenant-data', async (req: Request, res: Response) => {
+  try {
+    const tenantId = (req.query.tenant as string) || req.tenantId || 'alex_beauty';
+    const isDev = process.env.NODE_ENV !== 'production';
+
+    // In local development, allow fetching without strict session validation
+    if (!isDev) {
+      const token =
+        (req.headers['authorization'] as string | undefined)?.replace(/^Bearer\s+/i, '') ||
+        (req.query.token as string | undefined);
+      const isAdminReq = req.headers['x-admin-request'] === 'true' || token === 'admin_secret_session_active';
+      if (!isAdminReq) {
+        return res.status(401).json({ success: false, error: 'Unauthorized admin access' });
+      }
+    }
+
+    // Fetch live appointments from /tenants/{tenantId}/appointments, fallback to root /appointments
+    let tenantAppointments: any[] = [];
+    try {
+      const tenantSnap = await getDocs(getTenantAppointmentsRef(tenantId));
+      tenantAppointments = tenantSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+      if (tenantAppointments.length === 0 && tenantId === 'alex_beauty') {
+        const rootSnap = await getDocs(collection(db, 'appointments'));
+        tenantAppointments = rootSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      }
+    } catch {
+      tenantAppointments = serverAppointments;
+    }
+
+    return res.json({
+      success: true,
+      tenantId,
+      appointments: tenantAppointments,
+      serverTime: getIsraelTime().timeStr,
+      isDev,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
+  }
 });
 
 // Sync in-memory appointments

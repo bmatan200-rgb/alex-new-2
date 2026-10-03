@@ -115,4 +115,25 @@ export interface Customer {
   lastAppointmentDate?: string;
 }
 
+export interface TenantInfo {
+  id: string; // e.g. 'alex_beauty'
+  tenantSlug?: string; // e.g. 'yossibarber' or 'glam_studio_tlv'
+  name: string;
+  tagline?: string;
+  ownerName: string;
+  phone: string;
+  email?: string;
+  address?: string;
+  city?: string;
+  primaryColor?: string;
+  status: 'active' | 'trial' | 'suspended';
+  plan: 'starter' | 'pro' | 'enterprise';
+  createdAt: string;
+  totalAppointments?: number;
+  totalRevenue?: number;
+  activeServicesCount?: number;
+  customDomain?: string;
+  isPrimary?: boolean;
+}
+
 

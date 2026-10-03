@@ -51,6 +51,7 @@ import {
   FRIDAY_CLOSE,
 } from '../utils/dateUtils';
 import { SALON_INFO } from '../utils/storage';
+import { useTenant } from '../context/TenantContext';
 import { WhatsApp2HourAlertBanner } from './WhatsApp2HourAlertBanner';
 import { SmsReminderModal } from './SmsReminderModal';
 import { ServiceDurationModal } from './ServiceDurationModal';
@@ -113,6 +114,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const tomorrowDate = new Date();
   tomorrowDate.setDate(tomorrowDate.getDate() + 1);
   const tomorrowIso = toISODateString(tomorrowDate);
+
+  const { tenant, salonInfo } = useTenant();
 
   const [selectedDate, setSelectedDate] = useState<string>(todayIso);
   const [adminTab, setAdminTab] = useState<'calendar' | 'customers'>('calendar');
@@ -196,7 +199,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       settings.provider = 'telnyx';
     }
 
-    const rawPhone = target === 'customer' ? appt.customer_phone : SALON_INFO.whatsappNumber;
+    const rawPhone = target === 'customer' ? appt.customer_phone : (salonInfo.phone || salonInfo.whatsappNumber || SALON_INFO.whatsappNumber);
     const phone = formatIsraeliPhoneToE164(rawPhone);
     const isToday = appt.appointment_date === todayIso;
     const reminderType = isToday ? 'today' : '1day';
@@ -559,7 +562,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               לוח בקרה וניהול יומן
             </h2>
             <span className="bg-slate-100 text-slate-700 text-xs font-bold px-3 py-1 rounded-full border border-slate-200 shadow-xs">
-              {SALON_INFO.ownerName}
+              {tenant.ownerName || tenant.name || SALON_INFO.ownerName}
             </span>
           </div>
           <p className="text-xs text-slate-600 font-medium mt-1.5 flex items-center gap-1.5 flex-wrap">

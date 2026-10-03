@@ -8,7 +8,7 @@ import {
   User,
   LogOut,
 } from 'lucide-react';
-import { SALON_INFO } from '../utils/storage';
+import { useTenant } from '../context/TenantContext';
 import { UserSession } from '../types';
 
 interface HeaderProps {
@@ -27,6 +27,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAuthModal,
   onLogout,
 }) => {
+  const { tenant, salonInfo, scheduleSettings, primaryColor } = useTenant();
+
   return (
     <header className="relative bg-white/95 backdrop-blur-md border-b border-slate-200 sticky top-0 z-30 transition-all shadow-xs">
       {/* Top status bar */}
@@ -36,7 +38,7 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="text-white font-semibold">יומן תורים פעיל בזמן אמת</span>
           <span className="text-purple-400 hidden md:inline">|</span>
           <span className="hidden md:flex items-center gap-1 text-purple-300">
-            <Clock className="w-3.5 h-3.5 inline text-purple-400" /> ראשון-חמישי 09:20-20:30
+            <Clock className="w-3.5 h-3.5 inline text-purple-400" /> ראשון-חמישי {scheduleSettings.businessOpen}-{scheduleSettings.businessClose}
           </span>
         </div>
 
@@ -76,13 +78,16 @@ export const Header: React.FC<HeaderProps> = ({
             className="flex items-center gap-3.5 cursor-pointer select-none group"
           >
             {/* Large, Elegant Salon Logo */}
-            <div className="relative w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-purple-950 via-slate-950 to-black p-0.5 shadow-md flex-shrink-0 group-hover:scale-105 transition-all duration-300 border border-purple-500/30">
+            <div
+              className="relative w-14 h-14 sm:w-16 sm:h-16 rounded-2xl p-0.5 shadow-md flex-shrink-0 group-hover:scale-105 transition-all duration-300 border border-purple-500/30"
+              style={{ background: `linear-gradient(135deg, ${primaryColor} 0%, #0f172a 100%)` }}
+            >
               <div className="w-full h-full bg-slate-950 rounded-[14px] flex flex-col items-center justify-center relative overflow-hidden">
-                <span className="text-white font-black tracking-tight text-xl sm:text-2xl font-['Rubik',sans-serif] leading-none">
-                  Alex
+                <span className="text-white font-black tracking-tight text-lg sm:text-xl font-['Rubik',sans-serif] leading-none text-center px-1 truncate max-w-full">
+                  {tenant.name.split(' ')[0]}
                 </span>
                 <span className="text-[8px] sm:text-[9px] text-purple-300 font-extrabold tracking-widest uppercase mt-1">
-                  BEAUTY
+                  STUDIO
                 </span>
               </div>
               <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-white border border-purple-200 flex items-center justify-center shadow-sm">
@@ -93,11 +98,11 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="space-y-0.5">
               <div className="flex items-baseline gap-2">
                 <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-950 font-['Rubik',sans-serif]">
-                  Alex טיפוח ויופי
+                  {tenant.name}
                 </h1>
               </div>
               <p className="text-xs sm:text-sm text-slate-600 font-medium">
-                {SALON_INFO.tagline}
+                {tenant.tagline || salonInfo.tagline}
               </p>
             </div>
           </div>
@@ -123,27 +128,30 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex items-center gap-1">
               <Phone className="w-3.5 h-3.5 text-purple-600" />
               <a
-                href={`tel:${SALON_INFO.phone}`}
+                href={`tel:${salonInfo.phone}`}
                 className="hover:text-purple-700 font-medium transition text-slate-700"
                 dir="ltr"
               >
-                {SALON_INFO.phone}
+                {salonInfo.phone}
               </a>
             </div>
-            {SALON_INFO.address ? (
+            {salonInfo.address ? (
               <div className="flex items-center gap-1">
                 <MapPin className="w-3.5 h-3.5 text-purple-600" />
-                <span className="text-slate-700 font-medium">{SALON_INFO.address}</span>
+                <span className="text-slate-700 font-medium">
+                  {salonInfo.address}{salonInfo.city ? `, ${salonInfo.city}` : ''}
+                </span>
               </div>
             ) : null}
           </div>
 
           <div className="text-purple-900 font-semibold hidden sm:flex items-center gap-1 bg-purple-50 px-2.5 py-0.5 rounded-md border border-purple-200">
             <Sparkles className="w-3 h-3 text-purple-600" />
-            <span>מניקור מקצועי & לק ג'ל</span>
+            <span>הזמנת תורים אונליין 24/7</span>
           </div>
         </div>
       </div>
     </header>
   );
 };
+

@@ -9,15 +9,17 @@ import {
   MapPin,
   Navigation,
 } from 'lucide-react';
-import { SALON_INFO } from '../utils/storage';
-
+import { useTenant } from '../context/TenantContext';
 import { ScheduleSettings } from '../types';
 
 interface SalonInfoSectionProps {
   scheduleSettings?: ScheduleSettings;
 }
 
-export const SalonInfoSection: React.FC<SalonInfoSectionProps> = ({ scheduleSettings }) => {
+export const SalonInfoSection: React.FC<SalonInfoSectionProps> = ({ scheduleSettings: propSchedule }) => {
+  const { tenant, salonInfo, scheduleSettings: contextSchedule } = useTenant();
+  const scheduleSettings = propSchedule || contextSchedule;
+
   const containerVariants = {
     hidden: { opacity: 0 },
     visible: {
@@ -65,7 +67,7 @@ export const SalonInfoSection: React.FC<SalonInfoSectionProps> = ({ scheduleSett
 
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold shadow-xs">
           <User className="w-3.5 h-3.5 text-slate-600" />
-          <span>{SALON_INFO.ownerName}</span>
+          <span>{salonInfo.ownerName}</span>
         </div>
       </motion.div>
 
@@ -86,25 +88,25 @@ export const SalonInfoSection: React.FC<SalonInfoSectionProps> = ({ scheduleSett
                 <span>יצירת קשר ובירורים</span>
               </div>
               <p className="text-slate-700 font-medium leading-relaxed">
-                לכל שאלה, שינוי מועד או בירור בנוגע לטיפול ניתן לפנות ישירות לאלכס:
+                לכל שאלה, שינוי מועד או בירור בנוגע לטיפול ניתן לפנות ישירות ל{salonInfo.ownerName}:
               </p>
             </div>
 
             <div className="pt-2 flex flex-wrap items-center gap-2.5">
               <a
-                href={`tel:${SALON_INFO.phone}`}
+                href={`tel:${salonInfo.phone}`}
                 className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-slate-800 hover:bg-purple-50 hover:text-purple-700 hover:border-purple-300 rounded-xl text-xs font-bold transition-all border border-slate-200 cursor-pointer shadow-xs hover:-translate-y-0.5"
                 title="חיוג טלפוני"
               >
                 <div className="w-6 h-6 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center">
                   <Phone className="w-3.5 h-3.5" />
                 </div>
-                <span dir="ltr">{SALON_INFO.phone}</span>
+                <span dir="ltr">{salonInfo.phone}</span>
               </a>
 
               <a
-                href={`https://wa.me/${SALON_INFO.whatsappNumber}?text=${encodeURIComponent(
-                  `שלום ${SALON_INFO.ownerName} מה נשמע? 👋 פונה אלייך דרך המערכת...`
+                href={`https://wa.me/${salonInfo.whatsappNumber}?text=${encodeURIComponent(
+                  `שלום ${salonInfo.ownerName} מה נשמע? 👋 פונה אלייך דרך המערכת...`
                 )}`}
                 target="_blank"
                 rel="noopener noreferrer"
@@ -117,9 +119,9 @@ export const SalonInfoSection: React.FC<SalonInfoSectionProps> = ({ scheduleSett
                 <span>וואטסאפ מהיר</span>
               </a>
 
-              {SALON_INFO.address ? (
+              {salonInfo.address ? (
                 <a
-                  href={`https://waze.com/ul?q=${encodeURIComponent(SALON_INFO.address)}`}
+                  href={`https://waze.com/ul?q=${encodeURIComponent(salonInfo.address)}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-2 px-4 py-2.5 bg-sky-50 hover:bg-sky-100 text-sky-800 hover:text-sky-900 rounded-xl text-xs font-bold transition-all border border-sky-200 cursor-pointer shadow-xs hover:-translate-y-0.5"
@@ -128,7 +130,7 @@ export const SalonInfoSection: React.FC<SalonInfoSectionProps> = ({ scheduleSett
                   <div className="w-6 h-6 rounded-lg bg-sky-200/60 text-sky-800 flex items-center justify-center">
                     <Navigation className="w-3.5 h-3.5" />
                   </div>
-                  <span>{SALON_INFO.address} (Waze)</span>
+                  <span>{salonInfo.address}{salonInfo.city ? `, ${salonInfo.city}` : ''} (Waze)</span>
                 </a>
               ) : null}
             </div>
@@ -141,32 +143,31 @@ export const SalonInfoSection: React.FC<SalonInfoSectionProps> = ({ scheduleSett
           >
             <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-xl bg-white border border-purple-200 text-purple-950 font-black text-xs mb-1 shadow-2xs">
               <Clock className="w-3.5 h-3.5 text-purple-600" />
-              <span>שעות פעילות הקליניקה</span>
+              <span>שעות פעילות</span>
             </div>
 
-            
-            <div className="flex justify-between items-center py-2 border-b border-slate-200/70">
-              <span className="font-semibold text-slate-700">ראשון - חמישי</span>
-              <span className="font-black text-slate-900 font-['Rubik',sans-serif] bg-white px-2.5 py-0.5 rounded-lg border border-slate-200 shadow-2xs">
-                {scheduleSettings?.businessOpen || '09:20'} - {scheduleSettings?.businessClose || '20:30'}
-              </span>
+            <div className="space-y-2 pt-1 font-medium">
+              <div className="flex items-center justify-between py-1.5 border-b border-slate-200/60">
+                <span className="text-slate-800 font-bold">ראשון - חמישי:</span>
+                <span className="font-mono text-purple-900 font-bold bg-white px-2 py-0.5 rounded-md border border-purple-100 shadow-2xs">
+                  {scheduleSettings.businessOpen} - {scheduleSettings.businessClose}
+                </span>
+              </div>
+              <div className="flex items-center justify-between py-1.5 border-b border-slate-200/60">
+                <span className="text-slate-800 font-bold">שישי:</span>
+                <span className="font-mono text-purple-900 font-bold bg-white px-2 py-0.5 rounded-md border border-purple-100 shadow-2xs">
+                  {scheduleSettings.fridayOpen} - {scheduleSettings.fridayClose}
+                </span>
+              </div>
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-slate-500">שבת:</span>
+                <span className="text-slate-500 font-medium">סגור (מנוחה)</span>
+              </div>
             </div>
-            <div className="flex justify-between items-center py-2 border-b border-slate-200/70">
-              <span className="font-semibold text-slate-700">שישי</span>
-              <span className="font-black text-slate-900 font-['Rubik',sans-serif] bg-white px-2.5 py-0.5 rounded-lg border border-slate-200 shadow-2xs">
-                {scheduleSettings?.fridayOpen || '09:20'} - {scheduleSettings?.fridayClose || '15:00'}
-              </span>
-            </div>
-            <div className="flex justify-between items-center py-2 border-b border-slate-200/70 last:border-0">
-              <span className="font-semibold text-slate-700">שבת</span>
-              <span className="font-black text-slate-900 font-['Rubik',sans-serif] bg-white px-2.5 py-0.5 rounded-lg border border-slate-200 shadow-2xs">
-                סגור (מנוחה)
-              </span>
-            </div>
-
           </motion.div>
         </div>
       </motion.div>
     </motion.div>
   );
 };
+

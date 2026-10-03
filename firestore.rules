@@ -3,56 +3,59 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Global Domain Mapping for Multi-Tenant resolution
+    match /domains/{hostname} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Tenant Root Info & Branding
+    match /tenants/{tenantId} {
+      allow read: if true;
+      allow write: if true;
+
+      // Tenant Configuration (services, schedule settings, templates)
+      match /settings/{docId} {
+        allow read: if true;
+        allow write: if true;
+      }
+
+      // Tenant Appointments
+      match /appointments/{appointmentId} {
+        allow read: if true;
+        allow create: if request.resource.data.customer_name is string
+                      && request.resource.data.customer_name.size() > 0
+                      && request.resource.data.customer_name.size() <= 100
+                      && request.resource.data.customer_phone is string
+                      && request.resource.data.customer_phone.size() >= 7
+                      && request.resource.data.customer_phone.size() <= 25
+                      && request.resource.data.appointment_date is string
+                      && request.resource.data.start_time is string
+                      && request.resource.data.end_time is string
+                      && request.resource.data.status in ['confirmed', 'cancelled'];
+        allow update: if request.resource.data.status in ['confirmed', 'cancelled'];
+        allow delete: if true;
+      }
+    }
+
+    // Backwards compatibility root collections
     match /appointments/{appointmentId} {
-      allow read: if true;
-
-      allow create: if request.resource.data.customer_name is string
-                    && request.resource.data.customer_name.size() > 0
-                    && request.resource.data.customer_name.size() <= 100
-                    && request.resource.data.customer_phone is string
-                    && request.resource.data.customer_phone.size() >= 9
-                    && request.resource.data.customer_phone.size() <= 20
-                    && request.resource.data.appointment_date is string
-                    && request.resource.data.appointment_date.matches('^\\d{4}-\\d{2}-\\d{2}$')
-                    && request.resource.data.start_time is string
-                    && request.resource.data.start_time.matches('^\\d{2}:\\d{2}$')
-                    && request.resource.data.end_time is string
-                    && request.resource.data.status in ['confirmed', 'cancelled'];
-
-      allow update: if request.resource.data.status in ['confirmed', 'cancelled'];
-      allow delete: if true;
+      allow read, write: if true;
     }
-
     match /settings/{docId} {
-      allow read: if docId != 'admin_users';
-      allow write: if docId in ['services_config', 'schedule_settings', 'sms_reminders', 'reminders', 'whatsapp_settings'];
+      allow read, write: if true;
     }
-
     match /customers/{customerId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.full_name is string
-                            && request.resource.data.full_name.size() > 0
-                            && request.resource.data.full_name.size() <= 100
-                            && request.resource.data.phone is string
-                            && request.resource.data.phone.size() >= 7
-                            && request.resource.data.phone.size() <= 25;
-      allow delete: if request.auth != null;
+      allow read, write: if true;
     }
-
     match /reminder_locks/{lockId} {
       allow read, write: if true;
     }
-
     match /sms_logs/{logId} {
-      allow read: if true;
-      allow create, update: if true;
-      allow delete: if false;
+      allow read, write: if true;
     }
-
     match /whatsapp_logs/{logId} {
-      allow read: if true;
-      allow create, update: if true;
-      allow delete: if false;
+      allow read, write: if true;
     }
 
     match /{document=**} {
@@ -60,3 +63,4 @@ service cloud.firestore {
     }
   }
 }
+

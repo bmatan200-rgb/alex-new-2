@@ -197,12 +197,14 @@ export async function saveReminderSettings(settings: WhatsAppReminderSettings): 
       // ignore
     }
     
-    // 1. Direct Firestore persistence to both collections
+    // 1. Direct Firestore persistence to tenant settings
     try {
       if (db) {
         const { doc, setDoc } = await import('firebase/firestore');
-        await setDoc(doc(db, 'settings', 'reminders'), unifiedPayload, { merge: true });
-        await setDoc(doc(db, 'settings', 'sms_reminders'), unifiedPayload, { merge: true });
+        const { getCurrentTenantId } = await import('../lib/firebase');
+        const tid = getCurrentTenantId();
+        await setDoc(doc(db, 'tenants', tid, 'settings', 'config'), unifiedPayload, { merge: true });
+        await setDoc(doc(db, 'tenants', tid, 'settings', 'sms_reminders'), unifiedPayload, { merge: true });
       }
     } catch (fsErr) {
       console.warn('Could not save settings directly to Firestore:', fsErr);

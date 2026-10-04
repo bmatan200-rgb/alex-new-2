@@ -167,7 +167,7 @@ async function resolveTenantDomain(req: Request, res: Response, next: NextFuncti
     if (rawHost && rawHost !== 'localhost' && rawHost !== '127.0.0.1') {
       try {
         const domainSnap = await getDoc(doc(db, 'domains', rawHost));
-        if (domainSnap.exists()) {
+        if (domainSnap.exists) {
           const mappedTenant = domainSnap.data()?.tenantId;
           if (mappedTenant) {
             domainToTenantCache[rawHost] = mappedTenant;
@@ -221,7 +221,7 @@ app.post('/api/appointments/cancel', async (req, res) => {
     }
 
     const snap = await getDoc(appointmentRef);
-    const snapData = snap.exists() ? snap.data() : null;
+    const snapData = snap.exists ? snap.data() : null;
 
     if (!isAdmin && snapData) {
       if (!customerPhone) return res.status(401).json({ success: false, error: 'Missing customerPhone for non-admin' });
@@ -237,7 +237,7 @@ app.post('/api/appointments/cancel', async (req, res) => {
     try {
       await deleteDoc(appointmentRef);
     } catch {
-      if (snap.exists()) {
+      if (snap.exists) {
         try {
           await setDoc(appointmentRef, { status: 'cancelled', updated_at: nowIso }, { merge: true });
         } catch {
@@ -408,7 +408,7 @@ app.post('/api/admin/migrate-legacy-alex', requireAdmin, async (req: Request, re
     for (const item of legacyAppointments.docs) {
       const targetRef = getTenantAppointmentDoc(targetTenantId, item.id);
       const existing = await getDoc(targetRef);
-      if (!existing.exists()) {
+      if (!existing.exists) {
         await setDoc(targetRef, { ...item.data(), tenantId: targetTenantId }, { merge: true });
         appointmentsCopied++;
       }
@@ -417,7 +417,7 @@ app.post('/api/admin/migrate-legacy-alex', requireAdmin, async (req: Request, re
     for (const item of legacyCustomers.docs) {
       const targetRef = doc(db, 'tenants', targetTenantId, 'customers', item.id);
       const existing = await getDoc(targetRef);
-      if (!existing.exists()) {
+      if (!existing.exists) {
         await setDoc(targetRef, { ...item.data(), tenantId: targetTenantId }, { merge: true });
         customersCopied++;
       }
@@ -461,7 +461,7 @@ app.post('/api/customers/upsert', async (req: Request, res: Response) => {
     const customerRef = doc(db, 'tenants', tenantId, 'customers', docId);
 
     const snap = await getDoc(customerRef);
-    if (snap.exists()) {
+    if (snap.exists) {
       const existing = snap.data();
       await setDoc(
         customerRef,
@@ -962,7 +962,7 @@ async function tryClaimReminderLock(key: string, tenantId = 'alex_beauty'): Prom
   try {
     return await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(lockRef);
-      if (snap.exists()) {
+      if (snap.exists) {
         const data = snap.data() as any;
         if (data?.status === 'sent') return false; // Already sent successfully
 
@@ -1039,9 +1039,9 @@ function recordLogEntry(entry: SmsLogEntry) {
 async function getTenantSmsSettings(tenantId: string): Promise<any> {
   try {
     const snap = await getDoc(getTenantSettingsDoc(tenantId, 'sms_reminders'));
-    if (snap.exists()) return { ...DEFAULT_SMS_SETTINGS, ...snap.data() };
+    if (snap.exists) return { ...DEFAULT_SMS_SETTINGS, ...snap.data() };
     const config = await getDoc(getTenantSettingsDoc(tenantId, 'config'));
-    if (config.exists()) {
+    if (config.exists) {
       const data: any = config.data();
       if (data.smsSettings) return { ...DEFAULT_SMS_SETTINGS, ...data.smsSettings };
     }
@@ -1052,7 +1052,7 @@ async function getTenantSmsSettings(tenantId: string): Promise<any> {
 async function getTenantBrand(tenantId: string): Promise<any> {
   try {
     const snap = await getDoc(getTenantDoc(tenantId));
-    if (snap.exists()) return { id: snap.id, ...snap.data() };
+    if (snap.exists) return { id: snap.id, ...snap.data() };
   } catch {}
   return tenantId === PRIMARY_TENANT_ID ? PRIMARY_TENANT_PROFILE : { id: tenantId, name: tenantId, phone: '', ownerName: '' };
 }
@@ -1247,11 +1247,11 @@ async function loadPersistedSettings() {
     if (db) {
       const snapSms = await getDoc(doc(db, 'settings', 'sms_reminders'));
       let data: any = {};
-      if (snapSms.exists()) {
+      if (snapSms.exists) {
         data = snapSms.data();
       } else {
         const snapOld = await getDoc(doc(db, 'settings', 'reminders'));
-        if (snapOld.exists()) {
+        if (snapOld.exists) {
           data = snapOld.data();
         }
       }
@@ -1559,13 +1559,13 @@ const PRIMARY_TENANT_PROFILE = {
 async function ensurePrimaryTenant(): Promise<void> {
   const tenantRef = getTenantDoc(PRIMARY_TENANT_ID);
   const existing = await getDoc(tenantRef);
-  if (!existing.exists()) {
+  if (!existing.exists) {
     await setDoc(tenantRef, { ...PRIMARY_TENANT_PROFILE, migratedAt: new Date().toISOString() }, { merge: true });
   }
 
   const configRef = getTenantSettingsDoc(PRIMARY_TENANT_ID, 'config');
   const config = await getDoc(configRef);
-  if (!config.exists()) {
+  if (!config.exists) {
     await setDoc(configRef, {
       services: [{ id: 1, name: "לק ג'ל", duration_minutes: 90, price: 150, category: 'nails', description: 'מניקור יסודי משולב ומריחת לק ג׳ל איכותי בגימור מושלם' }],
       scheduleSettings: { businessOpen: '09:20', businessClose: '20:30', fridayOpen: '09:20', fridayClose: '15:00', durationMinutes: 90 },
@@ -1580,11 +1580,11 @@ async function ensurePrimaryTenant(): Promise<void> {
   ]);
   for (const item of legacyAppointments.docs) {
     const target = getTenantAppointmentDoc(PRIMARY_TENANT_ID, item.id);
-    if (!(await getDoc(target)).exists()) await setDoc(target, { ...item.data(), tenantId: PRIMARY_TENANT_ID }, { merge: true });
+    if (!(await getDoc(target)).exists) await setDoc(target, { ...item.data(), tenantId: PRIMARY_TENANT_ID }, { merge: true });
   }
   for (const item of legacyCustomers.docs) {
     const target = doc(db, 'tenants', PRIMARY_TENANT_ID, 'customers', item.id);
-    if (!(await getDoc(target)).exists()) await setDoc(target, { ...item.data(), tenantId: PRIMARY_TENANT_ID }, { merge: true });
+    if (!(await getDoc(target)).exists) await setDoc(target, { ...item.data(), tenantId: PRIMARY_TENANT_ID }, { merge: true });
   }
 }
 
@@ -1634,7 +1634,7 @@ app.get('/api/tenant/current', async (req: Request, res: Response) => {
     let tenantProfile: any = null;
     try {
       const tSnap = await getDoc(getTenantDoc(tenantId));
-      if (tSnap.exists()) {
+      if (tSnap.exists) {
         tenantProfile = { id: tSnap.id, ...tSnap.data() };
       }
     } catch (err) {
@@ -1645,7 +1645,7 @@ app.get('/api/tenant/current', async (req: Request, res: Response) => {
     let tenantConfig: any = null;
     try {
       const cSnap = await getDoc(getTenantSettingsDoc(tenantId, 'config'));
-      if (cSnap.exists()) {
+      if (cSnap.exists) {
         tenantConfig = cSnap.data();
       }
     } catch (err) {
@@ -1813,11 +1813,11 @@ app.get('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
       getDoc(getTenantDoc(tenantId)),
       getDoc(getTenantSettingsDoc(tenantId, 'config')),
     ]);
-    if (!tenantSnap.exists()) return res.status(404).json({ success: false, error: 'Tenant not found' });
+    if (!tenantSnap.exists) return res.status(404).json({ success: false, error: 'Tenant not found' });
     return res.json({
       success: true,
       tenant: { id: tenantSnap.id, ...tenantSnap.data() },
-      config: configSnap.exists() ? configSnap.data() : { services: [], scheduleSettings: {} },
+      config: configSnap.exists ? configSnap.data() : { services: [], scheduleSettings: {} },
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message });
@@ -1830,7 +1830,7 @@ app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
     const tenantId = String(req.params.tenantId || '').trim();
     if (!tenantId) return res.status(400).json({ success: false, error: 'Tenant ID is required' });
     const existingSnap = await getDoc(getTenantDoc(tenantId));
-    if (!existingSnap.exists()) return res.status(404).json({ success: false, error: 'Tenant not found' });
+    if (!existingSnap.exists) return res.status(404).json({ success: false, error: 'Tenant not found' });
     const existing: any = existingSnap.data();
     const name = String(req.body?.name || '').trim();
     const phone = String(req.body?.phone || '').trim();
@@ -1889,7 +1889,7 @@ app.post('/api/super-admin/tenants/:tenantId/owner-account', requireSuperAdmin, 
     if (!tenantId || !email) return res.status(400).json({ success: false, error: 'חובה להזין עסק ואימייל' });
     if (password.length < 6) return res.status(400).json({ success: false, error: 'הסיסמה הזמנית חייבת להכיל לפחות 6 תווים' });
     const tenantSnap = await getDoc(getTenantDoc(tenantId));
-    if (!tenantSnap.exists()) return res.status(404).json({ success: false, error: 'העסק לא נמצא' });
+    if (!tenantSnap.exists) return res.status(404).json({ success: false, error: 'העסק לא נמצא' });
 
     let user;
     try { user = await getAuth().getUserByEmail(email); }
@@ -2048,7 +2048,7 @@ async function startServer() {
     const primarySnap = await getDoc(getTenantDoc(PRIMARY_TENANT_ID));
     const appointmentSnap = await getDocs(getTenantAppointmentsRef(PRIMARY_TENANT_ID));
     const customerSnap = await getDocs(collection(db, 'tenants', PRIMARY_TENANT_ID, 'customers'));
-    console.log(`[Tenant Bootstrap] ✅ ${PRIMARY_TENANT_ID} registered=${primarySnap.exists()} appointments=${appointmentSnap.size} customers=${customerSnap.size}`);
+    console.log(`[Tenant Bootstrap] ✅ ${PRIMARY_TENANT_ID} registered=${primarySnap.exists} appointments=${appointmentSnap.size} customers=${customerSnap.size}`);
   } catch (bootstrapErr: any) {
     // This is core production data. Fail deployment rather than serving a misleading empty SaaS dashboard.
     console.error('[Tenant Bootstrap] ❌ failed:', bootstrapErr?.message || bootstrapErr);

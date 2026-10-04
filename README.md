@@ -84,3 +84,7 @@ The server now distinguishes `super_admin` from `business_admin` using Firebase 
 - Super Admin waits for Firebase Auth restoration before requesting the protected tenant list.
 - Tenant API derives live appointment/customer counts per tenant.
 - Super Admin now surfaces API/auth failures instead of silently showing a misleading zero-business state.
+
+## v16 hotfix
+- Fixed Firebase Admin DocumentSnapshot API usage on the server: `exists` is a boolean property, not `exists()`.
+- Applied consistently to tenant bootstrap, SMS settings, domain resolution, tenant APIs, migration checks, and server-side document reads.

@@ -1,3 +1,10 @@
+# v14 — Named Firestore Database Fix
+
+- Server Firebase Admin now connects to the same **named Firestore database** as the browser app (`firestoreDatabaseId` from `firebase-applet-config.json`).
+- Fixes Render runtime `5 NOT_FOUND` caused by Admin SDK silently targeting `(default)`.
+- `FIRESTORE_DATABASE_ID` is supported as an optional Render override, but is not required while the checked-in Firebase config is correct.
+- Startup logs now print the selected Firestore database ID so deployment can be verified without exposing credentials.
+
 <div align="center">
 <img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
 </div>

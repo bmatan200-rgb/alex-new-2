@@ -4,6 +4,7 @@ import fs from 'fs';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import firebaseClientConfig from './firebase-applet-config.json';
 import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
 
@@ -66,11 +67,17 @@ try {
     projectId: serviceAccount.project_id,
   });
 
-  // Bind Firestore explicitly to the credentialed Admin app. This prevents the SDK
-  // from attempting Google Application Default Credentials.
-  db = getFirestore(adminApp);
+  // IMPORTANT: this Firebase project uses a NAMED Firestore database, not `(default)`.
+  // The browser app already points at firebase-applet-config.json -> firestoreDatabaseId.
+  // Admin SDK must use the exact same database or Firestore returns gRPC 5 NOT_FOUND.
+  const firestoreDatabaseId = (process.env.FIRESTORE_DATABASE_ID || firebaseClientConfig.firestoreDatabaseId || '').trim();
+  if (!firestoreDatabaseId) {
+    throw new Error('Firestore database ID is missing (set FIRESTORE_DATABASE_ID or firestoreDatabaseId in firebase-applet-config.json)');
+  }
+  db = getFirestore(adminApp, firestoreDatabaseId);
   adminSdkReady = true;
   console.log(`[Firebase Admin] ✅ Service Account מחובר לפרויקט ${serviceAccount.project_id}`);
+  console.log(`[Firebase Admin] ✅ Firestore database: ${firestoreDatabaseId}`);
 } catch (err: any) {
   console.error('[Firebase Admin] ❌ לא ניתן לאתחל FIREBASE_SERVICE_ACCOUNT:', err?.message || err);
   // Authentication, tenant isolation, migrations and reminders all depend on Admin SDK.

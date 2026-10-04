@@ -1,3 +1,4 @@
+import { useTenant } from '../context/TenantContext';
 import React, { useState } from 'react';
 import {
   Lock,
@@ -13,13 +14,14 @@ import {
 import { useNavigate, Link } from 'react-router-dom';
 import { auth, signInWithEmailAndPassword, signOut } from '../lib/firebase';
 import { UserSession } from '../types';
-import { saveAdminSession, SALON_INFO } from '../utils/storage';
+import { saveAdminSession } from '../utils/storage';
 
 interface AdminLoginPageProps {
   onLoginSuccess: (session: UserSession) => void;
 }
 
 export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -34,7 +36,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
     setSuccess(null);
 
     const trimmedEmail = email.trim().toLowerCase();
-    const trimmedPassword = password.trim();
+    const trimmedPassword = password;
 
     if (!trimmedEmail || !trimmedEmail.includes('@')) {
       setError('נא להזין כתובת אימייל תקינה של המנהל/ת');

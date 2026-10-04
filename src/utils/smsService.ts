@@ -1,5 +1,5 @@
-import { auth, db, getCurrentTenantId } from '../lib/firebase';
-import { SALON_INFO, getStoredAdminSession } from './storage';
+import { auth, db, getCurrentTenantId, tenantApi } from '../lib/firebase';
+import { getCurrentSalonInfo, getStoredAdminSession } from './storage';
 
 export interface SmsReminderSettings {
   enabled: boolean;
@@ -77,7 +77,7 @@ export function cleanPhoneForWhatsApp(phone: string): string {
  * Creates direct 1-on-1 WhatsApp chat link with manager or customer
  */
 export function createWhatsAppDirectLink(phone: string, text: string = ''): string {
-  const cleanPhone = cleanPhoneForWhatsApp(phone || SALON_INFO.whatsappNumber);
+  const cleanPhone = cleanPhoneForWhatsApp(phone || getCurrentSalonInfo().whatsappNumber);
   const encoded = encodeURIComponent(text);
   if (!encoded) {
     return `https://wa.me/${cleanPhone}`;
@@ -106,7 +106,7 @@ export async function getAdminApiHeaders(): Promise<Record<string, string>> {
 
 export function getStoredSmsSettings(): SmsReminderSettings {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_SMS_SETTINGS);
+    const raw = localStorage.getItem(STORAGE_KEY_SMS_SETTINGS + "__" + getCurrentTenantId());
     let parsed: any = {};
     if (raw) {
       try {
@@ -117,7 +117,7 @@ export function getStoredSmsSettings(): SmsReminderSettings {
     }
 
     // Also check legacy/whatsapp settings key for custom templates if not set in v2
-    const legacyRaw = localStorage.getItem('alex_whatsapp_reminder_settings_v1');
+    const legacyRaw = localStorage.getItem('alex_whatsapp_reminder_settings_v1' + "__" + getCurrentTenantId());
     let legacyParsed: any = {};
     if (legacyRaw) {
       try {
@@ -157,11 +157,11 @@ export function getStoredSmsSettings(): SmsReminderSettings {
 export async function saveSmsSettings(settings: SmsReminderSettings): Promise<void> {
   try {
     // 1. Save to primary SMS settings key
-    localStorage.setItem(STORAGE_KEY_SMS_SETTINGS, JSON.stringify(settings));
+    localStorage.setItem(STORAGE_KEY_SMS_SETTINGS + "__" + getCurrentTenantId(), JSON.stringify(settings));
 
     // 2. Also save to legacy WhatsApp/general reminder key to keep all views 100% in sync
     try {
-      const legacyRaw = localStorage.getItem('alex_whatsapp_reminder_settings_v1');
+      const legacyRaw = localStorage.getItem('alex_whatsapp_reminder_settings_v1' + "__" + getCurrentTenantId());
       const legacyParsed = legacyRaw ? JSON.parse(legacyRaw) : {};
       const updatedLegacy = {
         ...legacyParsed,
@@ -176,7 +176,7 @@ export async function saveSmsSettings(settings: SmsReminderSettings): Promise<vo
         eveningTemplate: settings.eveningTemplate,
         updatedAt: new Date().toISOString(),
       };
-      localStorage.setItem('alex_whatsapp_reminder_settings_v1', JSON.stringify(updatedLegacy));
+      localStorage.setItem('alex_whatsapp_reminder_settings_v1' + "__" + getCurrentTenantId(), JSON.stringify(updatedLegacy));
     } catch {
       // ignore
     }
@@ -188,33 +188,7 @@ export async function saveSmsSettings(settings: SmsReminderSettings): Promise<vo
       updatedAt: new Date().toISOString(),
     };
 
-    // 3. Save to Firestore (both sms_reminders and config documents under tenant)
-    try {
-      if (db) {
-        const { doc, setDoc } = await import('firebase/firestore');
-        const tid = getCurrentTenantId();
-        await setDoc(
-          doc(db, 'tenants', tid, 'settings', 'sms_reminders'),
-          payloadWithAliases,
-          { merge: true }
-        );
-        await setDoc(
-          doc(db, 'tenants', tid, 'settings', 'config'),
-          payloadWithAliases,
-          { merge: true }
-        );
-      }
-    } catch (fsErr) {
-      console.warn('[SmsService] Could not save to Firestore:', fsErr);
-    }
-
-    // 4. Sync to backend server
-    const headers = await getAdminApiHeaders();
-    await fetch('/api/sms/settings', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ settings: payloadWithAliases }),
-    });
+    await tenantApi('/api/sms/settings', {settings:payloadWithAliases});
   } catch (err) {
     console.error('[SmsService] Save error:', err);
     throw err;
@@ -234,13 +208,13 @@ export async function fetchServerSmsSettings(): Promise<SmsReminderSettings | nu
           morningTemplate: data.settings.morningTemplate || data.settings.customerTodayTemplate || DEFAULT_SMS_SETTINGS.morningTemplate,
           eveningTemplate: data.settings.eveningTemplate || data.settings.customer1DayTemplate || DEFAULT_SMS_SETTINGS.eveningTemplate,
         };
-        localStorage.setItem(STORAGE_KEY_SMS_SETTINGS, JSON.stringify(unifiedSettings));
+        localStorage.setItem(STORAGE_KEY_SMS_SETTINGS + "__" + getCurrentTenantId(), JSON.stringify(unifiedSettings));
 
         try {
-          const legacyRaw = localStorage.getItem('alex_whatsapp_reminder_settings_v1');
+          const legacyRaw = localStorage.getItem('alex_whatsapp_reminder_settings_v1' + "__" + getCurrentTenantId());
           const legacyParsed = legacyRaw ? JSON.parse(legacyRaw) : {};
           localStorage.setItem(
-            'alex_whatsapp_reminder_settings_v1',
+            'alex_whatsapp_reminder_settings_v1' + "__" + getCurrentTenantId(),
             JSON.stringify({
               ...legacyParsed,
               ...unifiedSettings,

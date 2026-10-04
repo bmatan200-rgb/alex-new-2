@@ -1,6 +1,6 @@
-import { auth, db } from '../lib/firebase';
+import { auth, db, getCurrentTenantId, tenantApi } from '../lib/firebase';
 import { Appointment, WhatsAppReminderSettings } from '../types';
-import { SALON_INFO, getStoredAdminSession } from './storage';
+import { getCurrentSalonInfo, getStoredAdminSession } from './storage';
 import { toIsraeliDateString, toISODateString } from './dateUtils';
 
 const STORAGE_KEY_SETTINGS = 'alex_whatsapp_reminder_settings_v1';
@@ -68,7 +68,7 @@ export function formatIsraeliPhoneToE164(phone: string): string {
 
 export function getStoredReminderSettings(): WhatsAppReminderSettings {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
+    const raw = localStorage.getItem(STORAGE_KEY_SETTINGS + "__" + getCurrentTenantId());
     let parsed: any = {};
     if (raw) {
       try {
@@ -79,7 +79,7 @@ export function getStoredReminderSettings(): WhatsAppReminderSettings {
     }
 
     // Always merge with alex_sms_reminder_settings_v2 for templates and times
-    const smsRaw = localStorage.getItem('alex_sms_reminder_settings_v2');
+    const smsRaw = localStorage.getItem('alex_sms_reminder_settings_v2' + "__" + getCurrentTenantId());
     let smsParsed: any = {};
     if (smsRaw) {
       try {
@@ -156,6 +156,7 @@ export function getStoredReminderSettings(): WhatsAppReminderSettings {
 export async function getAdminApiHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    'x-tenant-id': getCurrentTenantId(),
   };
 
   try {
@@ -186,36 +187,18 @@ export async function saveReminderSettings(settings: WhatsAppReminderSettings): 
       updatedAt: new Date().toISOString(),
     };
 
-    localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(unifiedPayload));
+    localStorage.setItem(STORAGE_KEY_SETTINGS + "__" + getCurrentTenantId(), JSON.stringify(unifiedPayload));
     try {
-      localStorage.setItem('alex_sms_reminder_settings_v2', JSON.stringify(unifiedPayload));
+      localStorage.setItem('alex_sms_reminder_settings_v2' + "__" + getCurrentTenantId(), JSON.stringify(unifiedPayload));
     } catch {
       // ignore
     }
     
     // 1. Direct Firestore persistence to tenant settings
-    try {
-      if (db) {
-        const { doc, setDoc } = await import('firebase/firestore');
-        const { getCurrentTenantId } = await import('../lib/firebase');
-        const tid = getCurrentTenantId();
-        await setDoc(doc(db, 'tenants', tid, 'settings', 'config'), unifiedPayload, { merge: true });
-        await setDoc(doc(db, 'tenants', tid, 'settings', 'sms_reminders'), unifiedPayload, { merge: true });
-      }
-    } catch (fsErr) {
-      console.warn('Could not save settings directly to Firestore:', fsErr);
-    }
-
-    // 2. Server API sync with admin headers
-    const headers = await getAdminApiHeaders();
-
-    await fetch('/api/sms/settings', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ settings: unifiedPayload }),
-    });
+    await tenantApi('/api/sms/settings', {settings:unifiedPayload});
   } catch (err) {
     console.error('Failed to save reminder settings:', err);
+    throw err;
   }
 }
 
@@ -232,7 +215,7 @@ export interface SentReminderLogEntry {
 
 export function getSentRemindersLog(): Record<string, SentReminderLogEntry> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_SENT_LOG);
+    const raw = localStorage.getItem(STORAGE_KEY_SENT_LOG + "__" + getCurrentTenantId());
     if (!raw) return {};
     return JSON.parse(raw);
   } catch {
@@ -269,7 +252,7 @@ export function markReminderSent(
         [key]: new Date().toISOString(),
       },
     };
-    localStorage.setItem(STORAGE_KEY_SENT_LOG, JSON.stringify(updated));
+    localStorage.setItem(STORAGE_KEY_SENT_LOG + "__" + getCurrentTenantId(), JSON.stringify(updated));
   } catch (err) {
     console.error('Failed to mark reminder sent:', err);
   }
@@ -402,9 +385,9 @@ export function buildCustomerBookingConfirmationText(
     .replace(/{end_time}/g, appointment.end_time)
     .replace(/{appointment_date}/g, israeliDate)
     .replace(/{customer_phone}/g, appointment.customer_phone)
-    .replace(/{salon_name}/g, SALON_INFO.name)
-    .replace(/{phone}/g, SALON_INFO.phone)
-    .replace(/{owner_name}/g, SALON_INFO.ownerName);
+    .replace(/{salon_name}/g, getCurrentSalonInfo().name)
+    .replace(/{phone}/g, getCurrentSalonInfo().phone)
+    .replace(/{owner_name}/g, getCurrentSalonInfo().ownerName);
 }
 
 /**
@@ -427,9 +410,9 @@ export function buildCustomerTodayReminderText(
     .replace(/{end_time}/g, appointment.end_time)
     .replace(/{appointment_date}/g, israeliDate)
     .replace(/{customer_phone}/g, appointment.customer_phone)
-    .replace(/{salon_name}/g, SALON_INFO.name)
-    .replace(/{phone}/g, SALON_INFO.phone)
-    .replace(/{owner_name}/g, SALON_INFO.ownerName);
+    .replace(/{salon_name}/g, getCurrentSalonInfo().name)
+    .replace(/{phone}/g, getCurrentSalonInfo().phone)
+    .replace(/{owner_name}/g, getCurrentSalonInfo().ownerName);
 }
 
 /**
@@ -452,9 +435,9 @@ export function buildCustomer1DayReminderText(
     .replace(/{end_time}/g, appointment.end_time)
     .replace(/{appointment_date}/g, israeliDate)
     .replace(/{customer_phone}/g, appointment.customer_phone)
-    .replace(/{salon_name}/g, SALON_INFO.name)
-    .replace(/{phone}/g, SALON_INFO.phone)
-    .replace(/{owner_name}/g, SALON_INFO.ownerName);
+    .replace(/{salon_name}/g, getCurrentSalonInfo().name)
+    .replace(/{phone}/g, getCurrentSalonInfo().phone)
+    .replace(/{owner_name}/g, getCurrentSalonInfo().ownerName);
 }
 
 /**
@@ -477,9 +460,9 @@ export function buildCustomerReminderText(
     .replace(/{end_time}/g, appointment.end_time)
     .replace(/{appointment_date}/g, israeliDate)
     .replace(/{customer_phone}/g, appointment.customer_phone)
-    .replace(/{salon_name}/g, SALON_INFO.name)
-    .replace(/{phone}/g, SALON_INFO.phone)
-    .replace(/{owner_name}/g, SALON_INFO.ownerName);
+    .replace(/{salon_name}/g, getCurrentSalonInfo().name)
+    .replace(/{phone}/g, getCurrentSalonInfo().phone)
+    .replace(/{owner_name}/g, getCurrentSalonInfo().ownerName);
 }
 
 /**
@@ -492,7 +475,7 @@ export function buildAlexBookingText(
   const israeliDate = toIsraeliDateString(appointment.appointment_date);
   const notesText = appointment.notes ? `📝 הערה: ${appointment.notes}` : '';
 
-  return `🎉 נקבע תור חדש במערכת! - ${SALON_INFO.name}\n\n` +
+  return `🎉 נקבע תור חדש במערכת! - ${getCurrentSalonInfo().name}\n\n` +
     `👤 לקוח/ה: ${appointment.customer_name}\n` +
     `📱 טלפון: ${appointment.customer_phone}\n` +
     `💅 שירות: ${appointment.service_name || "לק ג'ל"}\n` +
@@ -516,7 +499,7 @@ export function buildAlex1DayReminderText(
   const israeliDate = toIsraeliDateString(appointment.appointment_date);
   const notesText = appointment.notes ? `📝 הערה: ${appointment.notes}` : '';
 
-  return `🔔 תזכורת תור למחר (${israeliDate}) - ${SALON_INFO.name}:\n\n` +
+  return `🔔 תזכורת תור למחר (${israeliDate}) - ${getCurrentSalonInfo().name}:\n\n` +
     template
       .replace(/{customer_name}/g, appointment.customer_name)
       .replace(/{service_name}/g, appointment.service_name || "לק ג'ל")
@@ -525,9 +508,9 @@ export function buildAlex1DayReminderText(
       .replace(/{appointment_date}/g, `${israeliDate} (מחר)`)
       .replace(/{customer_phone}/g, appointment.customer_phone)
       .replace(/{notes_section}/g, notesText)
-      .replace(/{salon_name}/g, SALON_INFO.name)
-      .replace(/{phone}/g, SALON_INFO.phone)
-      .replace(/{owner_name}/g, SALON_INFO.ownerName);
+      .replace(/{salon_name}/g, getCurrentSalonInfo().name)
+      .replace(/{phone}/g, getCurrentSalonInfo().phone)
+      .replace(/{owner_name}/g, getCurrentSalonInfo().ownerName);
 }
 
 /**
@@ -549,8 +532,8 @@ export function buildAlexReminderText(
     .replace(/{appointment_date}/g, israeliDate)
     .replace(/{customer_phone}/g, appointment.customer_phone)
     .replace(/{notes_section}/g, notesText)
-    .replace(/{salon_name}/g, SALON_INFO.name)
-    .replace(/{owner_name}/g, SALON_INFO.ownerName);
+    .replace(/{salon_name}/g, getCurrentSalonInfo().name)
+    .replace(/{owner_name}/g, getCurrentSalonInfo().ownerName);
 }
 
 /**
@@ -687,81 +670,7 @@ export async function dispatchAutomatedWhatsAppApi({
     const formattedPhone = formatIsraeliPhoneToE164(phone);
     const cleanPhoneDigits = formattedPhone.replace(/\D/g, '');
 
-    // 1. Green API if explicitly configured
-    if (settings.provider === 'greenapi' && settings.instanceId && settings.apiKey) {
-      const url = `https://api.green-api.com/waInstance${settings.instanceId}/sendMessage/${settings.apiKey}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chatId: `${cleanPhoneDigits}@c.us`,
-          message: message,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        return { success: true, message: `ההודעה נשלחה בהצלחה דרך Green API (ID: ${data.idMessage || 'ok'})` };
-      }
-      return { success: false, message: `שגיאה מ-Green API: ${data.message || res.statusText}` };
-    }
-
-    // 2. UltraMsg if explicitly configured
-    if (settings.provider === 'ultramsg' && settings.instanceId && settings.apiKey) {
-      const url = `https://api.ultramsg.com/${settings.instanceId}/messages/chat`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          token: settings.apiKey,
-          to: formattedPhone,
-          body: message,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok && data.sent === 'true') {
-        return { success: true, message: 'ההודעה נשלחה בהצלחה דרך UltraMsg' };
-      }
-      return { success: false, message: `שגיאה מ-UltraMsg: ${data.error || 'נכשלה שליחה'}` };
-    }
-
-    // 3. Webhook / Make / Zapier if explicitly configured
-    if (settings.provider === 'webhook' && settings.webhookUrl) {
-      let eventName = 'appointment_booking_confirmation';
-      if (reminderType === 'today') eventName = 'appointment_reminder_today';
-      else if (reminderType === '1day') eventName = 'appointment_reminder_1day';
-      else if (reminderType === '2hours') eventName = 'appointment_reminder_2h';
-
-      const payload = {
-        event: eventName,
-        reminderType,
-        recipientType,
-        recipientPhone: formattedPhone,
-        message,
-        appointment: {
-          id: appointment.id,
-          customer_name: appointment.customer_name,
-          customer_phone: appointment.customer_phone,
-          service_name: appointment.service_name,
-          price: appointment.price,
-          appointment_date: appointment.appointment_date,
-          start_time: appointment.start_time,
-          end_time: appointment.end_time,
-          notes: appointment.notes,
-        },
-        timestamp: new Date().toISOString(),
-      };
-
-      const res = await fetch(settings.webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (res.ok) {
-        return { success: true, message: 'הבקשה נשלחה בהצלחה ל-Webhook!' };
-      }
-      return { success: false, message: `Webhook החזיר סטטוס שגיאה: ${res.status}` };
-    }
+    if (settings.provider !== 'telnyx' && settings.provider !== 'direct') return {success:false,message:'שליחה אוטומטית זמינה דרך ספק השרת בלבד'};
 
     // 4. Primary: Backend Telnyx SMS Gateway (/api/whatsapp/send)
     const headers = await getAdminApiHeaders();
@@ -920,7 +829,7 @@ export async function autoDispatchAllPendingReminders(appointments: Appointment[
           msg = `היי ${todayAppts[0].customer_name} 🌸
 תזכורת לתורים שלך להיום (${israeliDate}):
 ${list}
-לבירור או שינוי: ${SALON_INFO.phone}
+לבירור או שינוי: ${getCurrentSalonInfo().phone}
 נתראה! 💖`;
         }
 
@@ -957,7 +866,7 @@ ${list}
           msg = `היי ${tomorrowAppts[0].customer_name} 🌸
 תזכורת לתורים שלך למחר (${israeliDate}):
 ${list}
-לשינוי או בירור: ${SALON_INFO.phone}
+לשינוי או בירור: ${getCurrentSalonInfo().phone}
 מחכים לראותך! 💖`;
         }
 

@@ -37,6 +37,7 @@ import {
 } from './utils/storage';
 import {
   subscribeAppointments,
+  tenantApi,
   addAppointmentToFirestore,
   cancelAppointmentInFirestore,
   deleteAppointmentInFirestore,
@@ -95,46 +96,7 @@ function AdminRouteView({
   const requestedTenant = urlTenant || tenantId || tenant.id || 'alex_beauty';
   const tenantParam = adminSession?.role === 'business_admin' && adminSession.tenantId ? adminSession.tenantId : requestedTenant;
 
-  // Check if in local development environment
-  const isLocalDev = Boolean(
-    (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') ||
-    (import.meta as any).env?.DEV ||
-    (typeof window !== 'undefined' &&
-      (window.location.hostname === 'localhost' ||
-        window.location.hostname === '127.0.0.1' ||
-        window.location.port === '3000'))
-  );
-
-  // In local environment (process.env.NODE_ENV !== 'production'):
-  // Fetch the admin data for the specified tenant even if user session is not fully validated
-  useEffect(() => {
-    if (isLocalDev && (!adminSession || !adminSession.isAdmin)) {
-      const devAdminSession: UserSession = {
-        name: tenantParam === 'alex_beauty' ? 'אלכסנדרה ביטון (מנהלת מקומית)' : `${tenant.ownerName || tenant.name || tenantParam} (מנהלת)`,
-        phone: tenant.phone || SALON_INFO.phone,
-        email: tenant.email || `${tenantParam}@beauty.co.il`,
-        isAdmin: true,
-        loggedInAt: new Date().toISOString(),
-      };
-      saveAdminSession(devAdminSession);
-      onAdminLoginSuccess(devAdminSession);
-    }
-
-    // Trigger tenant data fetch endpoint
-    if (tenantParam) {
-      const token = localStorage.getItem('alex_admin_session_token') || '';
-      fetch(`/api/admin/tenant-data?tenant=${encodeURIComponent(tenantParam)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-        .then((r) => r.json())
-        .then((data) => {
-          if (data && data.success) {
-            console.log(`[Local Dev] Admin data loaded for tenant: ${tenantParam}`);
-          }
-        })
-        .catch(() => {});
-    }
-  }, [isLocalDev, tenantParam, adminSession, tenant]);
-
-  const canAccess = isLocalDev || Boolean(adminSession && adminSession.isAdmin);
+  const canAccess = Boolean(adminSession?.isAdmin && (adminSession.role === 'super_admin' || (adminSession.role === 'business_admin' && adminSession.tenantId === requestedTenant)));
 
   if (!canAccess) {
     return <AdminLoginPage onLoginSuccess={onAdminLoginSuccess} />;
@@ -161,7 +123,7 @@ function AdminRouteView({
                   <ShieldCheck className="w-4 h-4 text-purple-400" />
                   <span>לוח ניהול ובקרה • {salonTitle}</span>
                 </div>
-                {isLocalDev && (
+                {false && (
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/30">
                     Tenant: {tenantParam} (Local Dev ⚡)
                   </span>
@@ -238,14 +200,14 @@ function MainApp() {
   } = useTenant();
 
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
-  const [adminSession, setAdminSession] = useState<UserSession | null>(() => getStoredAdminSession());
+  const [adminSession, setAdminSession] = useState<UserSession | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [isTermsOpen, setIsTermsOpen] = useState<boolean>(false);
 
   const [isTorModalOpen, setIsTorModalOpen] = useState(false);
   const [isChoiceModalOpen, setIsChoiceModalOpen] = useState(false);
   const [confirmedAppointment, setConfirmedAppointment] = useState<Appointment | null>(null);
-  const [appointments, setAppointments] = useState<Appointment[]>(() => getStoredAppointments());
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [isMyBookingOpen, setIsMyBookingOpen] = useState(false);
   const [customerApptToCancel, setCustomerApptToCancel] = useState<Appointment | null>(null);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -266,7 +228,7 @@ function MainApp() {
     }, undefined, tenantId);
 
     const unsubscribeServices = subscribeServices((remoteServices) => {
-      if (remoteServices && remoteServices.length > 0) {
+      if (Array.isArray(remoteServices)) {
         updateServices(remoteServices);
         saveStoredServices(remoteServices);
       }
@@ -288,41 +250,19 @@ function MainApp() {
 
   // Synchronize Firebase Auth state for Admin session
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((firebaseUser) => {
-      if (firebaseUser) {
-        const storedAdmin = getStoredAdminSession();
-        if (!storedAdmin) {
-          const newAdminSession: UserSession = {
-            name: firebaseUser.displayName || `${tenant.ownerName} (מנהלת)`,
-            phone: salonInfo.phone,
-            email: firebaseUser.email || tenant.email || 'alex@beauty.co.il',
-            isAdmin: true,
-            loggedInAt: new Date().toISOString(),
-          };
-          saveAdminSession(newAdminSession);
-          setAdminSession(newAdminSession);
-        }
-      } else {
-        clearAdminSession();
-        setAdminSession(null);
-      }
+    let active=true;
+    const unsubscribe=auth.onAuthStateChanged(async user=>{
+      try {
+        if(!user) throw new Error('Signed out');
+        const result=await tenantApi('/api/auth/me');
+        if(!active) return;
+        const profile=result.user;
+        const session:UserSession={name:user.displayName || user.email || '',phone:'',email:user.email || '',isAdmin:true,role:profile.role,tenantId:profile.tenantId,uid:profile.uid,loggedInAt:new Date().toISOString()};
+        saveAdminSession(session);setAdminSession(session);
+      }catch {if(active){clearAdminSession();setAdminSession(null);}}
     });
-
-    return () => unsubscribe();
-  }, [tenant, salonInfo]);
-
-  // Background pulse for automatic SMS reminder checks
-  useEffect(() => {
-    const triggerDueRemindersCheck = () => {
-      fetch(`/api/sms/check-due?tenant=${encodeURIComponent(tenantId)}`)
-        .then((r) => r.json())
-        .catch(() => {});
-    };
-
-    triggerDueRemindersCheck();
-    const interval = setInterval(triggerDueRemindersCheck, 60000);
-    return () => clearInterval(interval);
-  }, [tenantId]);
+    return ()=>{active=false;unsubscribe();};
+  },[tenantId]);
 
   // Customer Login / Registration callback
   const handleCustomerLogin = (session: UserSession) => {
@@ -369,70 +309,22 @@ function MainApp() {
     setConfirmedAppointment(newAppointment);
   };
 
-  const handleCancelAppointment = async (id: number | string) => {
-    const idStr = String(id);
-    const apptToCancel = appointments.find((a) => String(a.id) === idStr);
-    cancelAppointment(idStr);
-    deleteAppointmentPermanently(idStr);
-    setAppointments((prev) =>
-      prev.filter(
-        (app) =>
-          String(app.id) !== idStr &&
-          !(
-            apptToCancel &&
-            app.appointment_date === apptToCancel.appointment_date &&
-            app.start_time === apptToCancel.start_time
-          )
-      )
-    );
-    showToast('התור בוטל ונמחק בהצלחה והשעה שוחררה ביומן 🌸', 'success');
-
+  const handleCancelAppointment = async (id:number|string) => {
+    const a=appointments.find(a=>String(a.id)===String(id));
     try {
-      await cancelAppointmentInFirestore(
-        idStr,
-        apptToCancel?.customer_phone,
-        apptToCancel?.appointment_date,
-        apptToCancel?.start_time,
-        tenantId
-      );
-      await deleteAppointmentInFirestore(
-        idStr,
-        apptToCancel?.appointment_date,
-        apptToCancel?.start_time,
-        tenantId
-      );
-    } catch (err) {
-      console.error('Error cancelling appointment in Firestore:', err);
-    }
+      await cancelAppointmentInFirestore(id,a?.customer_phone,a?.appointment_date,a?.start_time,tenantId);
+      deleteAppointmentPermanently(id);
+      setAppointments(prev=>prev.filter(a=>String(a.id)!==String(id)));
+      showToast('התור בוטל והשעה שוחררה ביומן');
+    } catch(err:any){showToast(err.message || 'ביטול התור נכשל','error');throw err;}
   };
-
-  const handleDeleteAppointment = async (id: number | string) => {
-    const idStr = String(id);
-    const apptToDelete = appointments.find((a) => String(a.id) === idStr);
-    deleteAppointmentPermanently(idStr);
-    setAppointments((prev) =>
-      prev.filter(
-        (app) =>
-          String(app.id) !== idStr &&
-          !(
-            apptToDelete &&
-            app.appointment_date === apptToDelete.appointment_date &&
-            app.start_time === apptToDelete.start_time
-          )
-      )
-    );
-    showToast('הרשומה נמחקה בהצלחה', 'success');
-
+  const handleDeleteAppointment = async(id:number|string)=>{
     try {
-      await deleteAppointmentInFirestore(
-        idStr,
-        apptToDelete?.appointment_date,
-        apptToDelete?.start_time,
-        tenantId
-      );
-    } catch (err) {
-      console.error('Error deleting appointment in Firestore:', err);
-    }
+      await deleteAppointmentInFirestore(id,undefined,undefined,tenantId);
+      deleteAppointmentPermanently(id);
+      setAppointments(prev=>prev.filter(a=>String(a.id)!==String(id)));
+      showToast('התור הוסר מהיומן');
+    }catch(err:any){showToast(err.message || 'מחיקת התור נכשלה','error');throw err;}
   };
 
   const handleAddManualAppointment = async (newApp: Omit<Appointment, 'id'>) => {
@@ -443,33 +335,19 @@ function MainApp() {
       setAppointments((prev) => deduplicateAppointments([appWithId, ...prev]));
     } catch (err: any) {
       console.error('Error adding manual appointment to Firestore:', err);
-      alert('שגיאה בשמירת התור / התנגשות תורים: ' + err?.message);
+      throw err;
     }
   };
 
   const handleUpdateServices = async (updatedServices: Service[]) => {
-    updateServices(updatedServices);
-    saveStoredServices(updatedServices);
-
-    try {
-      await saveServicesToFirestore(updatedServices, tenantId);
-    } catch (err) {
-      console.error('Error saving updated services to Firestore:', err);
-    }
+    await saveServicesToFirestore(updatedServices,tenantId);
+    updateServices(updatedServices);saveStoredServices(updatedServices);
   };
-
   const handleUpdateScheduleSettings = async (updatedSettings: ScheduleSettings) => {
-    updateScheduleSettings(updatedSettings);
-    saveStoredScheduleSettings(updatedSettings);
-
-    try {
-      await saveScheduleSettingsToFirestore(updatedSettings, tenantId);
-    } catch (err) {
-      console.error('Error saving schedule settings to Firestore:', err);
-    }
+    await saveScheduleSettingsToFirestore(updatedSettings,tenantId);
+    updateScheduleSettings(updatedSettings);saveStoredScheduleSettings(updatedSettings);
   };
-
-  const mainService = services[0] || SERVICES[0];
+  const mainService = services[0];
 
   const cleanUserPhone = currentUser?.phone ? currentUser.phone.replace(/\D/g, '') : '';
   const customerActiveBookings =
@@ -660,7 +538,7 @@ function MainApp() {
                             קביעת תור
                           </h2>
                           <p className="text-sm sm:text-base font-bold mt-1 sm:mt-1.5" style={{ color: primaryColor }} dir="rtl">
-                            {mainService.name ? `${mainService.name} • ` : ''}{mainService.price || 150} ש״ח
+                            {mainService ? `${mainService.name} • ${mainService.price} ש״ח` : 'פרטי השירותים יעודכנו בקרוב'}
                           </p>
                         </div>
                       </div>

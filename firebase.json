@@ -1,0 +1,6 @@
+{
+  "firestore": [
+    {"database": "ai-studio-alex-0ace37ff-f441-4c64-bdb6-3ba856e2147c", "rules": "firestore.rules", "indexes": "firestore.indexes.json"}
+  ],
+  "emulators": {"firestore": {"port": 8080}, "auth": {"port": 9099}, "ui": {"enabled": false}, "singleProjectMode": false}
+}

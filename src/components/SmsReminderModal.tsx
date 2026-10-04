@@ -1,3 +1,4 @@
+import { useTenant } from '../context/TenantContext';
 import React, { useState, useEffect } from 'react';
 import {
   X,
@@ -29,7 +30,7 @@ import {
   fetchSmsLogs,
   DEFAULT_SMS_SETTINGS,
 } from '../utils/smsService';
-import { SALON_INFO } from '../utils/storage';
+
 
 interface SmsReminderModalProps {
   isOpen: boolean;
@@ -44,6 +45,7 @@ export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
   onSaved,
   initialTab = 'timing',
 }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   const [activeTab, setActiveTab] = useState<'timing' | 'templates' | 'manual' | 'logs'>(initialTab);
   const [settings, setSettings] = useState<SmsReminderSettings>(() => getStoredSmsSettings());
   const [isSaving, setIsSaving] = useState(false);

@@ -1,3 +1,4 @@
+import { useTenant } from '../context/TenantContext';
 import React, { useState, useEffect } from 'react';
 import {
   Search,
@@ -20,14 +21,14 @@ import {
   toIsraeliDateString,
   isAppointmentInPast,
 } from '../utils/dateUtils';
-import { SALON_INFO } from '../utils/storage';
+
 import { CancelAppointmentConfirmModal } from './CancelAppointmentConfirmModal';
 
 interface MyBookingModalProps {
   isOpen: boolean;
   onClose: () => void;
   appointments: Appointment[];
-  onCancelAppointment: (id: number | string) => void;
+  onCancelAppointment: (id: number | string) => Promise<void> | void;
   currentUser?: UserSession | null;
   onOpenBookingModal?: () => void;
 }
@@ -40,6 +41,7 @@ export const MyBookingModal: React.FC<MyBookingModalProps> = ({
   currentUser,
   onOpenBookingModal,
 }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   const [searchPhone, setSearchPhone] = useState(currentUser?.phone || '');
   const [hasSearched, setHasSearched] = useState(Boolean(currentUser?.phone));
   const [appointmentToCancel, setAppointmentToCancel] = useState<Appointment | null>(null);
@@ -86,8 +88,8 @@ export const MyBookingModal: React.FC<MyBookingModalProps> = ({
     setActiveTab('active');
   };
 
-  const handleExecuteCancel = (app: Appointment) => {
-    onCancelAppointment(app.id);
+  const handleExecuteCancel = async (app: Appointment) => {
+    try { await onCancelAppointment(app.id); } catch { return; }
     setAppointmentToCancel(null);
     setSuccessMessage(`התור שלך לתאריך ${toIsraeliDateString(app.appointment_date)} בשעה ${app.start_time} בוטל בהצלחה. השעה שוחררה ביומן.`);
   };
@@ -221,7 +223,7 @@ export const MyBookingModal: React.FC<MyBookingModalProps> = ({
                     <p className="text-slate-500 text-xs max-w-xs mx-auto">
                       {pastHistoryAppointments.length > 0
                         ? 'כל התורים שנקבעו בעבר כבר הסתיימו או בוטלו (ניתן לצפות בהם בלשונית "היסטוריית תורים").'
-                        : 'לא נמצאו תורים עתידיים עבור מספר זה. ודאו שהקלדתם את המספר המדויק.'}
+                        : 'מוצגים תורים שנקבעו בדפדפן זה. לתור ישן או לתור שנקבע במכשיר אחר, יש לפנות למנהלת.'}
                     </p>
                     {onOpenBookingModal && (
                       <div className="pt-2">

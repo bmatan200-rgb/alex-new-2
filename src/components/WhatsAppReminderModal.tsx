@@ -1,3 +1,4 @@
+import { useTenant } from '../context/TenantContext';
 import React, { useState, useRef, useEffect } from 'react';
 import {
   MessageSquare,
@@ -30,7 +31,7 @@ import {
 } from 'lucide-react';
 import { Appointment, WhatsAppReminderSettings } from '../types';
 import { auth } from '../lib/firebase';
-import { SALON_INFO } from '../utils/storage';
+
 import {
   getStoredReminderSettings,
   saveReminderSettings,
@@ -60,6 +61,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
   sampleAppointment,
   initialTab = 'templates',
 }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   const [settings, setSettings] = useState<WhatsAppReminderSettings>(() => getStoredReminderSettings());
   const [activeTab, setActiveTab] = useState<'templates' | 'immediate_send' | 'automation'>(
     initialTab === ('how_it_works' as any) ? 'templates' : initialTab
@@ -1083,7 +1085,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-800 focus:bg-white focus:border-purple-600 outline-none cursor-pointer"
                 >
                   <option value="telnyx">⭐ Telnyx (שליחת הודעות SMS אוטומטיות מהירות ומאובטחות - פעיל)</option>
-                  <option value="webhook">Webhook חיצוני (Make / Zapier / n8n)</option>
+                  
                 </select>
               </div>
 

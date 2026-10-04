@@ -50,7 +50,7 @@ import {
   BUSINESS_CLOSE,
   FRIDAY_CLOSE,
 } from '../utils/dateUtils';
-import { SALON_INFO } from '../utils/storage';
+
 import { useTenant } from '../context/TenantContext';
 import { WhatsApp2HourAlertBanner } from './WhatsApp2HourAlertBanner';
 import { SmsReminderModal } from './SmsReminderModal';
@@ -110,6 +110,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   scheduleSettings,
   onUpdateScheduleSettings,
 }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   const todayIso = toISODateString(new Date());
   const tomorrowDate = new Date();
   tomorrowDate.setDate(tomorrowDate.getDate() + 1);

@@ -29,7 +29,7 @@ import {
   generateGoogleCalendarUrl,
   generateIcsFile,
 } from '../utils/dateUtils';
-import { SALON_INFO } from '../utils/storage';
+
 import { addAppointmentToFirestore, upsertCustomerToFirestore } from '../lib/firebase';
 import { ServiceSelector } from './ServiceSelector';
 import { DatePickerCarousel } from './DatePickerCarousel';
@@ -51,6 +51,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
   currentUser,
   onBackToHome,
 }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   const { tenantId } = useTenant();
   const days: DayInfo[] = useMemo(() => buildNextDays(60), []);
 
@@ -177,7 +178,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
           setIsSubmitting(false);
           return;
         }
-        console.warn('Could not save to Firestore directly in BookingForm, falling back:', err);
+        throw err;
       }
 
       const fullAppt: Appointment = { ...newAppt, id: savedId };

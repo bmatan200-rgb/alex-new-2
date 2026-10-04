@@ -1,0 +1,191 @@
+import test, {before, after} from 'node:test';
+import assert from 'node:assert/strict';
+import {generateKeyPairSync} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {getAuth} from 'firebase-admin/auth';
+import {initializeTestEnvironment,assertFails,assertSucceeds} from '@firebase/rules-unit-testing';
+import {doc,getDoc,setDoc} from 'firebase/firestore';
+import {claimOnce,copyOnce,israelClock,reminderKey} from '../server/core';
+if(!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST) throw new Error('Emulators required: tests never access production');
+process.env.NODE_ENV='test';
+process.env.SUPER_ADMIN_EMAILS='verified@example.com,unverified@example.com';
+const projectId='gen-lang-client-0382531831';
+const privateKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+process.env.FIREBASE_SERVICE_ACCOUNT=JSON.stringify({project_id:projectId,client_email:'test@example.com',private_key:privateKey});
+const {app,db,ensurePrimaryTenant,sendRemindersForDate}=await import('../server');
+const nativeFetch=globalThis.fetch;
+let server:any, base:string, rules:any, superToken:string, ownerToken:string, userToken:string;
+let providerCalls=0, providerFailure=false;
+globalThis.fetch=async(input:any,init?:any)=>{
+  if(String(input).startsWith('https://api.telnyx.com/')){
+    providerCalls++;
+    if(providerFailure) throw new Error('Simulated response lost after acceptance');
+    return new Response(JSON.stringify({data:{id:'provider_'+providerCalls,to:[{status:'queued'}]}}),{status:200});
+  }
+  const u=String(input);
+  if(!u.startsWith('http://127.0.0.1:') && !u.startsWith('http://localhost:'))throw new Error('Unexpected external network in test: '+u);
+  return nativeFetch(input,init);
+};
+async function account(uid:string,email:string,claims:any={},verified=true){
+  await getAuth().createUser({uid,email,password:'Test12345!',emailVerified:verified});
+  await getAuth().setCustomUserClaims(uid,claims);
+  const r=await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=fake`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:'Test12345!',returnSecureToken:true})});
+  const json=await r.json();if(!json.idToken)throw new Error(JSON.stringify(json));return json.idToken;
+}
+async function api(path:string,body?:any,token?:string,tenant='alex_beauty',method?:string){
+  const r=await fetch(base+path,{method:method || (body===undefined?'GET':'POST'),headers:{'Content-Type':'application/json','x-tenant-id':tenant,...(token?{Authorization:`Bearer ${token}`}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  return {status:r.status,...await r.json()};
+}
+before(async()=>{
+  await db.recursiveDelete(db.collection('tenants'));
+  server=await new Promise<any>(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});base=`http://127.0.0.1:${server.address().port}`;
+  superToken=await account('super','super@example.com',{role:'super_admin'});
+  ownerToken=await account('owner','owner@example.com',{role:'business_admin',tenantId:'alex_beauty'});
+  userToken=await account('regular','regular@example.com');
+  await db.doc('tenants/alex_beauty').set({status:'active',name:'Alex',phone:'0546307114',ownerAuthUid:'owner'});
+  await db.doc('tenants/other').set({status:'active',name:'Other'});
+  await db.doc('adminUsers/owner').set({disabled:false});
+  await db.doc('tenants/alex_beauty/settings/config').set({services:[{id:1,name:'nails',price:150,duration_minutes:60}],scheduleSettings:{businessOpen:'08:00',businessClose:'22:00',fridayOpen:'08:00',fridayClose:'22:00',durationMinutes:60}});
+  rules=await initializeTestEnvironment({projectId,firestore:{rules:readFileSync('firestore.rules','utf8')}});
+  await rules.withSecurityRulesDisabled(async(c:any)=>{
+    const f=c.firestore();await setDoc(doc(f,'tenants/alex_beauty'),{status:'active',ownerAuthUid:'owner'});await setDoc(doc(f,'adminUsers/owner'),{disabled:false});
+    await setDoc(doc(f,'tenants/alex_beauty/appointments/a'),{customer_phone:'private'});
+    await setDoc(doc(f,'tenants/alex_beauty/settings/config'),{services:[]});
+    await setDoc(doc(f,'tenants/alex_beauty/settings/sms_reminders'),{enabled:true});
+    await setDoc(doc(f,'tenants/alex_beauty/private_settings/sms_provider'),{telnyxApiKey:'secret'});
+  });
+});
+after(async()=>{globalThis.fetch=nativeFetch;await rules?.cleanup();await new Promise<void>(resolve=>server.close(()=>resolve()));await db.terminate();});
+test('named database is explicitly selected',()=>{assert.equal(db.databaseId,'ai-studio-alex-0ace37ff-f441-4c64-bdb6-3ba856e2147c');});
+test('anonymous/ordinary Firebase users cannot administer or run scheduler',async()=>{assert.equal((await api('/api/tenants')).status,403);assert.equal((await api('/api/admin/customers',undefined,userToken)).status,403);assert.equal((await api('/api/sms/check-due')).status,403);});
+test('tenant role cannot cross tenant boundary via query/header/body',async()=>{assert.notEqual((await api('/api/admin/customers',undefined,ownerToken,'other')).status,200);assert.equal((await api('/api/admin/customers?tenant=other',undefined,ownerToken)).status,400);assert.equal((await api('/api/admin/settings/services',{tenantId:'other',services:[]},ownerToken)).status,400);assert.equal((await api('/api/admin/migrate-legacy-alex',{},ownerToken)).status,403);});
+test('only a verified allowlisted identity can bootstrap super admin',async()=>{const unverified=await account('unverified','unverified@example.com',{},false);assert.equal((await api('/api/tenants',undefined,unverified)).status,403);const verified=await account('verified','verified@example.com',{},true);assert.equal((await api('/api/auth/me',undefined,verified)).user.role,'super_admin');});
+test('Firestore rules deny public PII, writes, lock edits and provider secrets',async()=>{
+  const anon=rules.unauthenticatedContext().firestore();
+  const owner=rules.authenticatedContext('owner',{role:'business_admin',tenantId:'alex_beauty'}).firestore();
+  const other=rules.authenticatedContext('other-owner',{role:'business_admin',tenantId:'other'}).firestore();
+  await assertFails(getDoc(doc(anon,'tenants/alex_beauty/appointments/a')));
+  await assertFails(getDoc(doc(other,'tenants/alex_beauty/appointments/a')));
+  await assertSucceeds(getDoc(doc(owner,'tenants/alex_beauty/appointments/a')));
+  await assertSucceeds(getDoc(doc(anon,'tenants/alex_beauty/settings/config')));
+  await assertFails(getDoc(doc(anon,'tenants/alex_beauty/settings/sms_reminders')));
+  await assertFails(getDoc(doc(owner,'tenants/alex_beauty/private_settings/sms_provider')));
+  await assertFails(setDoc(doc(owner,'tenants/alex_beauty/reminder_locks/a'),{status:'sent'}));
+  await assertFails(setDoc(doc(anon,'tenants/alex_beauty/appointments/new'),{status:'confirmed'}));
+});
+test('atomic booking rejects overlap, redacts public data, and cancels with capability only',async()=>{
+  let day=new Date();day.setUTCDate(day.getUTCDate()+7);while(day.getUTCDay()===6)day.setUTCDate(day.getUTCDate()+1);
+  const appointment={customer_name:'Private Name',customer_phone:'0546307114',service_id:1,appointment_date:day.toISOString().slice(0,10),start_time:'10:00',end_time:'11:00',status:'confirmed'};
+  const results=await Promise.all([api('/api/appointments/book',{appointment}),api('/api/appointments/book',{appointment:{...appointment,start_time:'10:30',end_time:'11:30'}})]);
+  assert.equal(results.filter(x=>x.success).length,1);const saved=results.find(x=>x.success)!;
+  let list=await api('/api/appointments/list',{});assert.equal(list.appointments.find((x:any)=>x.id===saved.id).customer_phone,'');
+  list=await api('/api/appointments/list',{capabilities:{[saved.id]:saved.accessToken}});assert.equal(list.appointments.find((x:any)=>x.id===saved.id).customer_name,'Private Name');
+  assert.equal((await api('/api/appointments/cancel',{appointmentId:saved.id,customerPhone:'0546307114'},userToken)).status,403);
+  assert.equal((await api('/api/appointments/cancel',{appointmentId:saved.id,accessToken:'wrong'})).status,403);
+  assert.equal((await api('/api/appointments/cancel',{appointmentId:saved.id,accessToken:saved.accessToken})).success,true);
+  assert.equal((await db.doc(`tenants/alex_beauty/appointments/${saved.id}`).get()).data()?.status,'cancelled');
+});
+test('concurrent lock claims allow exactly one winner; crash/unknown states never expire into resends',async()=>{
+  const ref=db.doc('tenants/alex_beauty/reminder_locks/concurrency');
+  const claims=await Promise.all(Array.from({length:8},()=>claimOnce(db,ref)));assert.equal(claims.filter(Boolean).length,1);
+  await ref.set({status:'unknown',claimedAt:'2020-01-01T00:00:00Z'});assert.equal(await claimOnce(db,ref),false);
+});
+test('copy receipts preserve newer target data and prevent resurrection after deletion',async()=>{
+  const target=db.doc('tenants/alex_beauty/appointments/migrate'),marker=db.doc('migration_receipts/test');
+  await target.set({value:'new'});await copyOnce(db,{value:'old'},target,marker);assert.equal((await target.get()).data()?.value,'new');await target.delete();await copyOnce(db,{value:'old'},target,marker);assert.equal((await target.get()).exists,false);
+});
+test('Alex migration imports settings, locks and customers without overwriting tenant data',async()=>{
+  await db.doc('appointments/legacy').set({status:'confirmed',appointment_date:'2026-01-01'});
+  await db.doc('customers/legacy').set({full_name:'Legacy'});
+  await db.doc('settings/sms_reminders').set({enabled:false,telnyxApiKey:'secret',morningReminderTime:'09:00'});
+  await db.doc('reminder_locks/legacy').set({status:'sent'});
+  await ensurePrimaryTenant();
+  assert.equal((await db.doc('tenants/alex_beauty/appointments/legacy').get()).exists,true);
+  assert.equal((await db.doc('tenants/alex_beauty/reminder_locks/legacy').get()).data()?.status,'sent');
+  assert.equal((await db.doc('tenants/alex_beauty/settings/sms_reminders').get()).data()?.telnyxApiKey,undefined);
+  assert.equal((await db.doc('tenants/alex_beauty/private_settings/sms_provider').get()).data()?.telnyxApiKey,'secret');
+  await db.doc('tenants/alex_beauty/appointments/legacy').delete();await ensurePrimaryTenant();assert.equal((await db.doc('tenants/alex_beauty/appointments/legacy').get()).exists,false);
+});
+test('SMS uses per-tenant settings; overlapping batch runs and lost responses do not send twice',async()=>{
+  const tomorrow=israelClock().tomorrowIso;
+  const settings={enabled:true,autoSendEnabled:true,notifyCustomer1DayBefore:true,eveningReminderTime:'20:00'};
+  await db.doc('tenants/other').set({status:'active',name:'Other',phone:'0522222222'});
+  await db.doc('tenants/other/settings/sms_reminders').set(settings);
+  await db.doc('tenants/other/private_settings/sms_provider').set({telnyxApiKey:'test',telnyxFrom:'OTHER',telnyxProfileId:'profile'});
+  await db.doc('tenants/other/appointments/one').set({status:'confirmed',customer_name:'Other customer',customer_phone:'0522222222',appointment_date:tomorrow,start_time:'10:00',end_time:'11:00',created_at:'2020-01-01T00:00:00Z'});
+  const count=providerCalls;await Promise.all([sendRemindersForDate(tomorrow,'1day','other'),sendRemindersForDate(tomorrow,'1day','other')]);assert.equal(providerCalls-count,1);
+  await db.doc('tenants/other/appointments/two').set({status:'confirmed',customer_name:'Next',customer_phone:'0533333333',appointment_date:tomorrow,start_time:'12:00',end_time:'13:00',created_at:'2020-01-01T00:00:00Z'});
+  providerFailure=true;await sendRemindersForDate(tomorrow,'1day','other');const afterFailure=providerCalls;await sendRemindersForDate(tomorrow,'1day','other');assert.equal(providerCalls,afterFailure);providerFailure=false;
+  assert.equal((await db.doc('tenants/other/reminder_locks/'+reminderKey('1day','0533333333',tomorrow)).get()).data()?.status,'unknown');
+  assert.equal((await api('/api/sms/logs',undefined,ownerToken)).logs.some((l:any)=>l.tenantId==='other'),false);
+});
+test('tenant create/domain collision and durable delete cannot silently overwrite another business',async()=>{
+  const t={tenantId:'new_tenant',name:'New',phone:'0501111111',customDomain:'new.example.com'};
+  assert.equal((await api('/api/super-admin/tenants',t,superToken,'new_tenant')).success,true);
+  assert.equal((await api('/api/super-admin/tenants',t,superToken,'new_tenant')).success,false);
+  assert.equal((await api('/api/super-admin/tenants',{...t,tenantId:'collision'},superToken,'collision')).success,false);
+  assert.equal((await db.doc('domains/new.example.com').get()).data()?.tenantId,'new_tenant');
+  assert.equal((await api('/api/super-admin/tenants/new_tenant',undefined,superToken,'new_tenant','DELETE')).success,true);
+  assert.equal((await db.doc('tenants/new_tenant').get()).data()?.status,'deleted');
+  assert.equal((await api('/api/tenant/current',undefined,undefined,'new_tenant')).success,false);
+  assert.equal((await db.doc('domains/new.example.com').get()).exists,false);
+});
+test('disabled owner rejected with previously issued token',async()=>{await getAuth().updateUser('owner',{disabled:true});assert.equal((await api('/api/admin/customers',undefined,ownerToken)).status,401);});
+test('disabled reminder switches and suspended tenants prevent dispatch',async()=>{
+  const date=israelClock().tomorrowIso;
+  await db.doc('tenants/off').set({status:'active'});
+  await db.doc('tenants/off/settings/sms_reminders').set({enabled:false,autoSendEnabled:true});
+  const before=providerCalls;assert.equal((await sendRemindersForDate(date,'1day','off')).skipped,true);
+  await db.doc('tenants/off/settings/sms_reminders').set({enabled:true,autoSendEnabled:false});assert.equal((await sendRemindersForDate(date,'1day','off')).skipped,true);
+  await db.doc('tenants/off').update({status:'suspended'});assert.equal((await sendRemindersForDate(date,'1day','off',{enabled:true,autoSendEnabled:true})).skipped,true);assert.equal(providerCalls,before);
+});
+test('past morning appointments and appointments created seconds after cutoff are skipped',async()=>{
+  await db.doc('tenants/cutoff').set({status:'active'});
+  await db.doc('tenants/cutoff/private_settings/sms_provider').set({telnyxApiKey:'test',telnyxFrom:'TEST',telnyxProfileId:'test'});
+  const date='2030-06-02';
+  await db.doc('tenants/cutoff/appointments/late').set({status:'confirmed',customer_name:'Late',customer_phone:'0549999999',appointment_date:date,start_time:'10:00',end_time:'11:00',created_at:'2030-06-01T20:00:30+03:00'});
+  const count=providerCalls;await sendRemindersForDate(date,'1day','cutoff',{enabled:true,autoSendEnabled:true,eveningReminderTime:'20:00'});assert.equal(providerCalls,count);
+  await db.doc('tenants/cutoff/appointments/old').set({status:'confirmed',customer_name:'Past',customer_phone:'0549999998',appointment_date:'2020-01-01',start_time:'10:00',end_time:'11:00'});
+  await sendRemindersForDate('2020-01-01','today','cutoff',{enabled:true,autoSendEnabled:true});assert.equal(providerCalls,count);
+});
+test('v16 migration marker prevents restoring absent previously imported appointments',async()=>{
+  await db.doc('tenants/alex_beauty').update({migratedAt:'2026-01-01'});
+  await db.doc('appointments/deleted_in_v16').set({status:'confirmed'});
+  await ensurePrimaryTenant();assert.equal((await db.doc('tenants/alex_beauty/appointments/deleted_in_v16').get()).exists,false);
+});
+test('owner account cannot demote super admin or assign another tenant owner',async()=>{
+  assert.equal((await api('/api/super-admin/tenants/other/owner-account',{email:'super@example.com',password:'Test12345!'},superToken,'other')).status,409);
+  assert.equal((await api('/api/super-admin/tenants/other/owner-account',{email:'owner@example.com',password:'Test12345!'},superToken,'other')).status,409);
+  assert.equal((await getAuth().getUser('super')).customClaims?.role,'super_admin');
+});
+test('settings reject invalid times and never return provider secrets',async()=>{
+  assert.equal((await api('/api/sms/settings',{settings:{morningReminderTime:'25:00'}},superToken)).status,400);
+  const result=await api('/api/sms/settings',{settings:{telnyxApiKey:'new-secret',telnyxFrom:'ALEX',telnyxProfileId:'profile',enabled:false}},superToken);
+  assert.equal(result.success,true);assert.equal(result.settings.telnyxApiKey,undefined);
+  assert.equal((await api('/api/sms/settings',undefined,superToken)).settings.telnyxApiKey,undefined);
+  assert.equal((await db.doc('tenants/alex_beauty/private_settings/sms_provider').get()).data()?.telnyxApiKey,'new-secret');
+});
+
+test('deleting a customer preserves appointments and listing does not recreate the customer',async()=>{
+  await db.doc('tenants/alex_beauty/customers/separate').set({full_name:'Separate',phone:'0548888888'});
+  await db.doc('tenants/alex_beauty/appointments/separate').set({customer_name:'Separate',customer_phone:'0548888888',status:'confirmed',appointment_date:'2030-06-02',start_time:'15:00',end_time:'16:00'});
+  assert.equal((await api('/api/admin/customers/separate',undefined,superToken,'alex_beauty','DELETE')).success,true);
+  assert.equal((await api('/api/admin/customers',undefined,superToken)).customers.some((c:any)=>c.full_name==='Separate'),false);
+  assert.equal((await db.doc('tenants/alex_beauty/appointments/separate').get()).exists,true);
+});
+test('built production server boots with named database and serves API plus SPA',async()=>{
+  const {spawn}=await import('node:child_process');
+  const child=spawn(process.execPath,['dist/server.cjs'],{env:{...process.env,NODE_ENV:'production',PORT:'43187',SMS_SCHEDULER_ENABLED:'false'},stdio:['ignore','pipe','pipe']});
+  let output='';child.stdout.on('data',x=>output+=x);child.stderr.on('data',x=>output+=x);
+  try {
+    let ready=false;
+    for(let i=0;i<100;i++){
+      if(child.exitCode!==null) throw new Error(output);
+      try {const r=await nativeFetch('http://127.0.0.1:43187/api/health');if(r.ok){ready=true;break;}}catch{}
+      await new Promise(r=>setTimeout(r,100));
+    }
+    assert.ok(ready,output);
+    const html=await nativeFetch('http://127.0.0.1:43187/');assert.equal(html.status,200);assert.match(await html.text(),/<div id="root">/);
+    const missing=await nativeFetch('http://127.0.0.1:43187/api/unknown');assert.equal(missing.status,404);assert.match(missing.headers.get('content-type')||'',/json/);
+  } finally {child.kill('SIGTERM');await new Promise<void>(r=>child.once('exit',()=>r()));}
+});

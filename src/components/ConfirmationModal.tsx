@@ -1,3 +1,4 @@
+import { useTenant } from '../context/TenantContext';
 import React, { useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import {
@@ -20,7 +21,7 @@ import {
   generateGoogleCalendarUrl,
   generateIcsFile,
 } from '../utils/dateUtils';
-import { SALON_INFO } from '../utils/storage';
+
 
 interface ConfirmationModalProps {
   appointment: Appointment | null;
@@ -33,6 +34,7 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   onClose,
   onBookAnother,
 }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   useEffect(() => {
     if (appointment) {
       try {

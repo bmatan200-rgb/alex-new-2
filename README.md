@@ -1,90 +1,127 @@
-# v14 — Named Firestore Database Fix
+# Alex Multi-Tenant — v17
 
-- Server Firebase Admin now connects to the same **named Firestore database** as the browser app (`firestoreDatabaseId` from `firebase-applet-config.json`).
-- Fixes Render runtime `5 NOT_FOUND` caused by Admin SDK silently targeting `(default)`.
-- `FIRESTORE_DATABASE_ID` is supported as an optional Render override, but is not required while the checked-in Firebase config is correct.
-- Startup logs now print the selected Firestore database ID so deployment can be verified without exposing credentials.
+גרסה מלאה לאחר סקירה רוחבית של השרת, צד הלקוח, Firebase, הרשאות, הגירת Alex ומנוע SMS.
+פירוט ממצאים, שינויים ומגבלות: [AUDIT-v17.md](AUDIT-v17.md).
 
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+## הרצה
 
-# Run and deploy your AI Studio app
+נדרש Node.js 22 ומעלה. לבדיקות האינטגרציה בלבד נדרש Java 17 ומעלה; מומלץ Java 21.
 
-This contains everything you need to run your app locally.
+```sh
+npm ci
+cp .env.example .env
+# מלאו את משתני הסביבה בקובץ .env
+npm run dev
+```
 
-View your app in AI Studio: https://ai.studio/apps/0ace37ff-f441-4c64-bdb6-3ba856e2147c
+לפרודקשן / Render:
 
-## Run Locally
+```sh
+npm ci
+npm run build
+NODE_ENV=production npm start
+```
 
-**Prerequisites:**  Node.js
+ב־Render: Build Command הוא `npm ci && npm run build`; Start Command הוא `npm start`;
+הגדירו `NODE_ENV=production`. השרת מכבד את `PORT` של Render. נקודת בריאות: `/api/health`.
+אין צורך במפתח Gemini. מפתחות Telnyx וחשבון השירות נשארים בשרת בלבד.
 
+## Firebase Admin ובסיס הנתונים
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+- `FIREBASE_SERVICE_ACCOUNT`: JSON של חשבון שירות, JSON כמחרוזת או Base64 של JSON.
+- אין fallback אוטומטי ל־ADC. תצורה חסרה/לא תקינה עוצרת את השרת.
+- `project_id` חייב להתאים ל־`projectId` בתוך `firebase-applet-config.json`.
+- גם השרת וגם הדפדפן משתמשים בבסיס הנתונים בעל השם:
+  `ai-studio-alex-0ace37ff-f441-4c64-bdb6-3ba856e2147c`.
+- אם מגדירים `FIRESTORE_DATABASE_ID`, הוא חייב להיות זהה לערך בקובץ התצורה.
+- `firebase.json` מצביע במפורש לבסיס הנתונים הזה לפריסת חוקים.
 
+## סדר פריסה חשוב
 
-## Multi-tenant data isolation
+1. גבו את Firestore לפני שדרוג. עצרו את כל מופעי v16 והשהו שליחת SMS במהלך המעבר.
+2. פרסו את הקוד עם `SMS_SCHEDULER_ENABLED=false`.
+3. פרסו את חוקי Firestore לפרויקט הנכון:
 
-Appointments and customers are now stored only under `/tenants/{tenantId}/...`.
-For an existing installation that still has legacy global `/appointments` and `/customers`, call the authenticated one-time endpoint `POST /api/admin/migrate-legacy-alex` before removing legacy collections. The migration copies (does not delete) legacy records into `alex_beauty`.
+```sh
+npx firebase deploy --only firestore --project gen-lang-client-0382531831
+```
 
-## Admin redesign v3
-- Replaced the legacy stacked appointments screen with a daily timeline workspace.
-- Free slots are clickable and open the existing booking flow with date/time prefilled.
-- Existing appointment actions remain available: call, SMS reminder, cancel, unblock.
-- Existing booking, block-time, SMS settings, service duration/price and customer directory modals are retained.
-- Legacy stacked calendar/list UI remains in source for compatibility but is no longer rendered.
+4. ודאו בלוג האתחול את הפרויקט ושם בסיס הנתונים; בדקו התחברות Super Admin ובעל עסק.
+5. בדקו את שירותי העסק, שעות הפעילות, התורים והלקוחות. ראו סעיף המיגרציה להלן.
+6. הפעילו `SMS_SCHEDULER_ENABLED=true` והפעילו מחדש **רק את גרסת v17**.
+7. בדיקת SMS חיה אחת מבוקרת צריכה להתבצע למספר שלכם, מתוך ממשק הניהול. הבדיקות המצורפות אינן שולחות SMS אמיתי.
 
+השדרוג חייב לכלול גם את חוקי Firestore. קוד הלקוח והחוקים הישנים אינם תואמים למודל הפרטיות החדש.
+יש צורך בשרת פועל בשעות התזכורת; טיימר בתוך Node אינו מעיר שרת ישן/כבוי.
 
-## v4
-- Added an explicit **שחרור תפיסה** button to blocked/seized slots in the redesigned daily admin calendar.
-- Releasing a seized slot uses the existing tenant-scoped cancellation flow and immediately returns the slot to availability.
+## התחברות והרשאות
 
-## v8 – Super Admin business editing
-- Removed the "קביעת תור" CTA from the new-business branding preview.
-- Added "עריכת עסק" to every tenant card in Super Admin.
-- Existing tenant profile, branding, cover, services and working hours can be loaded and updated.
-- Tenant ID is locked during editing to protect tenant data isolation.
-- Added GET/PUT Super Admin tenant endpoints and custom-domain remapping on edit.
+- מנהלים נכנסים עם Firebase Authentication, Email/Password.
+- `SUPER_ADMIN_EMAILS` הוא רשימת כתובות מופרדת בפסיקים. חשבון bootstrap חייב להיות בעל אימייל מאומת.
+  אפשר גם להקצות מראש custom claim של `role=super_admin` דרך Admin SDK בסביבה מורשית.
+- חשבונות בעלי עסקים נוצרים דרך Super Admin. השרת מקצה `role=business_admin`, `tenantId`
+  ושיוך בעלים בעסק וב־`adminUsers`.
+- חשבון Firebase רגיל, מספר טלפון או localStorage אינם מקנים הרשאות ניהול.
+- הטוקן נבדק עם ביטול/השבתה, והשרת בודק גם claims עדכניים ושיוך לעסק.
+- החלפת בעלים בין עסקים אינה נעשית אוטומטית; ניסיון לדרוס חשבון Super Admin או לשייך בעלים מעסק אחר נחסם.
+- מחיקת עסק היא השבתה מתמשכת (`status=deleted`), הסרת דומיינים והשבתת הבעלים. הנתונים נשמרים לשחזור.
 
-## v9 updates
-- Removed public customer-page footer links to Tenant Admin and Super Admin.
-- Added 15-minute and 20-minute treatment duration options to business creation/editing.
-- Added 15/20-minute quick presets in the admin treatment-duration settings and extended the duration slider down to 15 minutes.
+## מיגרציית Alex Beauty
 
+בעת האתחול יש העתקה מבוקרת מהאוספים הישנים לעסק `alex_beauty`.
+קבלות מיגרציה ב־`migration_receipts` מונעות העתקה חוזרת של רשומה שנמחקה אחרי השדרוג.
+הרשומות הישנות אינן נמחקות ורשומות קיימות ביעד אינן נדרסות.
+הגדרות ושעות מהשורש משמשות רק כאשר אין הגדרה קיימת ביעד.
 
-## v10 – Tenant Cover persistence fix
-- Fixed Super Admin cover uploads that could exceed the Express JSON request limit.
-- Cover images are now compressed to a Firestore-safe size before save.
-- API JSON limit increased to safely accept the compressed tenant cover payload.
-- Public tenant app continues to read `coverImage` only from its own tenant document.
+אם מסמך העסק מכיל `migratedAt` מ־v16 ורשומת תור קיימת רק במקור, אין דרך לדעת אם נמחקה בכוונה
+או טרם הועתקה. v17 משאיר אותה במקור ומדפיס אזהרת Migration. לאחר בדיקת גיבוי והשוואת הרשומות בלבד,
+אפשר להגדיר זמנית `IMPORT_MISSING_LEGACY_APPOINTMENTS=true`, להפעיל מחדש ואז להסיר את המשתנה.
+אין להפעיל אפשרות זו אוטומטית: היא יכולה להחזיר רשומות שנמחקו ב־v16.
 
-## v11 — Firebase roles / business-owner login
+נעילות SMS ישנות מועתקות ונבדקות. לוגים מהשורש מועברים רק כשניתן לשייך אותם לעסק בוודאות
+באמצעות `tenantId` או מזהה Alex מוכר. לוגים ללא שיוך נשארים פרטיים בשורש.
+מפתחות Telnyx מועברים ל־`tenants/{tenantId}/private_settings/sms_provider`, ונמחקים ממסמכי התצורה הנקראים בלקוח.
 
-The server now distinguishes `super_admin` from `business_admin` using Firebase custom claims. Set `SUPER_ADMIN_EMAILS` in Render to the Firebase Authentication email of the platform owner (comma-separated if needed). On the first login, the server bootstraps that account with the `super_admin` claim. Business-owner accounts are created from Super Admin with `role=business_admin` and an immutable `tenantId` claim. The included `firestore.rules` must be deployed to Firebase for database-level tenant isolation.
+## לקוחות ותורים
 
-## v12 – Multi-tenant production fixes
-- Server Firestore access now uses Firebase Admin SDK (FIREBASE_SERVICE_ACCOUNT) rather than the browser SDK.
-- Alex Beauty is automatically bootstrapped as the primary real tenant and legacy appointments/customers are copied idempotently without deleting originals.
-- Removed fake/demo tenant records from the Super Admin API.
-- Super Admin tenant loading now force-refreshes the Firebase token and displays API errors instead of silently showing 0.
-- Removed insecure legacy admin-header/session-secret bypasses; admin APIs require a valid Firebase ID token.
-- SMS settings/reminder dispatch are tenant-aware while the Telnyx sender credentials remain central.
-- Reminder locks are tenant-scoped.
-- Scheduled reminders skip appointments created after that day's configured reminder cutoff, preventing an appointment created after 20:00 from immediately receiving the 20:00 reminder.
-- Existing products/invoices Firestore rules are preserved in firestore.rules.
+- הזמנה נשמרת בעסק המתאים בטרנזקציה. נעילה יומית מונעת שתי הזמנות חופפות, גם עם שעות התחלה שונות.
+- הלקוח הציבורי רואה זמינות ללא שמות, טלפונים או הערות של אחרים.
+- לכל הזמנה חדשה נוצר סוד גישה אקראי הנשמר בדפדפן שבו נקבעה. השרת שומר רק hash.
+- צפייה בפרטי התור וביטול עצמי דורשים את הסוד הזה. מספר טלפון בלבד אינו אימות.
+- לתורים ישנים או ממכשיר אחר יש לפנות למנהלת. אימות SMS/OTP ללקוחות אינו כלול בגרסה הזו.
+- ביטול יוצר רשומת `cancelled` ומשחרר את הזמן; רשומות הביטול נשמרות להגנה מפני שחזור שגוי.
+- מחיקת לקוח אינה מוחקת תורים, וטעינת ספר הלקוחות אינה יוצרת אותו מחדש מתוך תורים.
+  הזמנה חדשה או פעולה מפורשת של מנהלת יכולות ליצור שוב רשומת לקוח.
+- רשימת התורים מתרעננת דרך API כל 10 שניות. לאחר הזמנה או ביטול הממשק מתעדכן מיד.
 
-## v15 – Primary tenant bootstrap fix
-- Registers the real legacy Alex Beauty business (`alex_beauty`) during server startup, before traffic is accepted.
-- Idempotently copies missing legacy root appointments/customers into the Alex tenant; source documents are never deleted.
-- Super Admin waits for Firebase Auth restoration before requesting the protected tenant list.
-- Tenant API derives live appointment/customer counts per tenant.
-- Super Admin now surfaces API/auth failures instead of silently showing a misleading zero-business state.
+## SMS
 
-## v16 hotfix
-- Fixed Firebase Admin DocumentSnapshot API usage on the server: `exists` is a boolean property, not `exists()`.
-- Applied consistently to tenant bootstrap, SMS settings, domain resolution, tenant APIs, migration checks, and server-side document reads.
+- תזמון אחד לכל העסקים, לפי `Asia/Jerusalem`, כל 30 שניות וגם לאחר האתחול.
+- מכבד `enabled`, `autoSendEnabled`, סוג תזכורת וסטטוס עסק. עסק חדש ללא הגדרות SMS מתחיל כבוי.
+- כל ריצה קוראת Firestore. אין מקור גיבוי של תורים מזיכרון הדפדפן או מתורים שנמחקו.
+- תזכורת בוקר לא נשלחת לתור שכבר עבר. תור שנוצר אחרי שעת הסבב, גם באותה דקה, אינו נכנס לסבב.
+- נעילה לפי עסק + מספר מנורמל + תאריך + סוג תזכורת מונעת כפילות עקב שינוי סדר/מזהי תורים.
+- תגובת ספק מוצלחת פירושה קבלה לתור השליחה; הלוג מסומן `queued`. אין כאן אימות מסירה למכשיר.
+- אין הבטחת exactly-once בין Firestore וספק חיצוני. במקרה של כשל או תוצאה לא ודאית, הנעילה נשמרת
+  כ־`failed`/`unknown` או `in_progress`. היא אינה נפתחת אוטומטית לאחר 20 דקות.
+  לפני ניסיון חוזר יש להשוות מול Telnyx, לוודא שלא נשלחה הודעה, ורק אז לטפל בנעילה בהרשאת שרת.
+  הבחירה הזו מונעת ניסיונות אוטומטיים כפולים אך עלולה להשאיר הודעה שלא נשלחה עד לבדיקת מנהל.
+- הודעה ידנית זהה לאותו מספר באותו יום חסומה משליחה חוזרת. גם בדיקות כפולות מוחזרות כ־409.
+- ברירת המחדל: משתני Telnyx משותפים זמינים רק ל־Alex. לעסק אחר יש להגדיר private_settings,
+  או לבחור במפורש `ALLOW_SHARED_SMS_PROVIDER=true` כדי להשתמש בספק המרכזי לכל העסקים.
+- ספקי WhatsApp ישירים מתוך הדפדפן אינם מופעלים; שליחה אוטומטית עוברת בשרת Telnyx.
+
+## בדיקות
+
+```sh
+npm run lint
+npm test
+npm run build
+npm run test:integration
+npm audit --omit=dev
+```
+
+`test:integration` מפעיל אמולטורי Auth ו־Firestore מקומיים. מזהה הפרויקט תואם לתצורה כדי לבדוק את
+בחירת בסיס הנתונים בפועל, אך הטסטים מחייבים כתובות אמולטור ומסרבים לפעול ללא שתיהן.
+קריאות Telnyx מוחלפות בספק מדומה. בדיקת השרת הבנוי דורשת פורט מקומי 43187 פנוי.
+לפני בדיקת האינטגרציה יש להריץ build.

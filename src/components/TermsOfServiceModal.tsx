@@ -1,6 +1,7 @@
+import { useTenant } from '../context/TenantContext';
 import React from 'react';
 import { X, ShieldCheck, FileText, CheckCircle } from 'lucide-react';
-import { SALON_INFO } from '../utils/storage';
+
 
 interface TermsOfServiceModalProps {
   isOpen: boolean;
@@ -13,6 +14,7 @@ export const TermsOfServiceModal: React.FC<TermsOfServiceModalProps> = ({
   onClose,
   onAccept,
 }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   if (!isOpen) return null;
 
   const handleAcceptClick = () => {

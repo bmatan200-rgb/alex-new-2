@@ -29,7 +29,7 @@ import {
   deleteCustomer,
   auth,
 } from '../lib/firebase';
-import { SALON_INFO } from '../utils/storage';
+
 import { toIsraeliDateString } from '../utils/dateUtils';
 import { useTenant } from '../context/TenantContext';
 
@@ -44,6 +44,7 @@ export const CustomerDirectory: React.FC<CustomerDirectoryProps> = ({
   onOpenManualBookingForCustomer,
   onShowToast,
 }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   const { tenantId } = useTenant();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -65,7 +66,7 @@ export const CustomerDirectory: React.FC<CustomerDirectoryProps> = ({
     setIsLoading(true);
     try {
       const data = await fetchAdminCustomers(undefined, tenantId);
-      if (data && data.length > 0) {
+      if (Array.isArray(data)) {
         setCustomers(data);
       }
     } catch (err: any) {
@@ -83,11 +84,11 @@ export const CustomerDirectory: React.FC<CustomerDirectoryProps> = ({
     try {
       unsubscribe = subscribeCustomers(
         (updatedList) => {
-          if (updatedList && updatedList.length > 0) {
+          if (Array.isArray(updatedList)) {
             setCustomers((prev) => {
               // Merge with existing calculated appointments data
               const map = new Map<string, Customer>();
-              prev.forEach((c) => map.set(c.phone.replace(/\D/g, ''), c));
+
               updatedList.forEach((c) => {
                 const clean = c.phone.replace(/\D/g, '');
                 const existing = map.get(clean);
@@ -161,22 +162,6 @@ export const CustomerDirectory: React.FC<CustomerDirectoryProps> = ({
         totalAppointments: apptInfo ? apptInfo.count : (c.totalAppointments || 0),
         lastAppointmentDate: apptInfo ? apptInfo.lastDate : (c.lastAppointmentDate || ''),
       });
-    });
-
-    // Auto-discover any clients in appointments not yet in customers list
-    Object.entries(apptsMap).forEach(([phone, info]) => {
-      if (!combinedMap.has(phone)) {
-        combinedMap.set(phone, {
-          id: `cust_${phone}`,
-          full_name: info.name || 'לקוח/ה',
-          phone,
-          created_at: info.lastDate ? `${info.lastDate}T09:00:00.000Z` : new Date().toISOString(),
-          last_login_at: new Date().toISOString(),
-          notes: '',
-          totalAppointments: info.count,
-          lastAppointmentDate: info.lastDate,
-        });
-      }
     });
 
     return Array.from(combinedMap.values());

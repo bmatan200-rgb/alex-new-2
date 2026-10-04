@@ -69,55 +69,29 @@ export function getTenantSettingsDocRef(tenantId = 'alex_beauty', docId = 'confi
 /**
  * Real-time listener for appointments (Multi-Tenant aware)
  */
-export function subscribeAppointments(
-  onUpdate: (appointments: Appointment[]) => void,
-  onError?: (error: Error) => void,
-  tenantId = 'alex_beauty'
-): () => void {
-  try {
-    const tenantCol = getTenantAppointmentsCol(tenantId);
-    const q = query(tenantCol, orderBy('appointment_date', 'asc'));
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const seenIds = new Set<string>();
-        const list: Appointment[] = [];
-        for (const docSnap of snapshot.docs) {
-          const id = docSnap.id;
-          if (seenIds.has(id)) continue;
-          seenIds.add(id);
-          const data = docSnap.data();
-          if (data.status === 'cancelled') continue;
-          list.push({
-            id,
-            customer_name: data.customer_name || '',
-            customer_phone: data.customer_phone || '',
-            service_id: data.service_id || 1,
-            service_name: data.service_name || "לק ג'ל",
-            price: data.price || 150,
-            appointment_date: data.appointment_date,
-            start_time: data.start_time,
-            end_time: data.end_time,
-            status: data.status || 'confirmed',
-            notes: data.notes || '',
-            created_at: data.created_at || new Date().toISOString(),
-          });
-        }
-        onUpdate(deduplicateAppointments(list));
-      },
-      (err) => {
-        console.warn(`Firestore subscription error for tenant ${tenantId}:`, err);
-        if (onError) onError(err);
-      }
-    );
-
-    return unsubscribe;
-  } catch (err) {
-    console.error('Failed to set up Firestore listener:', err);
-    if (onError && err instanceof Error) onError(err);
-    return () => {};
-  }
+export async function tenantApi(path: string, body?: any, tenantId = getCurrentTenantId()) {
+  await auth.authStateReady();
+  const token=auth.currentUser ? await auth.currentUser.getIdToken() : '';
+  const res=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','x-tenant-id':tenantId,...(token?{Authorization:`Bearer ${token}`}:{})},...(body===undefined?{}:{body:JSON.stringify({...body,tenantId})})});
+  const data=await res.json();
+  if(!res.ok || !data.success) throw new Error(data.error || 'הפעולה נכשלה');
+  return data;
+}
+function capabilities(tenantId:string):Record<string,string> {
+  try {return JSON.parse(localStorage.getItem('booking_access__'+tenantId)||'{}');}catch{return {};}
+}
+export function subscribeAppointments(onUpdate:(appointments:Appointment[])=>void,onError?:(error:Error)=>void,tenantId=getCurrentTenantId()):()=>void {
+  let active=true, running=false;
+  const poll=async()=>{
+    if(running) return;
+    running=true;
+    try {const data=await tenantApi('/api/appointments/list',{capabilities:capabilities(tenantId)},tenantId);if(active) onUpdate(data.appointments);}
+    catch(err){if(active){onUpdate([]);onError?.(err as Error);}} finally {running=false;}
+  };
+  void poll();
+  const timer=setInterval(poll,10000);
+  const unsub=onAuthStateChanged(auth,()=>{void poll();});
+  return ()=>{active=false;clearInterval(timer);unsub();};
 }
 
 /**
@@ -134,125 +108,18 @@ export function slotDocId(date: string, startTime: string): string {
   return `appt_${date}_${startTime.replace(':', '')}`;
 }
 
-export async function addAppointmentToFirestore(
-  appointment: Omit<Appointment, 'id'> | Appointment,
-  tenantId = 'alex_beauty'
-): Promise<string> {
-  const isNew = !('id' in appointment) || !appointment.id;
-
-  const docId = isNew
-    ? slotDocId(appointment.appointment_date, appointment.start_time)
-    : String((appointment as Appointment).id);
-
-  const dataToSave = {
-    customer_name: appointment.customer_name,
-    customer_phone: appointment.customer_phone,
-    service_id: appointment.service_id ?? 1,
-    service_name: appointment.service_name || "לק ג'ל",
-    price: appointment.price ?? 150,
-    appointment_date: appointment.appointment_date,
-    start_time: appointment.start_time,
-    end_time: appointment.end_time,
-    status: appointment.status || 'confirmed',
-    notes: appointment.notes || '',
-    created_at: appointment.created_at || new Date().toISOString(),
-    tenantId,
-  };
-
-  const docRef = getTenantAppointmentDocRef(tenantId, docId);
-  await runTransaction(db, async (transaction) => {
-    if (isNew) {
-      const snap = await transaction.get(docRef);
-      if (snap.exists() && snap.data().status !== 'cancelled') {
-        const snapPhone = (snap.data().customer_phone || '').replace(/\D/g, '');
-        const newPhone = (appointment.customer_phone || '').replace(/\D/g, '');
-        if (snapPhone && newPhone && snapPhone !== newPhone) {
-          throw new SlotTakenError();
-        }
-      }
-    }
-    transaction.set(docRef, dataToSave, { merge: true });
-  });
-
-  return docId;
+export async function addAppointmentToFirestore(appointment:Omit<Appointment,'id'>|Appointment,tenantId=getCurrentTenantId()):Promise<string> {
+  try {
+    const data=await tenantApi('/api/appointments/book',{appointment,requestId:crypto.randomUUID()},tenantId);
+    localStorage.setItem('booking_access__'+tenantId,JSON.stringify({...capabilities(tenantId),[data.id]:data.accessToken}));
+    return data.id;
+  }catch(err:any){if(err.message.includes('השעה הזו כבר נתפסה')) throw new SlotTakenError();throw err;}
 }
-
-/**
- * Cancel appointment in Firestore (Multi-Tenant aware)
- */
-export async function cancelAppointmentInFirestore(
-  appointmentId: string | number,
-  customerPhone?: string,
-  appointmentDate?: string,
-  startTime?: string,
-  tenantId = 'alex_beauty'
-): Promise<void> {
-  const idStr = String(appointmentId);
-  const session = getStoredAdminSession() || getStoredUserSession();
-  const token = auth.currentUser
-    ? await auth.currentUser.getIdToken()
-    : (localStorage.getItem('alex_admin_session_token') || '');
-
-  try {
-    await fetch('/api/appointments/cancel', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({
-        appointmentId: idStr,
-        customerPhone,
-        appointmentDate,
-        startTime,
-        tenantId,
-      }),
-    });
-  } catch (err) {
-    console.warn('Server cancel attempt warning, using Firestore direct fallback:', err);
-  }
-
-  // Delete from /tenants/{tenantId}/appointments/{idStr}
-  try {
-    await deleteDoc(getTenantAppointmentDocRef(tenantId, idStr));
-  } catch {
-    try {
-      await setDoc(getTenantAppointmentDocRef(tenantId, idStr), { status: 'cancelled' }, { merge: true });
-    } catch {}
-  }
-
-  if (appointmentDate && startTime) {
-    const sDocId = slotDocId(appointmentDate, startTime);
-    try {
-      await deleteDoc(getTenantAppointmentDocRef(tenantId, sDocId));
-    } catch {}
-  }
+export async function cancelAppointmentInFirestore(appointmentId:string|number,_phone?:string,_date?:string,_time?:string,tenantId=getCurrentTenantId()):Promise<void> {
+  await tenantApi('/api/appointments/cancel',{appointmentId:String(appointmentId),accessToken:capabilities(tenantId)[String(appointmentId)]},tenantId);
 }
-
-/**
- * Permanently delete appointment in Firestore (Multi-Tenant aware)
- */
-export async function deleteAppointmentInFirestore(
-  appointmentId: string | number,
-  appointmentDate?: string,
-  startTime?: string,
-  tenantId = 'alex_beauty'
-): Promise<void> {
-  const idStr = String(appointmentId);
-
-  try {
-    await deleteDoc(getTenantAppointmentDocRef(tenantId, idStr));
-  } catch (err) {
-    console.warn('Direct Firestore delete failed for idStr:', err);
-  }
-
-
-  if (appointmentDate && startTime) {
-    const sDocId = slotDocId(appointmentDate, startTime);
-    try {
-      await deleteDoc(getTenantAppointmentDocRef(tenantId, sDocId));
-    } catch {}
-  }
+export async function deleteAppointmentInFirestore(appointmentId:string|number,_date?:string,_time?:string,tenantId=getCurrentTenantId()):Promise<void> {
+  await tenantApi('/api/admin/appointments/delete',{appointmentId:String(appointmentId)},tenantId);
 }
 
 /**
@@ -267,7 +134,7 @@ export function subscribeServices(
     const unsubscribe = onSnapshot(tenantConfigRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
-        if (data.services && Array.isArray(data.services) && data.services.length > 0) {
+        if (Array.isArray(data.services)) {
           onUpdate(data.services);
           return;
         }
@@ -283,40 +150,8 @@ export function subscribeServices(
 /**
  * Save services configuration to Firestore (Multi-Tenant aware)
  */
-export async function saveServicesToFirestore(
-  services: Service[],
-  tenantId = 'alex_beauty'
-): Promise<void> {
-  const session = getStoredAdminSession() || getStoredUserSession();
-  const token = auth.currentUser
-    ? await auth.currentUser.getIdToken()
-    : (localStorage.getItem('alex_admin_session_token') || '');
-
-  try {
-    await fetch('/api/admin/settings/services', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        services,
-        tenantId,
-      }),
-    });
-  } catch (err) {
-    console.warn('Server save services warning:', err);
-  }
-
-  // Direct Firestore Write to /tenants/{tenantId}/settings/config
-  try {
-    await setDoc(getTenantSettingsDocRef(tenantId, 'config'), {
-      services,
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
-  } catch (err) {
-    console.warn('Error direct saving services to Firestore:', err);
-  }
+export async function saveServicesToFirestore(services:Service[],tenantId=getCurrentTenantId()):Promise<void> {
+  await tenantApi('/api/admin/settings/services',{services},tenantId);
 }
 
 /**
@@ -332,12 +167,12 @@ export function subscribeScheduleSettings(
       if (snapshot.exists()) {
         const data = snapshot.data();
         const schedule = data.scheduleSettings || data;
-        if (schedule && schedule.businessOpen && schedule.businessClose) {
+        if (schedule && typeof schedule.businessOpen === "string" && typeof schedule.businessClose === "string") {
           onUpdate({
             businessOpen: schedule.businessOpen,
             businessClose: schedule.businessClose,
-            fridayOpen: schedule.fridayOpen || '09:20',
-            fridayClose: schedule.fridayClose || '15:00',
+            fridayOpen: schedule.fridayOpen ?? '',
+            fridayClose: schedule.fridayClose ?? '',
             durationMinutes: Number(schedule.durationMinutes) || 90,
           });
           return;
@@ -354,67 +189,13 @@ export function subscribeScheduleSettings(
 /**
  * Save salon schedule / working hours settings to Firestore (Multi-Tenant aware)
  */
-export async function saveScheduleSettingsToFirestore(
-  schedule: ScheduleSettings | Record<string, any>,
-  tenantId = 'alex_beauty'
-): Promise<void> {
-  const session = getStoredAdminSession() || getStoredUserSession();
-  const token = auth.currentUser
-    ? await auth.currentUser.getIdToken()
-    : (localStorage.getItem('alex_admin_session_token') || '');
-
-  try {
-    await fetch('/api/admin/settings/schedule', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        schedule,
-        tenantId,
-      }),
-    });
-  } catch (err) {
-    console.warn('Server save schedule warning:', err);
-  }
-
-  try {
-    await setDoc(getTenantSettingsDocRef(tenantId, 'config'), {
-      scheduleSettings: {
-        businessOpen: schedule.businessOpen,
-        businessClose: schedule.businessClose,
-        fridayOpen: schedule.fridayOpen || '09:20',
-        fridayClose: schedule.fridayClose || '15:00',
-        durationMinutes: Number(schedule.durationMinutes) || 90,
-      },
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
-  } catch (err) {
-    console.warn('Error saving schedule to Firestore:', err);
-  }
+export async function saveScheduleSettingsToFirestore(schedule:ScheduleSettings|Record<string,any>,tenantId=getCurrentTenantId()):Promise<void> {
+  await tenantApi('/api/admin/settings/schedule',{schedule},tenantId);
 }
 
 const ADMIN_USERS_COLLECTION = 'admin_users';
 
-export const DEFAULT_ADMIN_ACCOUNTS: AdminUser[] = [
-  {
-    id: 'admin_alex',
-    username: 'אלכסנדרה ביטון',
-    phone: '054-6307114',
-    email: 'alexbiton200@gmail.com', // <-- עדכון כאן
-    role: 'owner',
-    createdAt: '2026-01-01T00:00:00.000Z',
-  },
-  {
-    id: 'admin_matan',
-    username: 'מתן ביטון',
-    phone: '054-3111408',
-    email: 'bmatan200@gmail.com',
-    role: 'admin',
-    createdAt: '2026-01-01T00:00:00.000Z',
-  },
-];
+export const DEFAULT_ADMIN_ACCOUNTS: AdminUser[] = [];
 
 /**
  * Fetch list of registered admin accounts securely from server (Safe metadata without passwords)
@@ -489,7 +270,7 @@ export async function verifyAdminLoginInFirestore(credentials: {
   token?: string;
 }> {
   const email = (credentials.email || credentials.usernameOrEmailOrPhone || '').trim().toLowerCase();
-  const password = (credentials.password || '').trim();
+  const password = credentials.password || '';
 
   if (!email || !email.includes('@')) {
     return { success: false, error: 'יש להזין כתובת אימייל תקינה' };
@@ -501,6 +282,7 @@ export async function verifyAdminLoginInFirestore(credentials: {
   try {
     const cred = await signInWithEmailAndPassword(auth, email, password);
     const idToken = await cred.user.getIdToken();
+    try { await tenantApi('/api/auth/me'); } catch(err) {await signOut(auth);throw err;}
 
     return {
       success: true,
@@ -557,58 +339,11 @@ export function getTenantCustomerDocRef(tenantId: string, customerId: string) {
  * שמירה או עדכון של לקוח ב-Firestore ובשרת.
  * מתבצע בעת הרשמה/כניסת לקוח או קביעת תור חדש.
  */
-export async function upsertCustomerToFirestore(data: {
-  full_name: string;
-  phone: string;
-  notes?: string;
-}, tenantId = getCurrentTenantId()): Promise<void> {
-  const cleanPhone = (data.phone || '').replace(/\D/g, '');
-  if (!cleanPhone || cleanPhone.length < 7) return;
-
-  const docId = `cust_${cleanPhone}`;
-  const nowIso = new Date().toISOString();
-  const trimmedName = (data.full_name || '').trim();
-
-  // 1. שמירה ישירה ל-Firestore
-  try {
-    const docRef = getTenantCustomerDocRef(tenantId, docId);
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      const existing = snap.data();
-      await updateDoc(docRef, {
-        full_name: trimmedName || existing.full_name || 'לקוח/ה',
-        last_login_at: nowIso,
-        ...(data.notes !== undefined ? { notes: data.notes } : {}),
-      });
-    } else {
-      await setDoc(docRef, {
-        full_name: trimmedName || 'לקוח/ה',
-        phone: data.phone.trim(),
-        created_at: nowIso,
-        last_login_at: nowIso,
-        notes: data.notes || '',
-      });
-    }
-  } catch (directErr) {
-    // במידה ואין הרשאת כתיבה ישירה או שגיאת רשת, נבצע דרך השרת
-    console.warn('[Customer Persistence] Firestore direct write error:', directErr);
-  }
-
-  // 2. שמירה בשרת לגיבוי מלא
-  try {
-    await fetch('/api/customers/upsert', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tenantId,
-        full_name: trimmedName,
-        phone: data.phone.trim(),
-        notes: data.notes,
-      }),
-    });
-  } catch (apiErr) {
-    console.warn('[Customer Persistence] Server API upsert error:', apiErr);
-  }
+export async function upsertCustomerToFirestore(data:{full_name:string;phone:string;notes?:string},tenantId=getCurrentTenantId()):Promise<void> {
+  // Anonymous registration is a local customer profile, not verified identity.
+  // Server derives the customer directory from successful bookings.
+  if(!auth.currentUser) return;
+  await tenantApi('/api/customers/upsert',data,tenantId);
 }
 
 /**

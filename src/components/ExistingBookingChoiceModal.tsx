@@ -1,8 +1,9 @@
+import { useTenant } from '../context/TenantContext';
 import React from 'react';
 import { Calendar, Trash2, CalendarPlus, X, AlertCircle, Clock, Sparkles, Phone, MessageSquare } from 'lucide-react';
 import { Appointment } from '../types';
 import { toIsraeliDateString } from '../utils/dateUtils';
-import { SALON_INFO } from '../utils/storage';
+
 
 interface ExistingBookingChoiceModalProps {
   isOpen: boolean;
@@ -19,6 +20,7 @@ export const ExistingBookingChoiceModal: React.FC<ExistingBookingChoiceModalProp
   onBookAnother,
   onCancelExisting,
 }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   if (!isOpen || existingAppointments.length === 0) return null;
 
   const count = existingAppointments.length;

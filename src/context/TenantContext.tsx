@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -79,90 +79,29 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [scheduleSettings, setScheduleSettings] = useState<ScheduleSettings>(DEFAULT_SCHEDULE_SETTINGS);
   const [loading, setLoading] = useState<boolean>(true);
 
+  const [loadError,setLoadError]=useState('');
+  const generation=useRef(0);
   const fetchTenantData = useCallback(async () => {
-    const queryTenant = getActiveQueryTenant();
-    const targetTenantId = queryTenant || (typeof window !== 'undefined' ? localStorage.getItem('active_tenant_id_v1') : '') || 'alex_beauty';
-
+    const current=++generation.current;
+    setLoading(true); setLoadError(''); setServices([]);
+    setScheduleSettings({businessOpen:'',businessClose:'',fridayOpen:'',fridayClose:'',durationMinutes:60});
     try {
-      setLoading(true);
-
-      // 1. First fetch directly from Firestore if available
-      try {
-        const tDocRef = doc(db, 'tenants', targetTenantId);
-        const tSnap = await getDoc(tDocRef);
-        if (tSnap.exists()) {
-          const tData = tSnap.data();
-          setTenant({
-            id: tSnap.id,
-            tenantSlug: tData.tenantSlug || tSnap.id,
-            name: tData.name || tSnap.id,
-            tagline: tData.tagline || 'סטודיו לטיפוח ויופי',
-            ownerName: tData.ownerName || tData.name || 'מנהלת סטודיו',
-            phone: tData.phone || '054-0000000',
-            email: tData.email || '',
-            address: tData.address || '',
-            city: tData.city || '',
-            primaryColor: tData.primaryColor || '#9333ea',
-            secondaryColor: tData.secondaryColor || '#c4b5fd',
-            coverImage: tData.coverImage || '',
-            status: tData.status || 'active',
-            plan: tData.plan || 'pro',
-            createdAt: tData.createdAt || '2024-01-01',
-            customDomain: tData.customDomain || '',
-            isPrimary: tSnap.id === 'alex_beauty',
-          });
-        }
-
-        const cDocRef = doc(db, 'tenants', targetTenantId, 'settings', 'config');
-        const cSnap = await getDoc(cDocRef);
-        if (cSnap.exists()) {
-          const cData = cSnap.data();
-          if (cData.services && Array.isArray(cData.services) && cData.services.length > 0) {
-            setServices(cData.services);
-          }
-          if (cData.scheduleSettings) {
-            setScheduleSettings(cData.scheduleSettings);
-          }
-        }
-      } catch (fErr) {
-        console.warn(`[TenantContext] Firestore direct read note for ${targetTenantId}:`, fErr);
-      }
-
-      // 2. Fetch from Express endpoint /api/tenant/current
-      const endpoint = queryTenant
-        ? `/api/tenant/current?tenant=${encodeURIComponent(queryTenant)}`
-        : '/api/tenant/current';
-
-      const res = await fetch(endpoint);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.tenant) {
-          setTenant((prev) => ({
-            ...prev,
-            ...data.tenant,
-            id: data.tenant.id || targetTenantId,
-            tenantSlug: data.tenant.tenantSlug || data.tenant.id || targetTenantId,
-          }));
-
-          if (data.config?.services && Array.isArray(data.config.services) && data.config.services.length > 0) {
-            setServices(data.config.services);
-          }
-          if (data.config?.scheduleSettings) {
-            setScheduleSettings(data.config.scheduleSettings);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[TenantContext] Warning loading tenant from server:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [getActiveQueryTenant]);
-
-  // Re-fetch whenever location search query or path changes
-  useEffect(() => {
-    fetchTenantData();
-  }, [location.search, fetchTenantData]);
+      const q=getActiveQueryTenant();
+      const res=await fetch('/api/tenant/current'+(q?'?tenant='+encodeURIComponent(q):''));
+      const data=await res.json();
+      if(!res.ok || !data.success) throw new Error(data.error || 'העסק לא נמצא או אינו פעיל');
+      if(current!==generation.current) return;
+      localStorage.setItem('active_tenant_id_v1',data.tenant.id);
+      const p=data.tenant;
+      const digits=String(p.phone||'').replace(/\D/g,'');
+      localStorage.setItem('tenant_profile__'+p.id,JSON.stringify({...p,whatsappNumber:digits.startsWith('0')?'972'+digits.slice(1):digits,openingHours:[]}));
+      setTenant(data.tenant);
+      setServices(data.config.services || []);
+      setScheduleSettings(data.config.scheduleSettings);
+    } catch(err:any) {if(current===generation.current)setLoadError(err.message);}
+    finally {if(current===generation.current)setLoading(false);}
+  },[getActiveQueryTenant]);
+  useEffect(()=>{void fetchTenantData();return ()=>{generation.current++;};},[fetchTenantData]);
 
   // Apply tenant branding colors dynamically to CSS custom variables
   useEffect(() => {
@@ -198,11 +137,9 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     setScheduleSettings(newSettings);
   };
 
-  const effectiveTenantId = activeQuery || tenant.id || 'alex_beauty';
-
-  useEffect(() => {
-    try { localStorage.setItem('active_tenant_id_v1', effectiveTenantId); } catch {}
-  }, [effectiveTenantId]);
+  const effectiveTenantId = tenant.id;
+  if(loading) return <div dir="rtl" className="p-12 text-center">טוען את העסק…</div>;
+  if(loadError) return <div dir="rtl" className="p-12 text-center"><p>{loadError}</p><button onClick={fetchTenantData}>ניסיון נוסף</button></div>;
 
   return (
     <TenantContext.Provider

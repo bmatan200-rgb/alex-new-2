@@ -9,7 +9,7 @@ import {
   Check,
 } from 'lucide-react';
 import { UserSession } from '../types';
-import { SALON_INFO } from '../utils/storage';
+
 import { upsertCustomerToFirestore } from '../lib/firebase';
 import { TermsOfServiceModal } from './TermsOfServiceModal';
 import { SignaturePad } from './SignaturePad';
@@ -28,6 +28,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onLogin,
   canDismiss = false,
 }) => {
+  const { salonInfo: SALON_INFO } = useTenant();
   const { tenantId } = useTenant();
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');

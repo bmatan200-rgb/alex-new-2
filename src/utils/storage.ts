@@ -3,18 +3,8 @@ import { toISODateString, deduplicateAppointments } from './dateUtils';
 
 export const ADMIN_PHONE_RAW = '0546307114';
 
-export function isAdminPhone(phone: string): boolean {
-  if (!phone) return false;
-  const digits = phone.replace(/\D/g, '');
-  return (
-    digits === '0546307114' ||
-    digits === '972546307114' ||
-    digits.endsWith('546307114') ||
-    digits === '0543111408' ||
-    digits === '972543111408' ||
-    digits.endsWith('543111408')
-  );
-}
+// A phone number is never proof of an administrator role.
+export function isAdminPhone(_phone:string):boolean { return false; }
 
 export const SALON_INFO: SalonInfo = {
   name: 'Alex טיפוח ויופי',
@@ -115,9 +105,9 @@ export function saveStoredScheduleSettings(settings: ScheduleSettings): void {
 export function getStoredServices(): Service[] {
   try {
     const raw = getTenantOrLegacyRaw(STORAGE_KEY_SERVICES);
-    if (!raw) return SERVICES;
+    if (!raw) return getStorageTenantId()==='alex_beauty'?SERVICES:[];
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) {
+    if (Array.isArray(parsed)) {
       return parsed;
     }
     return SERVICES;
@@ -248,9 +238,9 @@ export function saveAdminSession(session: UserSession): void {
     const sessionToSave: UserSession = {
       ...session,
       isAdmin: true,
-      name: (session.name || 'אלכסנדרה ביטון (מנהלת)').trim(),
+      name: (session.name || 'מנהלת').trim(),
       email: (session.email || '').trim(),
-      phone: (session.phone || SALON_INFO.phone).trim(),
+      phone: (session.phone || '').trim(),
       loggedInAt: session.loggedInAt || new Date().toISOString(),
     };
     localStorage.setItem(STORAGE_KEY_ADMIN_SESSION, JSON.stringify(sessionToSave));
@@ -290,3 +280,8 @@ export function clearUserSession(): void {
 }
 
 
+
+export function getCurrentSalonInfo(): SalonInfo {
+  try {const raw=localStorage.getItem('tenant_profile__'+getStorageTenantId());if(raw)return JSON.parse(raw);}catch{}
+  return getStorageTenantId()==='alex_beauty'?SALON_INFO:{name:'',tagline:'',ownerName:'',phone:'',whatsappNumber:'',address:'',city:'',openingHours:[]};
+}

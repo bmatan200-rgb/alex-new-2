@@ -1,18 +1,19 @@
 {
-  "name": "react-example",
+  "name": "alex-multi-tenant",
   "private": true,
-  "version": "0.0.0",
+  "version": "17.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "node --import tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --import tsx --test tests/core.test.ts",
+    "test:integration": "firebase emulators:exec --project gen-lang-client-0382531831 --only auth,firestore \"node --import tsx --test tests/integration.test.ts\""
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@types/canvas-confetti": "^1.9.0",
     "@vitejs/plugin-react": "^5.0.4",
@@ -23,22 +24,30 @@
     "firebase-admin": "^14.3.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
-    "node-cron": "^4.6.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "react-router-dom": "^7.18.4",
-    "telnyx": "^7.23.0",
     "vite": "^6.2.3"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
-    "@types/node-cron": "^3.0.11",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "firebase-tools": "^14.27.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "1.14.5",
+    "gaxios": {
+      "uuid": "11.1.1"
+    }
   }
 }

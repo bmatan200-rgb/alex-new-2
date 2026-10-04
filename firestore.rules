@@ -3,8 +3,12 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function isSuper() { return signedIn() && request.auth.token.role == 'super_admin'; }
+    function active(tenantId) { return get(/databases/$(database)/documents/tenants/$(tenantId)).data.status in ['active','trial']; }
     function isBusinessAdmin(tenantId) {
-      return signedIn() && request.auth.token.role == 'business_admin' && request.auth.token.tenantId == tenantId;
+      return signedIn() && request.auth.token.role == 'business_admin'
+        && request.auth.token.tenantId == tenantId && active(tenantId)
+        && get(/databases/$(database)/documents/tenants/$(tenantId)).data.ownerAuthUid == request.auth.uid
+        && get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.disabled == false;
     }
     function canManage(tenantId) { return isSuper() || isBusinessAdmin(tenantId); }
     function isValidId(id) { return id is string && id.size() <= 256; }
@@ -19,29 +23,21 @@ service cloud.firestore {
         && data.items is list && data.items.size() <= 500;
     }
 
-    match /domains/{hostname} { allow read: if true; allow write: if isSuper(); }
+    // All mutations pass through server validation and transactions.
+    match /domains/{hostname} { allow read, write: if false; }
     match /tenants/{tenantId} {
-      allow read: if true;
-      allow write: if isSuper();
-      match /settings/{docId} { allow read: if true; allow write: if canManage(tenantId); }
-      match /customers/{customerId} { allow read, write: if canManage(tenantId); }
-      match /appointments/{appointmentId} {
-        allow read: if true;
-        allow create: if request.resource.data.customer_name is string
-          && request.resource.data.customer_name.size() > 0
-          && request.resource.data.customer_name.size() <= 100
-          && request.resource.data.customer_phone is string
-          && request.resource.data.customer_phone.size() >= 7
-          && request.resource.data.customer_phone.size() <= 25
-          && request.resource.data.appointment_date is string
-          && request.resource.data.start_time is string
-          && request.resource.data.end_time is string
-          && request.resource.data.status in ['confirmed', 'cancelled'];
-        allow update, delete: if canManage(tenantId);
+      allow read: if canManage(tenantId);
+      allow write: if false;
+      match /settings/{docId} {
+        allow read: if (docId == 'config' && active(tenantId)) || canManage(tenantId);
+        allow write: if false;
       }
-      match /reminder_locks/{id} { allow read, write: if canManage(tenantId); }
-      match /sms_logs/{id} { allow read, write: if canManage(tenantId); }
-      match /whatsapp_logs/{id} { allow read, write: if canManage(tenantId); }
+      match /customers/{id} { allow read: if canManage(tenantId); allow write: if false; }
+      match /appointments/{id} { allow read: if canManage(tenantId); allow write: if false; }
+      match /sms_logs/{id} { allow read: if canManage(tenantId); allow write: if false; }
+      match /reminder_locks/{id} { allow read, write: if false; }
+      match /private_settings/{id} { allow read, write: if false; }
+      match /booking_days/{id} { allow read, write: if false; }
     }
 
     match /adminUsers/{uid} { allow read, write: if false; }

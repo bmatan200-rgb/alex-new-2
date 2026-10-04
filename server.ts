@@ -1,15 +1,17 @@
+import 'dotenv/config';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { validId, validTime, validDate, phoneDigits, hash, reminderKey, overlaps, israelClock, parseFirebaseServiceAccount, authorizeTenant, publicSettings, claimOnce, copyOnce } from './server/core';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, type DocumentReference } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import firebaseClientConfig from './firebase-applet-config.json';
-import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 // Firebase Admin must always use the explicit Render service-account secret.
 // Never fall back to Application Default Credentials on Render: there is no ADC there,
@@ -17,51 +19,10 @@ const PORT = 3000;
 let adminSdkReady = false;
 let db: ReturnType<typeof getFirestore>;
 
-function parseFirebaseServiceAccount(rawValue?: string) {
-  if (!rawValue || !rawValue.trim()) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT is missing or empty');
-  }
-
-  let raw = rawValue.trim();
-  let parsed: any;
-
-  // Render secrets are commonly stored in one of three forms:
-  // 1) raw JSON, 2) JSON wrapped as a quoted string, 3) base64 encoded JSON.
-  const tryJson = (value: string) => {
-    try { return JSON.parse(value); } catch { return null; }
-  };
-
-  parsed = tryJson(raw);
-  if (typeof parsed === 'string') parsed = tryJson(parsed);
-
-  if (!parsed || typeof parsed !== 'object') {
-    try {
-      const decoded = Buffer.from(raw, 'base64').toString('utf8').trim();
-      parsed = tryJson(decoded);
-      if (typeof parsed === 'string') parsed = tryJson(parsed);
-    } catch {
-      // handled by validation below
-    }
-  }
-
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT is not valid JSON/base64 JSON');
-  }
-
-  // cert() expects real newlines in the PEM key. Render values are often pasted with \\n.
-  if (typeof parsed.private_key === 'string') {
-    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
-  }
-
-  if (!parsed.project_id || !parsed.client_email || !parsed.private_key) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT is missing project_id/client_email/private_key');
-  }
-
-  return parsed;
-}
 
 try {
   const serviceAccount = parseFirebaseServiceAccount(process.env.FIREBASE_SERVICE_ACCOUNT);
+  if (serviceAccount.project_id !== firebaseClientConfig.projectId) throw new Error('Service account project does not match browser Firebase project');
   const adminApp = getApps()[0] || initializeApp({
     credential: cert(serviceAccount),
     projectId: serviceAccount.project_id,
@@ -74,6 +35,7 @@ try {
   if (!firestoreDatabaseId) {
     throw new Error('Firestore database ID is missing (set FIRESTORE_DATABASE_ID or firestoreDatabaseId in firebase-applet-config.json)');
   }
+  if (firestoreDatabaseId !== firebaseClientConfig.firestoreDatabaseId) throw new Error('FIRESTORE_DATABASE_ID must match browser firestoreDatabaseId');
   db = getFirestore(adminApp, firestoreDatabaseId);
   adminSdkReady = true;
   console.log(`[Firebase Admin] ✅ Service Account מחובר לפרויקט ${serviceAccount.project_id}`);
@@ -88,7 +50,7 @@ try {
 
 // Small compatibility helpers keep the rest of this server readable while using Admin SDK.
 const collection = (_db: any, ...segments: string[]) => db.collection(segments.join('/'));
-const doc = (base: any, ...segments: string[]) => {
+const doc = (base: any, ...segments: string[]): DocumentReference => {
   if (base && typeof base.doc === 'function' && segments.length === 1) return base.doc(segments[0]);
   return db.doc(segments.join('/'));
 };
@@ -101,7 +63,7 @@ type WhereConstraint = { field: string; op: any; value: any };
 const where = (field: string, op: any, value: any): WhereConstraint => ({ field, op, value });
 const query = (ref: any, ...constraints: WhereConstraint[]) => constraints.reduce((q: any, c) => q.where(c.field, c.op, c.value), ref);
 
-const normalizePhone = (p?: string) => (p || '').replace(/\D/g, '');
+const normalizePhone = phoneDigits;
 
 // Security: JSON body parser with size limit to prevent Denial of Service attacks
 // Tenant cover images are sent as compressed data URLs from Super Admin.
@@ -126,11 +88,6 @@ declare global {
   }
 }
 
-const domainToTenantCache: Record<string, string> = {
-  'localhost': 'alex_beauty',
-  '127.0.0.1': 'alex_beauty',
-};
-
 // Helper Firestore Path Getters for Multi-Tenant Data
 export function getTenantAppointmentsRef(tenantId: string) {
   return collection(db, 'tenants', tenantId, 'appointments');
@@ -150,205 +107,124 @@ export function getTenantDoc(tenantId: string) {
 
 async function resolveTenantDomain(req: Request, res: Response, next: NextFunction) {
   try {
-    // 1. Check for ?tenant=TENANT_ID in query string (for local testing)
-    const queryTenant = req.query.tenant as string | undefined;
-    if (queryTenant && typeof queryTenant === 'string' && queryTenant.trim()) {
-      req.tenantId = queryTenant.trim();
-      return next();
+    const selectors = [req.body?.tenantId, req.query.tenant, req.headers['x-tenant-id']].filter(v => v !== undefined && v !== '');
+    if (selectors.some(v => !validId(v)) || new Set(selectors).size > 1) return res.status(400).json({success:false,error:'Invalid or conflicting tenant selectors'});
+    if (selectors.length) req.tenantId = String(selectors[0]);
+    else {
+      const hostname = req.hostname.toLowerCase();
+      const mapped = await getDoc(doc(db, 'domains', hostname));
+      req.tenantId = mapped.exists ? mapped.data()?.tenantId : PRIMARY_TENANT_ID;
     }
-
-    // 2. Otherwise, extract req.headers.host and query /domains/{hostname}
-    const rawHost = (req.headers.host || '').split(':')[0].toLowerCase().trim();
-    if (rawHost && domainToTenantCache[rawHost]) {
-      req.tenantId = domainToTenantCache[rawHost];
-      return next();
-    }
-
-    if (rawHost && rawHost !== 'localhost' && rawHost !== '127.0.0.1') {
-      try {
-        const domainSnap = await getDoc(doc(db, 'domains', rawHost));
-        if (domainSnap.exists) {
-          const mappedTenant = domainSnap.data()?.tenantId;
-          if (mappedTenant) {
-            domainToTenantCache[rawHost] = mappedTenant;
-            req.tenantId = mappedTenant;
-            return next();
-          }
-        }
-      } catch (err) {
-        console.warn(`[Tenant Resolver] Notice reading domain ${rawHost}:`, err);
-      }
-    }
-
-    // 3. Fallback default tenant
-    req.tenantId = 'alex_beauty';
+    if (!validId(req.tenantId)) return res.status(400).json({success:false,error:'Invalid tenant ID'});
     next();
-  } catch (err) {
-    req.tenantId = 'alex_beauty';
-    next();
-  }
+  } catch (err) { next(err); }
 }
 
-app.use(resolveTenantDomain);
+app.use('/api', (req,res,next)=>req.path==='/health'?next():resolveTenantDomain(req,res,next));
+app.param(['tenantId','id'], (req,res,next,value)=>{
+  if(!validId(value)) return res.status(400).json({success:false,error:'Invalid document ID'});
+  next();
+});
 
 
 
 // ----------------------------------------------------
 // Secure Admin Data Endpoints
 // ----------------------------------------------------
-app.post('/api/appointments/cancel', async (req, res) => {
+async function optionalAdmin(req: Request) { return req.headers.authorization ? await decodeAdmin(req) : null; }
+async function activeTenant(tenantId: string) {
+  const snap = await getDoc(getTenantDoc(tenantId));
+  if (!snap.exists || !['active','trial'].includes(snap.data()?.status)) throw new Error('העסק אינו פעיל או לא נמצא');
+  return snap.data();
+}
+async function cancelBooking(req: Request, res: Response) {
   try {
-    const { appointmentId, customerPhone } = req.body;
-    if (!appointmentId) return res.status(400).json({ success: false, error: 'Missing appointmentId' });
-    const tenantId = String(req.body?.tenantId || req.tenantId || 'alex_beauty');
-    const appointmentsRef = getTenantAppointmentsRef(tenantId);
-    const appointmentRef = getTenantAppointmentDoc(tenantId, String(appointmentId));
-
-    const idStr = String(appointmentId);
-
-    // Admin check
-    const token =
-      (req.headers['authorization'] as string | undefined)?.replace(/^Bearer\s+/i, '') ||
-      (req.body?.sessionToken as string | undefined);
-    let isAdmin = false;
-    if (!isAdmin && token && adminSdkReady) {
-      try {
-        await getAuth().verifyIdToken(token);
-        isAdmin = true;
-      } catch {
-        // ignore
-      }
-    }
-
-    const snap = await getDoc(appointmentRef);
-    const snapData = snap.exists ? snap.data() : null;
-
-    if (!isAdmin && snapData) {
-      if (!customerPhone) return res.status(401).json({ success: false, error: 'Missing customerPhone for non-admin' });
-      const storedPhone = normalizePhone(snapData.customer_phone);
-      const reqPhone = normalizePhone(customerPhone);
-      if (storedPhone && reqPhone && storedPhone !== reqPhone) {
-        return res.status(403).json({ success: false, error: 'Phone mismatch' });
-      }
-    }
-
-    const nowIso = new Date().toISOString();
-
-    try {
-      await deleteDoc(appointmentRef);
-    } catch {
-      if (snap.exists) {
-        try {
-          await setDoc(appointmentRef, { status: 'cancelled', updated_at: nowIso }, { merge: true });
-        } catch {
-          // ignore
-        }
-      }
-    }
-
-    const apptDate = req.body?.appointmentDate || snapData?.appointment_date;
-    const apptTime = req.body?.startTime || snapData?.start_time;
-    if (apptDate && apptTime) {
-      const sId = `appt_${apptDate}_${apptTime.replace(':', '')}`;
-      if (sId !== idStr) {
-        try {
-          await deleteDoc(getTenantAppointmentDoc(tenantId, sId));
-        } catch {
-          // ignore
-        }
-      }
-
-      // Query and delete all matching documents in appointments collection for this date and time
-      try {
-        const q = query(
-          appointmentsRef,
-          where('appointment_date', '==', apptDate),
-          where('start_time', '==', apptTime)
-        );
-        const querySnap = await getDocs(q);
-        for (const docItem of querySnap.docs) {
-          try {
-            await deleteDoc(doc(appointmentsRef, docItem.id));
-          } catch {
-            // ignore
-          }
-        }
-      } catch (qErr) {
-        console.warn('[Cancel API] Warning querying slot appointments in Firestore:', qErr);
-      }
-    }
-
-    // Filter out of in-memory appointments so it is completely gone
-    serverAppointments = serverAppointments.filter(
-      (a) => String(a.id) !== idStr && !(apptDate && apptTime && a.appointment_date === apptDate && a.start_time === apptTime)
-    );
-
-    return res.json({ success: true });
-  } catch (err: any) {
-    console.error('Error cancelling appointment:', err);
-    return res.status(500).json({ success: false, error: err.message });
-  }
+    const tenantId = req.tenantId!;
+    const {appointmentId, accessToken} = req.body;
+    if (!validId(appointmentId)) return res.status(400).json({success:false,error:'Invalid appointment ID'});
+    const admin = await optionalAdmin(req);
+    const allowed = admin && authorizeTenant(admin,[tenantId],tenantId) === tenantId;
+    await activeTenant(tenantId);
+    await db.runTransaction(async tx => {
+      const ref=getTenantAppointmentDoc(tenantId,appointmentId);
+      const snap=await tx.get(ref);
+      if(!snap.exists) throw new Error('התור לא נמצא');
+      const data=snap.data()!;
+      if(!allowed && !(typeof accessToken==='string' && data.accessTokenHash && hash(accessToken)===data.accessTokenHash)) throw new Error('נדרש קישור הביטול המקורי או הרשאת מנהלת');
+      // Keep a tombstone so legacy migration can never resurrect cancelled bookings.
+      tx.update(ref,{status:'cancelled',updated_at:new Date().toISOString()});
+      tx.set(doc(db,'tenants',tenantId,'booking_days',data.appointment_date),{updatedAt:new Date().toISOString()});
+    });
+    res.json({success:true});
+  } catch(err:any) {res.status(403).json({success:false,error:err.message});}
+}
+app.post('/api/appointments/cancel',cancelBooking);
+app.post('/api/admin/appointments/delete',requireAdmin,cancelBooking);
+app.post('/api/appointments/list',async(req,res)=>{
+  try {
+    const tenantId=req.tenantId!;
+    await activeTenant(tenantId);
+    const admin=await optionalAdmin(req);
+    const canRead=admin && authorizeTenant(admin,[tenantId],tenantId)===tenantId;
+    const capabilities=req.body?.capabilities || {};
+    const snap=await getDocs(getTenantAppointmentsRef(tenantId));
+    const appointments=snap.docs.filter((d:any)=>d.data().status!=='cancelled').map((d:any)=>{
+      const {accessTokenHash,...data}=d.data();
+      if(canRead || (accessTokenHash && typeof capabilities[d.id]==='string' && hash(capabilities[d.id])===accessTokenHash)) return {...data,id:d.id};
+      return {id:d.id,appointment_date:data.appointment_date,start_time:data.start_time,end_time:data.end_time,status:'confirmed',customer_name:'תפוס',customer_phone:'',service_id:0,service_name:'',price:0,notes:''};
+    });
+    res.json({success:true,appointments});
+  }catch(err:any){res.status(403).json({success:false,error:err.message});}
 });
-
-app.post('/api/admin/appointments/delete', requireAdmin, async (req, res) => {
+app.post('/api/appointments/book',async(req,res)=>{
   try {
-    const { appointmentId, appointmentDate, startTime } = req.body;
-    if (!appointmentId) return res.status(400).json({ success: false, error: 'Missing appointmentId' });
-    
-    const tenantId = String(req.body?.tenantId || req.tenantId || 'alex_beauty');
-    const appointmentsRef = getTenantAppointmentsRef(tenantId);
-    const idStr = String(appointmentId);
-    try {
-      await deleteDoc(getTenantAppointmentDoc(tenantId, idStr));
-    } catch {
-      // ignore
-    }
-
-    if (appointmentDate && startTime) {
-      const sId = `appt_${appointmentDate}_${startTime.replace(':', '')}`;
-      if (sId !== idStr) {
-        try {
-          await deleteDoc(getTenantAppointmentDoc(tenantId, sId));
-        } catch {
-          // ignore
-        }
+    if(isDispatchRateLimited('book:'+req.ip)) return res.status(429).json({success:false,error:'יש להמתין לפני קביעת תור נוסף'});
+    const tenantId=req.tenantId!;
+    const admin=await optionalAdmin(req);
+    const canManage=admin && authorizeTenant(admin,[tenantId],tenantId)===tenantId;
+    const a=req.body?.appointment || {};
+    if(!validDate(a.appointment_date) || !validTime(a.start_time) || !validTime(a.end_time) || a.start_time>=a.end_time || typeof a.customer_name!=='string' || !a.customer_name.trim() || a.customer_name.length>100 || (!canManage && !phoneDigits(a.customer_phone))) return res.status(400).json({success:false,error:'פרטי תור לא תקינים'});
+    const accessToken=randomBytes(32).toString('hex');
+    const id=validId(req.body.requestId) ? req.body.requestId : randomUUID();
+    const ref=getTenantAppointmentDoc(tenantId,id);
+    await db.runTransaction(async tx=>{
+      const tenant=await tx.get(getTenantDoc(tenantId));
+      if(!tenant.exists || !['active','trial'].includes(tenant.data()?.status)) throw new Error('העסק אינו פעיל');
+      const config=await tx.get(getTenantSettingsDoc(tenantId));
+      const guard=doc(db,'tenants',tenantId,'booking_days',a.appointment_date);
+      await tx.get(guard);
+      const existing=await tx.get(ref);
+      if(existing.exists) throw new Error('בקשה זו כבר נשמרה; יש לרענן את היומן');
+      const sameDay=await tx.get(getTenantAppointmentsRef(tenantId).where('appointment_date','==',a.appointment_date));
+      if(sameDay.docs.some((d:any)=>overlaps(d.data(),a))) throw new Error('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
+      let service:any;
+      if(!canManage){
+        service=config.data()?.services?.find((x:any)=>String(x.id)===String(a.service_id));
+        if(!service) throw new Error('השירות אינו זמין');
+        const minutes=(t:string)=>Number(t.slice(0,2))*60+Number(t.slice(3));
+        if(minutes(a.end_time)-minutes(a.start_time)!==Number(service.duration_minutes)) throw new Error('משך תור לא תקין');
+        const clock=israelClock();
+        if(a.appointment_date<clock.dateIso || (a.appointment_date===clock.dateIso && a.start_time<=clock.timeStr)) throw new Error('לא ניתן לקבוע תור בעבר');
+        const day=new Date(a.appointment_date+'T12:00:00Z').getUTCDay();
+        const sch=config.data()?.scheduleSettings || {};
+        const open=day===5?sch.fridayOpen:sch.businessOpen, close=day===5?sch.fridayClose:sch.businessClose;
+        if(day===6 || !validTime(open) || !validTime(close) || a.start_time<open || a.end_time>close) throw new Error('השעה מחוץ לשעות הפעילות');
       }
-
-      // Query and delete all matching documents in appointments collection for this date and time
-      try {
-        const q = query(
-          appointmentsRef,
-          where('appointment_date', '==', appointmentDate),
-          where('start_time', '==', startTime)
-        );
-        const querySnap = await getDocs(q);
-        for (const docItem of querySnap.docs) {
-          try {
-            await deleteDoc(doc(appointmentsRef, docItem.id));
-          } catch {
-            // ignore
-          }
-        }
-      } catch (qErr) {
-        console.warn('[Delete API] Warning querying slot appointments in Firestore:', qErr);
-      }
-    }
-
-    // Filter out of in-memory appointments
-    serverAppointments = serverAppointments.filter(
-      (a) => String(a.id) !== idStr && !(appointmentDate && startTime && a.appointment_date === appointmentDate && a.start_time === startTime)
-    );
-
-    return res.json({ success: true });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
+      const customerRef=phoneDigits(a.customer_phone)?doc(db,'tenants',tenantId,'customers','cust_'+phoneDigits(a.customer_phone)):null;
+      const customer=customerRef ? await tx.get(customerRef):null;
+      const saved={customer_name:a.customer_name.trim(),customer_phone:String(a.customer_phone||''),service_id:a.service_id ?? 0,service_name:service?.name || String(a.service_name||''),price:service?.price ?? Number(a.price||0),appointment_date:a.appointment_date,start_time:a.start_time,end_time:a.end_time,status:'confirmed',notes:String(a.notes||'').slice(0,2000),created_at:new Date().toISOString(),tenantId,accessTokenHash:hash(accessToken)};
+      tx.create(ref,saved);
+      if(customerRef && !customer?.exists) tx.create(customerRef,{full_name:saved.customer_name,phone:saved.customer_phone,notes:'',created_at:saved.created_at,last_login_at:saved.created_at});
+      tx.set(guard,{updatedAt:new Date().toISOString()});
+    });
+    res.json({success:true,id,accessToken});
+  }catch(err:any){res.status(409).json({success:false,error:err.message});}
 });
 
 app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
   try {
     const { services } = req.body;
-    if (!Array.isArray(services)) {
+    if (!Array.isArray(services) || services.length>200 || services.some((x:any)=>!x || typeof x.name!=='string' || !x.name.trim() || !Number.isFinite(x.price) || x.price<0 || !Number.isInteger(x.duration_minutes) || x.duration_minutes<5 || x.duration_minutes>720)) {
       return res.status(400).json({ success: false, error: 'Invalid services format' });
     }
     // שם המסמך ('services_config') ושם השדה ('services') חייבים להתאים
@@ -368,7 +244,7 @@ app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
 app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
   try {
     const { schedule } = req.body;
-    if (!schedule || typeof schedule !== 'object') {
+    if (!schedule || typeof schedule !== 'object' || !validTime(schedule.businessOpen) || !validTime(schedule.businessClose) || schedule.businessOpen>=schedule.businessClose || !Number.isInteger(schedule.durationMinutes) || schedule.durationMinutes<5 || schedule.durationMinutes>720) {
       return res.status(400).json({ success: false, error: 'Invalid schedule format' });
     }
     // הלקוח (subscribeScheduleSettings) קורא את השדות ישירות מהמסמך
@@ -376,11 +252,13 @@ app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
     await setDoc(
       getTenantSettingsDoc(String(req.body?.tenantId || req.tenantId || 'alex_beauty'), 'config'),
       {
+        scheduleSettings: {
         businessOpen: schedule.businessOpen,
         businessClose: schedule.businessClose,
         fridayOpen: schedule.fridayOpen || '09:20',
         fridayClose: schedule.fridayClose || '15:00',
         durationMinutes: Number(schedule.durationMinutes) || 90,
+        },
         updatedAt: new Date().toISOString(),
       },
       { merge: true }
@@ -394,48 +272,8 @@ app.post('/api/admin/settings/schedule', requireAdmin, async (req, res) => {
 // ----------------------------------------------------
 // One-time legacy data migration (old global collections -> primary tenant)
 // ----------------------------------------------------
-app.post('/api/admin/migrate-legacy-alex', requireAdmin, async (req: Request, res: Response) => {
-  try {
-    const targetTenantId = 'alex_beauty';
-    const [legacyAppointments, legacyCustomers] = await Promise.all([
-      getDocs(collection(db, 'appointments')),
-      getDocs(collection(db, 'customers')),
-    ]);
-
-    let appointmentsCopied = 0;
-    let customersCopied = 0;
-
-    for (const item of legacyAppointments.docs) {
-      const targetRef = getTenantAppointmentDoc(targetTenantId, item.id);
-      const existing = await getDoc(targetRef);
-      if (!existing.exists) {
-        await setDoc(targetRef, { ...item.data(), tenantId: targetTenantId }, { merge: true });
-        appointmentsCopied++;
-      }
-    }
-
-    for (const item of legacyCustomers.docs) {
-      const targetRef = doc(db, 'tenants', targetTenantId, 'customers', item.id);
-      const existing = await getDoc(targetRef);
-      if (!existing.exists) {
-        await setDoc(targetRef, { ...item.data(), tenantId: targetTenantId }, { merge: true });
-        customersCopied++;
-      }
-    }
-
-    return res.json({
-      success: true,
-      targetTenantId,
-      appointmentsFound: legacyAppointments.size,
-      customersFound: legacyCustomers.size,
-      appointmentsCopied,
-      customersCopied,
-      message: 'Legacy data copied to the primary tenant. Global collections were not deleted.',
-    });
-  } catch (err: any) {
-    console.error('[Legacy Migration] Error:', err);
-    return res.status(500).json({ success: false, error: err?.message || 'Migration failed' });
-  }
+app.post('/api/admin/migrate-legacy-alex', requireSuperAdmin, async (_req, res, next) => {
+  try { await ensurePrimaryTenant(); res.json({success:true,message:'Migration completed; source data preserved'}); } catch(err){next(err);}
 });
 
 // ----------------------------------------------------
@@ -446,7 +284,7 @@ app.post('/api/admin/migrate-legacy-alex', requireAdmin, async (req: Request, re
  * שמירה או עדכון של לקוח באוסף customers ב-Firestore.
  * מתבצע בעת כניסת לקוח, הרשמה או קביעת תור.
  */
-app.post('/api/customers/upsert', async (req: Request, res: Response) => {
+app.post('/api/customers/upsert', requireAdmin, async (req: Request, res: Response) => {
   try {
     const { full_name, phone, notes } = req.body;
     const tenantId = String(req.body?.tenantId || req.tenantId || 'alex_beauty');
@@ -559,33 +397,7 @@ app.get('/api/admin/customers', requireAdmin, async (req: Request, res: Response
       });
     });
 
-    // סנכרון אוטומטי של לקוחות מתוך תורים שטרם נרשמו ב-customers
-    for (const [phone, info] of Object.entries(appointmentsByPhone)) {
-      if (!customersMap.has(phone)) {
-        const docId = `cust_${phone}`;
-        const autoCustomer = {
-          id: docId,
-          full_name: info.name || 'לקוח/ה',
-          phone,
-          created_at: info.lastDate ? `${info.lastDate}T09:00:00.000Z` : new Date().toISOString(),
-          last_login_at: new Date().toISOString(),
-          notes: '',
-          totalAppointments: info.count,
-          lastAppointmentDate: info.lastDate,
-        };
-        customersMap.set(phone, autoCustomer);
-
-        // שמירה אסינכרונית ברקע ב-Firestore כדי שיהיה מתועד באופן קבוע
-        setDoc(doc(db, 'tenants', tenantId, 'customers', docId), {
-          full_name: autoCustomer.full_name,
-          phone: autoCustomer.phone,
-          created_at: autoCustomer.created_at,
-          last_login_at: autoCustomer.last_login_at,
-          notes: '',
-        }).catch(() => {});
-      }
-    }
-
+    // Customer deletion is independent of appointments; reads never recreate records.
     const customersList = Array.from(customersMap.values()).sort((a, b) =>
       (b.last_login_at || b.created_at || '').localeCompare(a.last_login_at || a.created_at || '')
     );
@@ -616,19 +428,7 @@ app.delete('/api/admin/customers/:id', requireAdmin, async (req: Request, res: R
 // Secure Admin Authentication & Password Hashing Subsystem (Server-Side)
 // ----------------------------------------------------------------------
 
-// מאמת שהבקשה נושאת ID Token תקף של Firebase Authentication.
-// באפליקציה זו אין הרשמה עצמית, ולכן כל טוקן תקף שייך לחשבון
-// שנוצר ידנית בקונסולה — כלומר למנהלת.
-/**
- * מאמת שהבקשה מגיעה ממנהלת מחוברת.
- *
- * הדרך היחידה לעבור: ID Token תקף של Firebase Authentication.
- *
- * אין ולא יהיו כאן מסלולי גיבוי. סיסמת מסתור בקוד או מספר טלפון
- * בכותרת אינם סודות — מספר הטלפון של העסק מוצג באתר עצמו, וכל
- * מחרוזת קבועה בקוד גלויה לכל מי שרואה את הריפו. כל "גיבוי" כזה
- * הופך את האימות כולו לקישוט.
- */
+// Verify Firebase identity, current server-side roles, revocation and tenant ownership.
 type AdminRole = 'super_admin' | 'business_admin';
 
 type AdminPayload = {
@@ -647,18 +447,25 @@ async function decodeAdmin(req: Request): Promise<AdminPayload | null> {
   if (!adminSdkReady) return null;
   const token = (req.headers['authorization'] as string | undefined)?.replace(/^Bearer\s+/i, '');
   if (!token) return null;
-  const decoded: any = await getAuth().verifyIdToken(token);
-  const email = String(decoded.email || '').toLowerCase();
+  const decoded: any = await getAuth().verifyIdToken(token, true);
+  const currentUser = await getAuth().getUser(decoded.uid);
+  if(currentUser.disabled) return null;
+  const claims = currentUser.customClaims || {};
+  const email = String(currentUser.email || '').toLowerCase();
   const superEmails = getSuperAdminEmails();
-  if (decoded.role === 'super_admin' || superEmails.includes(email)) {
+  if (claims.role === 'super_admin' || (currentUser.emailVerified && superEmails.includes(email))) {
     // Bootstrap/migrate the configured owner into a real Firebase custom claim.
-    if (decoded.role !== 'super_admin' && superEmails.includes(email)) {
-      await getAuth().setCustomUserClaims(decoded.uid, { role: 'super_admin' });
+    if (claims.role !== 'super_admin' && currentUser.emailVerified && superEmails.includes(email)) {
+      await getAuth().setCustomUserClaims(decoded.uid, { ...claims, role: 'super_admin' });
     }
     return { uid: decoded.uid, email: decoded.email, role: 'super_admin' };
   }
-  if (decoded.role === 'business_admin' && decoded.tenantId) {
-    return { uid: decoded.uid, email: decoded.email, role: 'business_admin', tenantId: String(decoded.tenantId) };
+  if (claims.role === 'business_admin' && validId(claims.tenantId)) {
+    const binding=await getDoc(doc(db,'adminUsers',decoded.uid));
+    if(binding.exists && binding.data()?.disabled===true) return null;
+    const tenant = await getDoc(getTenantDoc(claims.tenantId));
+    if(!tenant.exists || !['active','trial'].includes(tenant.data()?.status) || tenant.data()?.ownerAuthUid !== decoded.uid) return null;
+    return { uid: decoded.uid, email: currentUser.email, role: 'business_admin', tenantId: claims.tenantId };
   }
   return null;
 }
@@ -668,14 +475,7 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
     const admin = await decodeAdmin(req);
     if (!admin) return res.status(403).json({ success: false, error: 'לחשבון אין הרשאת ניהול' });
 
-    if (admin.role === 'business_admin') {
-      const requestedTenant = String(req.body?.tenantId || req.query?.tenant || req.headers['x-tenant-id'] || '');
-      if (requestedTenant && requestedTenant !== admin.tenantId) {
-        return res.status(403).json({ success: false, error: 'אין הרשאה לעסק אחר' });
-      }
-      req.tenantId = admin.tenantId;
-      if (req.body && typeof req.body === 'object') req.body.tenantId = admin.tenantId;
-    }
+    req.tenantId = authorizeTenant(admin,[req.body?.tenantId,req.query.tenant,req.headers['x-tenant-id']],req.tenantId || 'alex_beauty');
     (req as any).adminPayload = admin;
     return next();
   } catch (err: any) {
@@ -731,8 +531,6 @@ interface ServerAppointment {
   created_at?: string;
 }
 
-const serverAppointmentsByTenant: Record<string, ServerAppointment[]> = {};
-let serverAppointments: ServerAppointment[] = []; // legacy process-local mirror
 let recentSmsLogs: SmsLogEntry[] = [];
 
 const DEFAULT_SMS_SETTINGS = {
@@ -747,17 +545,18 @@ const DEFAULT_SMS_SETTINGS = {
   bookingConfirmationTemplate: `היי {customer_name} 🌸\nהתור שלך נקבע בהצלחה לטיפול {service_name}! ✨\nתאריך: {appointment_date} בשעה {start_time}\nלבירורים: {phone}\nנתראה! 💖`,
   customerTodayTemplate: `היי {customer_name} 🌸\nתזכורת לתור שלך להיום ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלבירור או שינוי: {phone}\nנתראה! 💖`,
   customer1DayTemplate: `היי {customer_name} 🌸\nתזכורת לתור שלך למחר ({appointment_date}) בשעה {start_time} לטיפול {service_name} ✨\nלשינוי או בירור: {phone}\nמחכים לראותך! 💖`,
-  telnyxApiKey: process.env.TELNYX_API_KEY || '',
-  telnyxFromNumber: process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM || '',
+
+
   provider: 'telnyx',
 };
 
-let activeServerSettings: any = { ...DEFAULT_SMS_SETTINGS };
+
 
 // Rate limiter for outgoing SMS
 const dispatchRateLimits: Record<string, number[]> = {};
 function isDispatchRateLimited(ip: string): boolean {
   const now = Date.now();
+  if(Object.keys(dispatchRateLimits).length>10000) {for(const key of Object.keys(dispatchRateLimits)) if(!dispatchRateLimits[key].some(t=>now-t<60000)) delete dispatchRateLimits[key];}
   const timestamps = dispatchRateLimits[ip] || [];
   const recent = timestamps.filter((t) => now - t < 60000);
   if (recent.length >= 30) return true;
@@ -787,54 +586,32 @@ function cleanPhoneDigits(phone: string): string {
 }
 
 // Accurate Israel Time helper
-function getIsraelDateString(daysOffset: number = 0): string {
-  const now = new Date();
-  const israelDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
-  if (daysOffset !== 0) {
-    israelDate.setDate(israelDate.getDate() + daysOffset);
-  }
-  const year = israelDate.getFullYear();
-  const month = String(israelDate.getMonth() + 1).padStart(2, '0');
-  const day = String(israelDate.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+function getIsraelDateString(daysOffset = 0): string {
+  const date = new Date(israelClock().dateIso + 'T12:00:00Z');
+  date.setUTCDate(date.getUTCDate()+daysOffset);
+  return date.toISOString().slice(0,10);
 }
-
-function getIsraelTime(): { dateIso: string; tomorrowIso: string; hour: number; minute: number; timeStr: string } {
-  const dateIso = getIsraelDateString(0);
-  const tomorrowIso = getIsraelDateString(1);
-
-  const now = new Date();
-  const optionsTime: Intl.DateTimeFormatOptions = {
-    timeZone: 'Asia/Jerusalem',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  };
-
-  const formatterTime = new Intl.DateTimeFormat('en-GB', optionsTime);
-  const timeStr = formatterTime.format(now);
-  const [hourStr, minStr] = timeStr.split(':');
-  const hour = parseInt(hourStr, 10);
-  const minute = parseInt(minStr, 10);
-
-  return { dateIso, tomorrowIso, hour, minute, timeStr };
-}
+const getIsraelTime = israelClock;
 
 // ----------------------------------------------------------------------
 // Telnyx SMS Dispatch Gateway
 // ----------------------------------------------------------------------
-const KNOWN_TELNYX_PROFILE_ID = '4001a0d9-3620-46bf-9ea8-a1d1f6975027';
+// Provider credentials are server-only. Tenant overrides live under private_settings/sms_provider.
 
-async function sendSmsViaTelnyx(to: string, message: string): Promise<{ success: boolean; data?: any; error?: string }> {
-  const apiKey = (activeServerSettings?.telnyxApiKey || process.env.TELNYX_API_KEY || '').trim();
-  const fromNumber = (activeServerSettings?.telnyxFromNumber || activeServerSettings?.telnyxFrom || process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM || 'ALEX BEAUTY').trim();
-  const profileId = (activeServerSettings?.telnyxProfileId || process.env.TELNYX_PROFILE_ID || KNOWN_TELNYX_PROFILE_ID).trim();
+async function sendSmsViaTelnyx(to: string, message: string, tenantId: string): Promise<{ success: boolean; data?: any; error?: string; uncertain?:boolean }> {
+  const providerSnap = await getDoc(doc(db,'tenants',tenantId,'private_settings','sms_provider'));
+  const provider = providerSnap.data() || {};
+  const shared = tenantId===PRIMARY_TENANT_ID || process.env.ALLOW_SHARED_SMS_PROVIDER==='true';
+  const apiKey = String(provider.telnyxApiKey || (shared ? process.env.TELNYX_API_KEY : '') || '').trim();
+  const fromNumber = String(provider.telnyxFromNumber || provider.telnyxFrom || (shared ? process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM : '') || '').trim();
+  const profileId = String(provider.telnyxProfileId || (shared ? process.env.TELNYX_PROFILE_ID : '') || '').trim();
+  if(!fromNumber || !profileId) return {success:false,error:'חסרות הגדרות שולח או פרופיל SMS בשרת'};
 
   if (!apiKey) {
     return { success: false, error: 'חסר מפתח API של Telnyx (TELNYX_API_KEY)' };
   }
 
-  const formattedTo = formatIsraeliPhoneToE164(to);
+  const formattedTo = phoneDigits(to) ? '+' + phoneDigits(to) : '';
   if (!formattedTo || formattedTo.length < 10) {
     return { success: false, error: `מספר טלפון לא תקין: ${to}` };
   }
@@ -856,6 +633,7 @@ async function sendSmsViaTelnyx(to: string, message: string): Promise<{ success:
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000),
     });
 
     const restData = await restRes.json().catch(() => ({}));
@@ -863,10 +641,11 @@ async function sendSmsViaTelnyx(to: string, message: string): Promise<{ success:
     if (!restRes.ok) {
       const errDetail = restData?.errors?.[0]?.detail || restData?.errors?.[0]?.title || `קוד שגיאה ${restRes.status}`;
       console.error('[SMS Gateway] ❌ שגיאת Telnyx:', restData);
-      return { success: false, error: `שגיאה מ-Telnyx: ${errDetail}` };
+      return { success: false, uncertain: restRes.status >= 500, error: `שגיאה מ-Telnyx: ${errDetail}` };
     }
 
-    const messageId = restData?.data?.id || `msg_${Date.now()}`;
+    const messageId = restData?.data?.id;
+    if(!messageId) return {success:false,uncertain:true,error:'Provider response is missing message ID'};
     console.log(`[SMS Gateway] ✅ SMS נשלח בהצלחה! מזהה: ${messageId}`);
 
     return {
@@ -880,7 +659,7 @@ async function sendSmsViaTelnyx(to: string, message: string): Promise<{ success:
     };
   } catch (err: any) {
     console.error('[SMS Gateway] ❌ חריגת תקשורת:', err);
-    return { success: false, error: err?.message || 'שגיאת תקשורת עם Telnyx' };
+    return { success: false, uncertain:true, error: err?.message || 'שגיאת תקשורת עם Telnyx' };
   }
 }
 
@@ -902,111 +681,28 @@ function formatMessageTemplate(template: string, appt: any, brand: any = PRIMARY
 
 // Fetch Confirmed Appointments from Firestore
 async function fetchAppointmentsForDate(targetDate: string, tenantId = 'alex_beauty'): Promise<ServerAppointment[]> {
-  const list: ServerAppointment[] = [];
-  try {
-    if (db) {
-      const q = query(
-        getTenantAppointmentsRef(tenantId),
-        where('appointment_date', '==', targetDate),
-        where('status', '==', 'confirmed')
-      );
-      const snap = await getDocs(q);
-      snap.forEach((docSnap) => {
-        const d = docSnap.data() as any;
-        const customerName = d.customer_name || '';
-        if (
-          !customerName.includes('🔒') &&
-          !customerName.includes('חופש') &&
-          !customerName.includes('חסימה') &&
-          !customerName.includes('הפסקה')
-        ) {
-          list.push({
-            id: docSnap.id,
-            customer_name: customerName,
-            customer_phone: d.customer_phone || '',
-            service_name: d.service_name || "לק ג'ל",
-            appointment_date: d.appointment_date,
-            start_time: d.start_time || '',
-            status: d.status || 'confirmed',
-            created_at: d.created_at || d.createdAt || '',
-          });
-        }
-      });
-    }
-  } catch (err) {
-    console.warn(`[Appointments Query] שגיאה בשליפת תורים לתאריך ${targetDate}:`, err);
-  }
-
-  // Also include in-memory sync if present
-  const tenantMemoryAppointments = serverAppointmentsByTenant[tenantId] || [];
-  if (tenantMemoryAppointments.length > 0) {
-    for (const mem of tenantMemoryAppointments) {
-      if (
-        mem.appointment_date === targetDate &&
-        mem.status === 'confirmed' &&
-        !mem.customer_name.includes('🔒') &&
-        !list.some((existing) => existing.id === mem.id)
-      ) {
-        list.push(mem);
-      }
-    }
-  }
-
-  return list;
+  const snap = await getTenantAppointmentsRef(tenantId).where('appointment_date','==',targetDate).get();
+  return snap.docs.map((d:any)=>({...d.data(),id:d.id})).filter((a:any)=>a.status==='confirmed' && phoneDigits(a.customer_phone)).sort((a:any,b:any)=>a.start_time.localeCompare(b.start_time));
 }
 
 // Lock Helpers (Deduplication across server restarts & multiple instances)
-async function tryClaimReminderLock(key: string, tenantId = 'alex_beauty'): Promise<boolean> {
-  if (!db) return true;
-  const lockRef = doc(db, 'tenants', tenantId, 'reminder_locks', key);
-  try {
-    return await runTransaction(db, async (transaction) => {
-      const snap = await transaction.get(lockRef);
-      if (snap.exists) {
-        const data = snap.data() as any;
-        if (data?.status === 'sent') return false; // Already sent successfully
-
-        // If claimed more than 20 minutes ago and not sent, allow re-try
-        const claimedAt = data?.claimedAt ? new Date(data.claimedAt).getTime() : 0;
-        const now = Date.now();
-        if (claimedAt > 0 && now - claimedAt > 20 * 60 * 1000) {
-          transaction.set(lockRef, { claimedAt: new Date().toISOString(), key, status: 'in_progress' });
-          return true;
-        }
-        return false;
-      }
-      transaction.set(lockRef, { claimedAt: new Date().toISOString(), key, status: 'in_progress' });
-      return true;
-    });
-  } catch (err) {
-    console.warn(`[Reminder Lock] נעילה נכשלה עבור ${key}:`, err);
-    return false;
-  }
+async function tryClaimReminderLock(key: string, tenantId = 'alex_beauty', legacyKeys: string[] = []): Promise<boolean> {
+  const ref = doc(db,'tenants',tenantId,'reminder_locks',key);
+  return claimOnce(db,ref,legacyKeys.flatMap(k => [doc(db,'tenants',tenantId,'reminder_locks',k), ...(tenantId===PRIMARY_TENANT_ID ? [doc(db,'reminder_locks',k)] : [])]));
+}
+async function markReminderLockSuccess(key: string, tenantId = 'alex_beauty', result?: any): Promise<void> {
+  await setDoc(doc(db,'tenants',tenantId,'reminder_locks',key),{status:'sent',sentAt:new Date().toISOString(),providerMessageId:result?.data?.id || null},{merge:true});
+}
+async function retainReminderFailure(key:string,tenantId:string,result:any) {
+  // An uncertain provider result is never automatically retried: SMS APIs are not a transaction with Firestore.
+  await setDoc(doc(db,'tenants',tenantId,'reminder_locks',key),{status:result.uncertain?'unknown':'failed',error:result.error || 'Unknown failure',updatedAt:new Date().toISOString()},{merge:true});
 }
 
-async function markReminderLockSuccess(key: string, tenantId = 'alex_beauty'): Promise<void> {
-  if (!db) return;
-  try {
-    const lockRef = doc(db, 'tenants', tenantId, 'reminder_locks', key);
-    await setDoc(lockRef, { status: 'sent', sentAt: new Date().toISOString(), key }, { merge: true });
-  } catch {
-    // ignore
-  }
-}
-
-async function releaseReminderLock(key: string, tenantId = 'alex_beauty'): Promise<void> {
-  if (!db) return;
-  try {
-    await deleteDoc(doc(db, 'tenants', tenantId, 'reminder_locks', key));
-  } catch {
-    // ignore
-  }
-}
-
-function recordLogEntry(entry: SmsLogEntry) {
+async function recordLogEntry(entry: SmsLogEntry, tenantId: string) {
   try {
     const sanitizedEntry = {
-      id: entry.id || `sms_${Date.now()}`,
+      tenantId,
+      id: entry.id || randomUUID(),
       recipientName: entry.recipientName || '',
       recipientPhone: entry.recipientPhone || '',
       messageText: entry.messageText || '',
@@ -1024,7 +720,7 @@ function recordLogEntry(entry: SmsLogEntry) {
 
     if (db) {
       try {
-        setDoc(doc(db, 'sms_logs', sanitizedEntry.id), sanitizedEntry, { merge: true }).catch((err) => {
+        await setDoc(doc(db, 'tenants', tenantId, 'sms_logs', sanitizedEntry.id), sanitizedEntry, { merge: true }).catch((err) => {
           console.warn('[SMS Logs] Firestore setDoc warning (non-fatal):', err?.message);
         });
       } catch (innerErr: any) {
@@ -1037,24 +733,14 @@ function recordLogEntry(entry: SmsLogEntry) {
 }
 
 async function getTenantSmsSettings(tenantId: string): Promise<any> {
-  try {
-    const snap = await getDoc(getTenantSettingsDoc(tenantId, 'sms_reminders'));
-    if (snap.exists) return { ...DEFAULT_SMS_SETTINGS, ...snap.data() };
-    const config = await getDoc(getTenantSettingsDoc(tenantId, 'config'));
-    if (config.exists) {
-      const data: any = config.data();
-      if (data.smsSettings) return { ...DEFAULT_SMS_SETTINGS, ...data.smsSettings };
-    }
-  } catch (err) { console.warn(`[SMS] settings load warning for ${tenantId}`, err); }
-  return tenantId === PRIMARY_TENANT_ID ? { ...activeServerSettings } : { ...DEFAULT_SMS_SETTINGS };
+  const snap = await getDoc(getTenantSettingsDoc(tenantId, 'sms_reminders'));
+  return {...DEFAULT_SMS_SETTINGS, ...publicSettings(snap.exists ? snap.data() : {}), ...(snap.exists ? {} : {enabled:false,autoSendEnabled:false})};
 }
 
 async function getTenantBrand(tenantId: string): Promise<any> {
-  try {
-    const snap = await getDoc(getTenantDoc(tenantId));
-    if (snap.exists) return { id: snap.id, ...snap.data() };
-  } catch {}
-  return tenantId === PRIMARY_TENANT_ID ? PRIMARY_TENANT_PROFILE : { id: tenantId, name: tenantId, phone: '', ownerName: '' };
+  const snap=await getDoc(getTenantDoc(tenantId));
+  if(!snap.exists) throw new Error('Tenant not found');
+  return {...snap.data(),id:snap.id};
 }
 
 // ----------------------------------------------------------------------
@@ -1062,13 +748,13 @@ async function getTenantBrand(tenantId: string): Promise<any> {
 // ----------------------------------------------------------------------
 function israelLocalStamp(iso?: string): string {
   if (!iso) return '';
-  const d = new Date(iso);
+  const d = new Date(typeof (iso as any)?.toDate === 'function' ? (iso as any).toDate() : iso);
   if (Number.isNaN(d.getTime())) return '';
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    hour: '2-digit', minute: '2-digit', second:'2-digit', hourCycle: 'h23'
   }).formatToParts(d).reduce((a: any, p) => { a[p.type] = p.value; return a; }, {});
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
 }
 function previousIsoDate(dateIso: string): string {
   const [y,m,d] = dateIso.split('-').map(Number);
@@ -1079,6 +765,7 @@ function previousIsoDate(dateIso: string): string {
 async function sendRemindersForDate(targetDate: string, reminderType: 'today' | '1day', tenantId = PRIMARY_TENANT_ID, tenantSettings?: any) {
   const smsSettings = tenantSettings || await getTenantSmsSettings(tenantId);
   const brand = await getTenantBrand(tenantId);
+  if (!['active','trial'].includes(brand?.status) || smsSettings.enabled===false || smsSettings.autoSendEnabled===false) return {success:true,sentCount:0,skipped:true};
   const isMorning = reminderType === 'today';
   const typeLabel = isMorning ? 'תזכורת בוקר (יום התור)' : 'תזכורת ערב (יום לפני התור)';
   const currentIsraelTime = new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
@@ -1104,8 +791,8 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
     // that day's configured reminder time. This fixes the 'created after 20:00 => immediate SMS' bug.
     const cutoffDate = isMorning ? targetDate : previousIsoDate(targetDate);
     const cutoffTime = isMorning ? String(smsSettings.morningReminderTime || '08:00') : String(smsSettings.eveningReminderTime || '20:00');
-    const cutoffStamp = `${cutoffDate} ${cutoffTime}`;
-    appointments = appointments.filter((a) => !a.created_at || israelLocalStamp(a.created_at) <= cutoffStamp);
+    const cutoffStamp = `${cutoffDate} ${cutoffTime}:00`;
+    appointments = appointments.filter((a) => (!a.created_at || (israelLocalStamp(a.created_at) && israelLocalStamp(a.created_at) <= cutoffStamp)) && (!isMorning || targetDate > getIsraelTime().dateIso || (targetDate === getIsraelTime().dateIso && a.start_time > getIsraelTime().timeStr)));
     console.log(`[SMS Scheduler] נמצאו ${appointments.length} תורים מתאימים לתאריך ${targetDate}`);
 
     if (appointments.length === 0) {
@@ -1121,15 +808,19 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
       customerGroups[phoneKey].push(appt);
     }
 
+    const previousLogs=await collection(db,'tenants',tenantId,'sms_logs').where('appointmentDate','==',targetDate).get();
+    const acceptedPhones=new Set(previousLogs.docs.filter((d:any)=>['sent','queued'].includes(d.data().status) && d.data().reminderType===(isMorning?'morning_today':'evening_1day')).map((d:any)=>phoneDigits(d.data().recipientPhone)));
     let successCount = 0;
     let failedCount = 0;
     const results: any[] = [];
 
     for (const [phoneKey, appts] of Object.entries(customerGroups)) {
+      if(acceptedPhones.has(phoneKey)) continue;
       const firstAppt = appts[0];
-      const lockKey = `${isMorning ? 'morning' : 'evening'}_${firstAppt.id}_${targetDate}`;
+      const lockKey = reminderKey(reminderType,phoneKey,targetDate);
+      const legacyKeys = appts.map(a=>`${isMorning?'morning':'evening'}_${a.id}_${targetDate}`);
 
-      const claimed = await tryClaimReminderLock(lockKey, tenantId);
+      const claimed = await tryClaimReminderLock(lockKey, tenantId, legacyKeys);
       if (!claimed) {
         console.log(`[SMS Scheduler] ⏭️ דילוג (נשלח כבר בעבר): ${firstAppt.customer_name} (${firstAppt.customer_phone})`);
         continue;
@@ -1150,7 +841,7 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
           : `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך למחר (${israeliDate}):\n${appointmentsList}\nלבירור: ${brand?.phone || ''}\nמחכים לראותך! 💖`;
       }
 
-      const res = await sendSmsViaTelnyx(firstAppt.customer_phone, messageText);
+      const res = await sendSmsViaTelnyx(firstAppt.customer_phone, messageText, tenantId);
 
       const logEntry: SmsLogEntry = {
         id: `sms_${tenantId}_${Date.now()}_${firstAppt.id}`,
@@ -1158,29 +849,29 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
         recipientPhone: firstAppt.customer_phone,
         messageText,
         channel: 'sms',
-        status: res.success ? 'sent' : 'failed',
+        status: res.success ? 'queued' : 'failed',
         reminderType: isMorning ? 'morning_today' : 'evening_1day',
         appointmentDate: targetDate,
         startTime: firstAppt.start_time,
         sentAt: new Date().toISOString(),
         errorMessage: res.error,
       };
-      recordLogEntry(logEntry);
+      await recordLogEntry(logEntry, tenantId);
 
       if (res.success) {
-        successCount += appts.length;
-        await markReminderLockSuccess(lockKey, tenantId);
+        successCount += 1;
+        await markReminderLockSuccess(lockKey, tenantId, res);
         results.push({ customer: firstAppt.customer_name, phone: firstAppt.customer_phone, success: true });
       } else {
-        failedCount += appts.length;
-        await releaseReminderLock(lockKey, tenantId);
+        failedCount += 1;
+        await retainReminderFailure(lockKey, tenantId, res);
         results.push({ customer: firstAppt.customer_name, phone: firstAppt.customer_phone, success: false, error: res.error });
       }
     }
 
     console.log(`[SMS Scheduler] ✅ סיכום ריצה: ${successCount} נשלחו בהצלחה | ${failedCount} נכשלו`);
     return {
-      success: true,
+      success: failedCount === 0,
       count: appointments.length,
       sentCount: successCount,
       failedCount,
@@ -1196,104 +887,11 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 // ----------------------------------------------------------------------
 // Schedulers: Dynamic Node-Cron + 60-Second Fail-Safe Heartbeat
 // ----------------------------------------------------------------------
-let morningCronTask: any = null;
-let eveningCronTask: any = null;
-
-function scheduleOrUpdateCronJobs() {
-  const morningTime = activeServerSettings?.morningReminderTime || '08:00';
-  const eveningTime = activeServerSettings?.eveningReminderTime || '20:00';
-
-  const [mH, mM] = morningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
-  const [eH, eM] = eveningTime.split(':').map((v: string) => parseInt(v, 10) || 0);
-
-  if (morningCronTask) {
-    morningCronTask.stop();
-    morningCronTask = null;
-  }
-  if (eveningCronTask) {
-    eveningCronTask.stop();
-    eveningCronTask = null;
-  }
-
-  // 1. קרון בוקר יומי (תורי היום)
-  const morningCronExpr = `${mM} ${mH} * * *`;
-  morningCronTask = cron.schedule(
-    morningCronExpr,
-    async () => {
-      const todayDate = getIsraelDateString(0);
-      console.log(`[CRON Task] ⏰ הרצת קרון בוקר ${morningTime} לתאריך ${todayDate}`);
-      await sendRemindersForDate(todayDate, 'today');
-    },
-    { timezone: 'Asia/Jerusalem' }
-  );
-  console.log(`[CRON Service] ✅ קרון בוקר מוגדר לשעה ${morningTime} (${morningCronExpr}, Asia/Jerusalem)`);
-
-  // 2. קרון ערב יומי (תורי מחר)
-  const eveningCronExpr = `${eM} ${eH} * * *`;
-  eveningCronTask = cron.schedule(
-    eveningCronExpr,
-    async () => {
-      const tomorrowDate = getIsraelDateString(1);
-      console.log(`[CRON Task] ⏰ הרצת קרון ערב ${eveningTime} לתאריך ${tomorrowDate}`);
-      await sendRemindersForDate(tomorrowDate, '1day');
-    },
-    { timezone: 'Asia/Jerusalem' }
-  );
-  console.log(`[CRON Service] ✅ קרון ערב מוגדר לשעה ${eveningTime} (${eveningCronExpr}, Asia/Jerusalem)`);
-}
-
-async function loadPersistedSettings() {
-  try {
-    if (db) {
-      const snapSms = await getDoc(doc(db, 'settings', 'sms_reminders'));
-      let data: any = {};
-      if (snapSms.exists) {
-        data = snapSms.data();
-      } else {
-        const snapOld = await getDoc(doc(db, 'settings', 'reminders'));
-        if (snapOld.exists) {
-          data = snapOld.data();
-        }
-      }
-
-      // Preserve environment variables if DB field is empty
-      const resolvedApiKey = (data.telnyxApiKey || '').trim() || process.env.TELNYX_API_KEY || activeServerSettings.telnyxApiKey || '';
-      const resolvedFromNumber = (data.telnyxFromNumber || data.telnyxFrom || '').trim() || process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM || activeServerSettings.telnyxFromNumber || 'ALEX BEAUTY';
-      const resolvedProfileId = (data.telnyxProfileId || '').trim() || process.env.TELNYX_PROFILE_ID || KNOWN_TELNYX_PROFILE_ID;
-
-      activeServerSettings = {
-        ...DEFAULT_SMS_SETTINGS,
-        ...data,
-        telnyxApiKey: resolvedApiKey,
-        telnyxFromNumber: resolvedFromNumber,
-        telnyxProfileId: resolvedProfileId,
-      };
-
-      // Synchronize template field aliases
-      const morningText = activeServerSettings.morningTemplate || activeServerSettings.customerTodayTemplate || DEFAULT_SMS_SETTINGS.morningTemplate;
-      const eveningText = activeServerSettings.eveningTemplate || activeServerSettings.customer1DayTemplate || DEFAULT_SMS_SETTINGS.eveningTemplate;
-      activeServerSettings.morningTemplate = morningText;
-      activeServerSettings.customerTodayTemplate = morningText;
-      activeServerSettings.eveningTemplate = eveningText;
-      activeServerSettings.customer1DayTemplate = eveningText;
-
-      console.log('[SMS Engine] ✅ הגדרות תזכורות נטענו:', {
-        morning: activeServerSettings.morningReminderTime,
-        evening: activeServerSettings.eveningReminderTime,
-        todayEnabled: activeServerSettings.notifyCustomerToday,
-        tomorrowEnabled: activeServerSettings.notifyCustomer1DayBefore,
-        hasApiKey: !!activeServerSettings.telnyxApiKey,
-      });
-    }
-  } catch (err) {
-    console.warn('[SMS Engine] שגיאה בטעינת הגדרות:', err);
-  }
-}
-
+// One scheduler scans active tenants; Firestore claims also serialize multiple instances.
 /**
  * בדיקת תזמון חכמה ועמידה (Fail-Safe Automated Engine):
  * בודק תזכורות שממתינות לשליחה להיום (משעת הבוקר והלאה) ולמחר (משעת הערב והלאה).
- * מנגנון הנעילה ב-Firestore מבטיח שכל תור מקבל תזכורת בדיוק פעם אחת!
+ * נעילה מתמשכת מונעת ניסיון אוטומטי חוזר; תוצאה לא ודאית דורשת בדיקה.
  * פותר את בעיית תרדמת השרת (Server Sleep) כך שגם אם השרת התעורר אחרי שעת היעד — התזכורת תישלח מיד.
  */
 let isDispatchingDueReminders = false;
@@ -1307,12 +905,13 @@ async function checkAndDispatchDueReminders(): Promise<any> {
     let tenantIds: string[] = [PRIMARY_TENANT_ID];
     try {
       const snap = await getDocs(collection(db, 'tenants'));
-      tenantIds = Array.from(new Set([PRIMARY_TENANT_ID, ...snap.docs.map((d: any) => d.id)]));
-    } catch {}
+      tenantIds = snap.docs.filter((d:any)=>['active','trial'].includes(d.data().status)).map((d:any)=>d.id);
+    } catch (err) { throw err; }
 
     const results: any[] = [];
     for (const tenantId of tenantIds) {
-      const settings = await getTenantSmsSettings(tenantId);
+      let settings;
+      try { settings = await getTenantSmsSettings(tenantId); } catch(err:any) {results.push({tenantId,error:err.message}); continue;}
       if (settings?.enabled === false || settings?.autoSendEnabled === false) continue;
       const [mH, mM] = String(settings.morningReminderTime || '08:00').split(':').map((v: string) => parseInt(v, 10) || 0);
       const [eH, eM] = String(settings.eveningReminderTime || '20:00').split(':').map((v: string) => parseInt(v, 10) || 0);
@@ -1336,8 +935,7 @@ async function checkAndDispatchDueReminders(): Promise<any> {
 
 async function initSmsEngine() {
   console.log('[SMS Engine] 🚀 מאתחל מנוע SMS ותזמונים אוטומטיים (שליחה רק בשעות המוגדרות או ידנית)...');
-  await loadPersistedSettings();
-  scheduleOrUpdateCronJobs();
+
 
   // הרצת בדיקה ראשונית בעת עליית השרת
   setTimeout(() => {
@@ -1350,14 +948,13 @@ async function initSmsEngine() {
   }, 30 * 1000);
 }
 
-initSmsEngine();
 
 // ----------------------------------------------------
 // 📡 REST API ENDPOINTS
 // ----------------------------------------------------
 
 // Endpoint לבדיקת דופק וסנכרון תזכורות ממתינות (נקרא גם ע"י ה-Frontend וה-Cron)
-app.all(['/api/sms/check-due', '/api/reminders/heartbeat'], async (_req: Request, res: Response) => {
+app.all(['/api/sms/check-due', '/api/reminders/heartbeat'], requireSuperAdmin, async (_req: Request, res: Response) => {
   try {
     const result = await checkAndDispatchDueReminders();
     return res.json(result);
@@ -1367,77 +964,46 @@ app.all(['/api/sms/check-due', '/api/reminders/heartbeat'], async (_req: Request
 });
 
 // 1. Get SMS settings
-app.get(['/api/sms/settings', '/api/whatsapp/settings'], requireAdmin, async (req: Request, res: Response) => {
-  const tenantId = String(req.query?.tenant || req.tenantId || PRIMARY_TENANT_ID);
-  const settings = await getTenantSmsSettings(tenantId);
-  const morning = settings.morningTemplate || settings.customerTodayTemplate;
-  const evening = settings.eveningTemplate || settings.customer1DayTemplate;
-  res.json({ success: true, settings: { ...settings, morningTemplate: morning, customerTodayTemplate: morning, eveningTemplate: evening, customer1DayTemplate: evening } });
+app.get(['/api/sms/settings', '/api/whatsapp/settings'],requireAdmin,async(req,res,next)=>{
+  try { res.json({success:true,settings:await getTenantSmsSettings(req.tenantId!)}); } catch(err){next(err);}
+});
+
+app.get('/api/whatsapp/diagnose',requireAdmin,async(req,res,next)=>{
+  try {
+    const tenantId=req.tenantId!, config=(await getDoc(doc(db,'tenants',tenantId,'private_settings','sms_provider'))).data() || {};
+    const shared=tenantId===PRIMARY_TENANT_ID || process.env.ALLOW_SHARED_SMS_PROVIDER==='true';
+    const from=config.telnyxFromNumber || config.telnyxFrom || (shared ? process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM : '') || '';
+    const hasCredentials=!!(config.telnyxApiKey || (shared && process.env.TELNYX_API_KEY));
+    const hasProfile=!!(config.telnyxProfileId || (shared && process.env.TELNYX_PROFILE_ID));
+    res.json({success:true,tenantId,telnyx:{hasCredentials:hasCredentials && hasProfile && !!from,fromNumber:from,errorSummary:hasCredentials && hasProfile && from?'':'חסרות הגדרות ספק בשרת'},settings:await getTenantSmsSettings(tenantId)});
+  }catch(err){next(err);}
 });
 
 // 2. Save SMS settings & reschedule immediately
-app.post(['/api/sms/settings', '/api/whatsapp/sync-settings'], requireAdmin, async (req: Request, res: Response) => {
+app.post(['/api/sms/settings', '/api/whatsapp/sync-settings'], requireAdmin, async (req,res,next)=>{
   try {
-    const { settings } = req.body;
-    if (!settings || typeof settings !== 'object') {
-      return res.status(400).json({ success: false, error: 'Expected settings object' });
+    const raw=req.body?.settings;
+    if(!raw || typeof raw!=='object' || Array.isArray(raw)) return res.status(400).json({success:false,error:'Expected settings'});
+    const tenantId=req.tenantId!;
+    const current=await getTenantSmsSettings(tenantId);
+    const settings={...current,...publicSettings(raw),provider:'telnyx'};
+    for(const k of ['morningReminderTime','eveningReminderTime']) if(!validTime(settings[k])) return res.status(400).json({success:false,error:'Invalid reminder time'});
+    for(const k of ['enabled','autoSendEnabled','notifyCustomerToday','notifyCustomer1DayBefore']) if(typeof settings[k]!=='boolean') return res.status(400).json({success:false,error:'Invalid reminder flag'});
+    const morning=raw.morningTemplate || raw.customerTodayTemplate || current.morningTemplate;
+    const evening=raw.eveningTemplate || raw.customer1DayTemplate || current.eveningTemplate;
+    Object.assign(settings,{morningTemplate:morning,customerTodayTemplate:morning,eveningTemplate:evening,customer1DayTemplate:evening});
+    const providerFields=['telnyxApiKey','telnyxFromNumber','telnyxFrom','telnyxProfileId'];
+    const provider=Object.fromEntries(providerFields.filter(k=>typeof raw[k]==='string' && raw[k].trim()).map(k=>[k,raw[k].trim()]));
+    for(const k of providerFields) delete settings[k];
+    const batch=db.batch();
+    batch.set(getTenantSettingsDoc(tenantId,'sms_reminders'),settings);
+    if(Object.keys(provider).length) {
+      if((req as any).adminPayload.role!=='super_admin') return res.status(403).json({success:false,error:'Only Super Admin may configure SMS credentials'});
+      batch.set(doc(db,'tenants',tenantId,'private_settings','sms_provider'),provider,{merge:true});
     }
-
-    const morningText =
-      settings.morningTemplate ||
-      settings.customerTodayTemplate ||
-      activeServerSettings.morningTemplate ||
-      activeServerSettings.customerTodayTemplate ||
-      DEFAULT_SMS_SETTINGS.morningTemplate;
-
-    const eveningText =
-      settings.eveningTemplate ||
-      settings.customer1DayTemplate ||
-      activeServerSettings.eveningTemplate ||
-      activeServerSettings.customer1DayTemplate ||
-      DEFAULT_SMS_SETTINGS.eveningTemplate;
-
-    const tenantIdForSettings = String(req.body?.tenantId || req.tenantId || PRIMARY_TENANT_ID);
-    const tenantSettings = {
-      ...(await getTenantSmsSettings(tenantIdForSettings)),
-      ...settings,
-      morningTemplate: morningText,
-      customerTodayTemplate: morningText,
-      eveningTemplate: eveningText,
-      customer1DayTemplate: eveningText,
-    };
-    if (tenantIdForSettings === PRIMARY_TENANT_ID) {
-      activeServerSettings = { ...activeServerSettings, ...tenantSettings };
-      scheduleOrUpdateCronJobs();
-    }
-
-    // Trigger immediate check to process any pending reminders under new time
-    checkAndDispatchDueReminders().catch(() => {});
-
-    if (db) {
-      try {
-        const tenantId = tenantIdForSettings;
-        await setDoc(getTenantSettingsDoc(tenantId, 'sms_reminders'), tenantSettings, { merge: true });
-        if (tenantId === PRIMARY_TENANT_ID) {
-          // Keep legacy Alex settings mirrored during the migration period.
-          await setDoc(doc(db, 'settings', 'sms_reminders'), tenantSettings, { merge: true });
-        }
-      } catch (dbErr) {
-        console.warn('[SMS Settings] אזהרה: שמירה ב-Firestore נכשלה:', dbErr);
-      }
-    }
-
-    console.log('[SMS Settings] ✅ הגדרות עודכנו וסונכרנו:', {
-      morningTime: activeServerSettings.morningReminderTime,
-      eveningTime: activeServerSettings.eveningReminderTime,
-      today: activeServerSettings.notifyCustomerToday,
-      tomorrow: activeServerSettings.notifyCustomer1DayBefore,
-    });
-
-    return res.json({ success: true, settings: tenantSettings });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message });
-  }
+    await batch.commit();
+    res.json({success:true,settings});
+  }catch(err){next(err);}
 });
 
 // 3. Batch Send Trigger (Today or Tomorrow)
@@ -1446,14 +1012,13 @@ app.post(['/api/sms/send-batch', '/api/whatsapp/trigger-morning', '/api/whatsapp
   const { dateIso, tomorrowIso } = getIsraelTime();
   const targetDate = reqType === 'today' ? dateIso : tomorrowIso;
 
-  const result = await sendRemindersForDate(targetDate, reqType, String(req.body?.tenantId || req.tenantId || PRIMARY_TENANT_ID));
-  return res.json(result);
+  if(!['today','1day'].includes(reqType)) return res.status(400).json({success:false,error:'Invalid reminder type'});
+  try {return res.json(await sendRemindersForDate(targetDate, reqType, req.tenantId!));}catch(err:any){return res.status(500).json({success:false,error:'Reminder dispatch failed'});}
 });
 
 app.post(['/api/whatsapp/trigger-evening', '/api/whatsapp/test-1day-evening'], requireAdmin, async (req: Request, res: Response) => {
   const { tomorrowIso } = getIsraelTime();
-  const result = await sendRemindersForDate(tomorrowIso, '1day', String(req.body?.tenantId || req.tenantId || PRIMARY_TENANT_ID));
-  return res.json(result);
+  try {return res.json(await sendRemindersForDate(tomorrowIso,'1day',req.tenantId!));}catch(err:any){return res.status(500).json({success:false,error:'Reminder dispatch failed'});}
 });
 
 // 4. Send Single SMS
@@ -1464,25 +1029,43 @@ app.post(['/api/sms/send-single', '/api/whatsapp/send'], requireAdmin, async (re
       return res.status(429).json({ success: false, error: 'קצב הבקשות מהיר מדי. נא להמתין רגע.' });
     }
 
-    const { phone, message, customerName, appointmentId, reminderType } = req.body;
-    if (!phone || !message) {
+    const { phone, message, customerName, reminderType } = req.body;
+    if (!phoneDigits(phone) || typeof message !== 'string' || !message.trim() || message.length>1600) {
       return res.status(400).json({ success: false, error: 'Phone and message are required' });
     }
 
-    const resSend = await sendSmsViaTelnyx(phone, message);
+    const tenantId = req.tenantId!;
+    await activeTenant(tenantId);
+    const type=req.body.reminderType;
+    const appointmentId=req.body.appointmentId || req.body.appointment?.id;
+    let lockKey = 'manual_' + hash(JSON.stringify([phoneDigits(phone),message,getIsraelDateString()]));
+    let legacyKeys:string[]=[];
+    if(['booking','2hours'].includes(type) && validId(String(appointmentId||''))) lockKey=type+'_'+hash(JSON.stringify([String(appointmentId),phoneDigits(phone)]));
+    if(['today','1day'].includes(type)) {
+      if(!validId(String(appointmentId || ''))) return res.status(400).json({success:false,error:'Appointment ID required'});
+      const appt=await getDoc(getTenantAppointmentDoc(tenantId,String(appointmentId)));
+      if(!appt.exists || appt.data()?.status!=='confirmed' || phoneDigits(appt.data()?.customer_phone)!==phoneDigits(phone)) return res.status(400).json({success:false,error:'Appointment/recipient mismatch'});
+      lockKey=reminderKey(type,phone,appt.data()?.appointment_date);
+      const peers=await getTenantAppointmentsRef(tenantId).where('appointment_date','==',appt.data()?.appointment_date).get();
+      legacyKeys=peers.docs.filter((d:any)=>phoneDigits(d.data().customer_phone)===phoneDigits(phone)).map((d:any)=>`${type==='today'?'morning':'evening'}_${d.id}_${appt.data()?.appointment_date}`);
+    }
+    if(!await tryClaimReminderLock(lockKey,tenantId,legacyKeys)) return res.status(409).json({success:false,error:'הודעה זו כבר נשלחה או ממתינה לבדיקת תוצאה'});
+    const resSend = await sendSmsViaTelnyx(phone, message, tenantId);
+    if(resSend.success) await markReminderLockSuccess(lockKey,tenantId,resSend);
+    else await retainReminderFailure(lockKey,tenantId,resSend);
 
     const logEntry: SmsLogEntry = {
-      id: `sms_single_${Date.now()}`,
+      id: randomUUID(),
       recipientName: customerName || 'לקוח/ה',
       recipientPhone: phone,
       messageText: message,
       channel: 'sms',
-      status: resSend.success ? 'sent' : 'failed',
+      status: resSend.success ? 'queued' : 'failed',
       reminderType: reminderType || 'manual_single',
       sentAt: new Date().toISOString(),
       errorMessage: resSend.error || null,
     };
-    recordLogEntry(logEntry);
+    await recordLogEntry(logEntry, tenantId);
 
     if (!resSend.success) {
       return res.status(400).json(resSend);
@@ -1498,25 +1081,44 @@ app.post(['/api/sms/send-single', '/api/whatsapp/send'], requireAdmin, async (re
 // 5. Test SMS to Admin
 app.post('/api/sms/test', requireAdmin, async (req: Request, res: Response) => {
   try {
+    if(isDispatchRateLimited((req as any).adminPayload.uid)) return res.status(429).json({success:false,error:'Rate limit'});
     const { phone, message } = req.body;
-    if (!phone || !message) {
+    if (!phoneDigits(phone) || typeof message !== 'string' || !message.trim() || message.length>1600) {
       return res.status(400).json({ success: false, error: 'נא להזין טלפון והודעה' });
     }
 
-    const resSend = await sendSmsViaTelnyx(phone, message);
+    const tenantId = req.tenantId!;
+    await activeTenant(tenantId);
+    const type=req.body.reminderType;
+    const appointmentId=req.body.appointmentId || req.body.appointment?.id;
+    let lockKey = 'manual_' + hash(JSON.stringify([phoneDigits(phone),message,getIsraelDateString()]));
+    let legacyKeys:string[]=[];
+    if(['booking','2hours'].includes(type) && validId(String(appointmentId||''))) lockKey=type+'_'+hash(JSON.stringify([String(appointmentId),phoneDigits(phone)]));
+    if(['today','1day'].includes(type)) {
+      if(!validId(String(appointmentId || ''))) return res.status(400).json({success:false,error:'Appointment ID required'});
+      const appt=await getDoc(getTenantAppointmentDoc(tenantId,String(appointmentId)));
+      if(!appt.exists || appt.data()?.status!=='confirmed' || phoneDigits(appt.data()?.customer_phone)!==phoneDigits(phone)) return res.status(400).json({success:false,error:'Appointment/recipient mismatch'});
+      lockKey=reminderKey(type,phone,appt.data()?.appointment_date);
+      const peers=await getTenantAppointmentsRef(tenantId).where('appointment_date','==',appt.data()?.appointment_date).get();
+      legacyKeys=peers.docs.filter((d:any)=>phoneDigits(d.data().customer_phone)===phoneDigits(phone)).map((d:any)=>`${type==='today'?'morning':'evening'}_${d.id}_${appt.data()?.appointment_date}`);
+    }
+    if(!await tryClaimReminderLock(lockKey,tenantId,legacyKeys)) return res.status(409).json({success:false,error:'הודעה זו כבר נשלחה או ממתינה לבדיקת תוצאה'});
+    const resSend = await sendSmsViaTelnyx(phone, message, tenantId);
+    if(resSend.success) await markReminderLockSuccess(lockKey,tenantId,resSend);
+    else await retainReminderFailure(lockKey,tenantId,resSend);
 
     const logEntry: SmsLogEntry = {
-      id: `sms_test_${Date.now()}`,
+      id: randomUUID(),
       recipientName: 'בדיקת מנהלת',
       recipientPhone: phone,
       messageText: message,
       channel: 'sms',
-      status: resSend.success ? 'sent' : 'failed',
+      status: resSend.success ? 'queued' : 'failed',
       reminderType: 'test',
       sentAt: new Date().toISOString(),
       errorMessage: resSend.error || null,
     };
-    recordLogEntry(logEntry);
+    await recordLogEntry(logEntry, tenantId);
 
     if (!resSend.success) {
       return res.status(400).json(resSend);
@@ -1530,12 +1132,12 @@ app.post('/api/sms/test', requireAdmin, async (req: Request, res: Response) => {
 });
 
 // 6. Get Recent Logs
-app.get('/api/sms/logs', requireAdmin, (req: Request, res: Response) => {
-  res.json({ success: true, logs: recentSmsLogs });
+app.get('/api/sms/logs', requireAdmin, async (req,res,next)=>{
+  try {const snap=await collection(db,'tenants',req.tenantId!,'sms_logs').orderBy('sentAt','desc').limit(100).get(); res.json({success:true,logs:snap.docs.map((d:any)=>d.data())});}catch(err){next(err);}
 });
 
 // 7. Multi-Tenant List
-const deletedTenantIds = new Set<string>();
+
 
 const PRIMARY_TENANT_ID = 'alex_beauty';
 const PRIMARY_TENANT_PROFILE = {
@@ -1557,44 +1159,68 @@ const PRIMARY_TENANT_PROFILE = {
 };
 
 async function ensurePrimaryTenant(): Promise<void> {
-  const tenantRef = getTenantDoc(PRIMARY_TENANT_ID);
-  const existing = await getDoc(tenantRef);
-  if (!existing.exists) {
-    await setDoc(tenantRef, { ...PRIMARY_TENANT_PROFILE, migratedAt: new Date().toISOString() }, { merge: true });
+  // Per-document migration receipts survive cancellation/deletion and interrupted runs.
+  const migrate = async (sourceCollection:string,targetCollection:string,transform=(x:any)=>x) => {
+    const snap=await collection(db,sourceCollection).get();
+    for(const item of snap.docs) {
+      const target=doc(db,'tenants',PRIMARY_TENANT_ID,targetCollection,item.id);
+      const receipt=doc(db,'migration_receipts',hash(sourceCollection+'/'+item.id));
+      if(sourceCollection==='appointments' && previousImport && process.env.IMPORT_MISSING_LEGACY_APPOINTMENTS!=='true' && !(await getDoc(target)).exists) {
+        console.warn('[Migration] Missing previously imported appointment retained only in legacy source:',item.id);
+        continue;
+      }
+      await copyOnce(db,item.data(),target,receipt,transform);
+    }
+  };
+  const primaryBefore = await getDoc(getTenantDoc(PRIMARY_TENANT_ID));
+  const previousImport = !!primaryBefore.data()?.migratedAt;
+  try { await getTenantDoc(PRIMARY_TENANT_ID).create(PRIMARY_TENANT_PROFILE); } catch(err:any){if(err.code!==6) throw err;}
+  const configRef=getTenantSettingsDoc(PRIMARY_TENANT_ID);
+  const [services,schedule]=await Promise.all([getDoc(doc(db,'settings','services_config')),getDoc(doc(db,'settings','schedule_settings'))]);
+  await db.runTransaction(async tx=>{
+    const snap=await tx.get(configRef);
+    const current=snap.data() || {};
+    const patch:any={};
+    if(!('services' in current)) patch.services=services.data()?.services || [{id:1,name:"לק ג׳ל",duration_minutes:90,price:150,category:'nails'}];
+    if(!('scheduleSettings' in current)) patch.scheduleSettings=schedule.data() || {businessOpen:'09:20',businessClose:'20:30',fridayOpen:'09:20',fridayClose:'15:00',durationMinutes:90};
+    if(Object.keys(patch).length) tx.set(configRef,patch,{merge:true});
+  });
+  await migrate('appointments','appointments',x=>({...x,tenantId:PRIMARY_TENANT_ID}));
+  await migrate('customers','customers',x=>({...x,tenantId:PRIMARY_TENANT_ID}));
+  await migrate('reminder_locks','reminder_locks');
+  const legacyLogs=await collection(db,'sms_logs').get();
+  for(const item of legacyLogs.docs) {
+    const explicit=item.data().tenantId;
+    const inferred=item.id.startsWith('sms_alex_beauty_')?PRIMARY_TENANT_ID:null;
+    const targetTenant=validId(explicit)?explicit:inferred;
+    if(!targetTenant) continue; // Unattributed root logs remain private; never expose another business's customer.
+    await copyOnce(db,{...item.data(),tenantId:targetTenant},doc(db,'tenants',targetTenant,'sms_logs',item.id),doc(db,'migration_receipts',hash('sms_logs/'+item.id)));
   }
-
-  const configRef = getTenantSettingsDoc(PRIMARY_TENANT_ID, 'config');
-  const config = await getDoc(configRef);
-  if (!config.exists) {
-    await setDoc(configRef, {
-      services: [{ id: 1, name: "לק ג'ל", duration_minutes: 90, price: 150, category: 'nails', description: 'מניקור יסודי משולב ומריחת לק ג׳ל איכותי בגימור מושלם' }],
-      scheduleSettings: { businessOpen: '09:20', businessClose: '20:30', fridayOpen: '09:20', fridayClose: '15:00', durationMinutes: 90 },
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
-  }
-
-  // Idempotent legacy migration: copy only missing docs; never delete the old collections.
-  const [legacyAppointments, legacyCustomers] = await Promise.all([
-    getDocs(collection(db, 'appointments')),
-    getDocs(collection(db, 'customers')),
-  ]);
-  for (const item of legacyAppointments.docs) {
-    const target = getTenantAppointmentDoc(PRIMARY_TENANT_ID, item.id);
-    if (!(await getDoc(target)).exists) await setDoc(target, { ...item.data(), tenantId: PRIMARY_TENANT_ID }, { merge: true });
-  }
-  for (const item of legacyCustomers.docs) {
-    const target = doc(db, 'tenants', PRIMARY_TENANT_ID, 'customers', item.id);
-    if (!(await getDoc(target)).exists) await setDoc(target, { ...item.data(), tenantId: PRIMARY_TENANT_ID }, { merge: true });
+  const legacySms=await getDoc(doc(db,'settings','sms_reminders'));
+  const oldSms=legacySms.exists ? legacySms : await getDoc(doc(db,'settings','reminders'));
+  if(oldSms.exists) await copyOnce(db,oldSms.data(),getTenantSettingsDoc(PRIMARY_TENANT_ID,'sms_reminders'),doc(db,'migration_receipts','alex_sms_settings'),publicSettings);
+  // Move provider secrets out of readable documents; clean old config copies atomically.
+  const tenants=await collection(db,'tenants').get();
+  for(const tenant of tenants.docs) {
+    const smsRef=getTenantSettingsDoc(tenant.id,'sms_reminders'), cfgRef=getTenantSettingsDoc(tenant.id);
+    const privateRef=doc(db,'tenants',tenant.id,'private_settings','sms_provider');
+    await db.runTransaction(async tx=>{
+      const [sms,cfg,priv]=await Promise.all([tx.get(smsRef),tx.get(cfgRef),tx.get(privateRef)]);
+      const source={...(tenant.id===PRIMARY_TENANT_ID?oldSms.data():{}),...cfg.data(),...sms.data()};
+      const secret=Object.fromEntries(['telnyxApiKey','telnyxFromNumber','telnyxFrom','telnyxProfileId'].filter(k=>source[k] && !priv.data()?.[k]).map(k=>[k,source[k]]));
+      if(Object.keys(secret).length) tx.set(privateRef,secret,{merge:true});
+      if(sms.exists) {const clean=publicSettings(sms.data()); for(const k of ['telnyxFromNumber','telnyxFrom','telnyxProfileId']) delete clean[k]; tx.set(smsRef,clean);}
+      if(cfg.exists) {const clean=publicSettings(cfg.data()); if(clean.smsSettings) clean.smsSettings=publicSettings(clean.smsSettings); for(const k of ['telnyxFromNumber','telnyxFrom','telnyxProfileId']) delete clean[k]; tx.set(cfgRef,clean);}
+    });
   }
 }
 
 app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) => {
   try {
-    await ensurePrimaryTenant();
     const snap = await getDocs(collection(db, 'tenants'));
     const baseTenants = snap.docs
       .map((d) => ({ id: d.id, ...d.data() } as any))
-      .filter((t: any) => !deletedTenantIds.has(t.id));
+      .filter((t: any) => t.status !== 'deleted');
 
     // Keep dashboard counters truthful. Tenant documents are the source of identity;
     // appointment/customer counts are derived from each tenant's own collections.
@@ -1623,86 +1249,39 @@ app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) 
 });
 
 // 8. Current Tenant Profile & Branding Endpoint (/api/tenant/current)
-app.get('/api/tenant/current', async (req: Request, res: Response) => {
+app.get('/api/tenant/current', async(req,res,next)=>{
   try {
-    const tenantId = req.tenantId || 'alex_beauty';
-    if (tenantId === PRIMARY_TENANT_ID) {
-      try { await ensurePrimaryTenant(); } catch (e) { console.warn('[Tenant API] primary tenant bootstrap warning', e); }
-    }
-
-    // Fetch tenant profile from /tenants/{tenantId}
-    let tenantProfile: any = null;
-    try {
-      const tSnap = await getDoc(getTenantDoc(tenantId));
-      if (tSnap.exists) {
-        tenantProfile = { id: tSnap.id, ...tSnap.data() };
-      }
-    } catch (err) {
-      console.warn(`[Tenant API] Warning fetching /tenants/${tenantId}:`, err);
-    }
-
-    // Fetch tenant config from /tenants/{tenantId}/settings/config
-    let tenantConfig: any = null;
-    try {
-      const cSnap = await getDoc(getTenantSettingsDoc(tenantId, 'config'));
-      if (cSnap.exists) {
-        tenantConfig = cSnap.data();
-      }
-    } catch (err) {
-      console.warn(`[Tenant API] Warning fetching /tenants/${tenantId}/settings/config:`, err);
-    }
-
-    // Default Fallbacks
-    if (!tenantProfile) {
-      const isAlex = tenantId === 'alex_beauty';
-      tenantProfile = {
-        id: tenantId,
-        name: isAlex ? 'Alex טיפוח ויופי' : `סטודיו ${tenantId}`,
-        tagline: isAlex ? 'מניקור מקצועי ולק ג׳ל' : 'הזמנת תורים אונליין',
-        ownerName: isAlex ? 'אלכסנדרה ביטון' : 'מנהלת סטודיו',
-        phone: isAlex ? '054-6307114' : '050-0000000',
-        email: isAlex ? 'alex@beauty.co.il' : `${tenantId}@beauty.co.il`,
-        city: isAlex ? 'באר שבע' : 'ישראל',
-        address: isAlex ? 'הנרי קנדל 12' : '',
-        primaryColor: '#9333ea', // default purple
-        status: 'active',
-        plan: 'pro',
-        createdAt: '2024-01-15',
-      };
-    }
-
-    if (!tenantConfig) {
-      tenantConfig = {
-        services: [
-          {
-            id: 1,
-            name: "לק ג'ל",
-            duration_minutes: 90,
-            price: 150,
-            category: 'nails',
-            description: 'מניקור יסודי משולב ומריחת לק ג׳ל איכותי בגימור מושלם',
-          },
-        ],
-        scheduleSettings: {
-          businessOpen: '09:20',
-          businessClose: '20:30',
-          fridayOpen: '09:20',
-          fridayClose: '15:00',
-          durationMinutes: 90,
-        },
-      };
-    }
-
-    return res.json({
-      success: true,
-      tenantId,
-      tenant: tenantProfile,
-      config: tenantConfig,
-    });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message });
-  }
+    const tenantId=req.tenantId!;
+    const profile=await activeTenant(tenantId);
+    const config=await getDoc(getTenantSettingsDoc(tenantId));
+    const {ownerAuthUid,ownerAuthEmail,...tenant}=profile || {};
+    res.json({success:true,tenantId,tenant:{...tenant,id:tenantId},config:{services:config.data()?.services || [],scheduleSettings:config.data()?.scheduleSettings || {businessOpen:'',businessClose:'',fridayOpen:'',fridayClose:'',durationMinutes:60}}});
+  }catch(err){next(err);}
 });
+
+function normalizedDomain(value:unknown) {
+  const domain=String(value || '').trim().toLowerCase();
+  if(domain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain)) throw new Error('Invalid custom domain');
+  return domain;
+}
+async function saveTenant(tenantId:string,profile:any,config:any,create:boolean) {
+  if(!validId(tenantId)) throw new Error('Invalid tenant ID');
+  const domain=normalizedDomain(profile.customDomain);
+  await db.runTransaction(async tx=>{
+    const ref=getTenantDoc(tenantId), existing=await tx.get(ref);
+    if(create && existing.exists) throw new Error('Tenant ID already exists');
+    if(!create && !existing.exists) throw new Error('Tenant not found');
+    if(existing.data()?.status==='deleted') throw new Error('Deleted tenant ID cannot be reused');
+    const oldDomain=existing.data()?.customDomain;
+    const mapping=domain?await tx.get(doc(db,'domains',domain)):null;
+    const oldMapping=oldDomain && oldDomain!==domain?await tx.get(doc(db,'domains',oldDomain)):null;
+    if(mapping?.exists && mapping.data()?.tenantId!==tenantId) throw new Error('Domain belongs to another tenant');
+    tx.set(ref,{...profile,customDomain:domain},{merge:!create});
+    tx.set(getTenantSettingsDoc(tenantId),config,{merge:!create});
+    if(domain) tx.set(doc(db,'domains',domain),{tenantId,hostname:domain});
+    if(oldMapping?.data()?.tenantId===tenantId) tx.delete(oldMapping.ref);
+  });
+}
 
 // 9. Super Admin Tenant Onboarding & Domain Mapping Endpoint
 app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res: Response) => {
@@ -1769,25 +1348,10 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
       updatedAt: new Date().toISOString(),
     };
 
-    // 1. Write to /tenants/{tenantId}
-    deletedTenantIds.delete(tenantId);
-    await setDoc(getTenantDoc(tenantId), tenantProfile, { merge: true });
+    await saveTenant(tenantId,tenantProfile,tenantConfig,true);
 
-    // 2. Write to /tenants/{tenantId}/settings/config
-    await setDoc(getTenantSettingsDoc(tenantId, 'config'), tenantConfig, { merge: true });
-
-    // 3. If customDomain is provided, write to /domains/{hostname}
-    if (tenantProfile.customDomain) {
-      await setDoc(doc(db, 'domains', tenantProfile.customDomain), {
-        tenantId,
-        hostname: tenantProfile.customDomain,
-        createdAt: new Date().toISOString(),
-      }, { merge: true });
-      domainToTenantCache[tenantProfile.customDomain] = tenantId;
-    }
-
-    const testUrl = `http://localhost:3000?tenant=${tenantId}`;
-    const adminUrl = `http://localhost:3000/admin?tenant=${tenantId}`;
+    const testUrl = `/?tenant=${tenantId}`;
+    const adminUrl = `/admin?tenant=${tenantId}`;
 
     return res.json({
       success: true,
@@ -1858,21 +1422,10 @@ app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
       updatedAt: new Date().toISOString(),
     };
 
-    await setDoc(getTenantDoc(tenantId), tenantProfile, { merge: true });
-    await setDoc(getTenantSettingsDoc(tenantId, 'config'), tenantConfig, { merge: true });
-
-    const oldDomain = String(existing.customDomain || '').trim().toLowerCase();
-    if (oldDomain && oldDomain !== customDomain) {
-      try { await deleteDoc(doc(db, 'domains', oldDomain)); } catch (_) {}
-      delete domainToTenantCache[oldDomain];
-    }
-    if (customDomain) {
-      await setDoc(doc(db, 'domains', customDomain), { tenantId, hostname: customDomain, updatedAt: new Date().toISOString() }, { merge: true });
-      domainToTenantCache[customDomain] = tenantId;
-    }
+    await saveTenant(tenantId,tenantProfile,tenantConfig,false);
 
     return res.json({ success: true, tenantId, tenant: { id: tenantId, ...existing, ...tenantProfile }, config: tenantConfig,
-      testUrl: `http://localhost:3000?tenant=${tenantId}`, adminUrl: `http://localhost:3000/admin?tenant=${tenantId}` });
+      testUrl: `/?tenant=${tenantId}`, adminUrl: `/admin?tenant=${tenantId}` });
   } catch (err: any) {
     console.error('[Super Admin API] Error updating tenant:', err);
     return res.status(500).json({ success: false, error: err?.message });
@@ -1891,13 +1444,24 @@ app.post('/api/super-admin/tenants/:tenantId/owner-account', requireSuperAdmin, 
     const tenantSnap = await getDoc(getTenantDoc(tenantId));
     if (!tenantSnap.exists) return res.status(404).json({ success: false, error: 'העסק לא נמצא' });
 
+    if(tenantSnap.data()?.status==='deleted') return res.status(409).json({success:false,error:'Tenant is deleted'});
+    if(tenantSnap.data()?.ownerAuthEmail && tenantSnap.data()?.ownerAuthEmail!==email) return res.status(409).json({success:false,error:'Use the existing owner email; reassignment requires an explicit migration'});
     let user;
     try { user = await getAuth().getUserByEmail(email); }
-    catch { user = await getAuth().createUser({ email, password, displayName: displayName || undefined, emailVerified: false }); }
+    catch(err:any) { if(err.code!=='auth/user-not-found') throw err; user = await getAuth().createUser({ email, password, displayName: displayName || undefined, emailVerified: false }); }
+    if(user.customClaims?.role==='super_admin' || getSuperAdminEmails().includes(email) || (user.customClaims?.tenantId && user.customClaims.tenantId!==tenantId) || (tenantSnap.data()?.ownerAuthUid && tenantSnap.data()?.ownerAuthUid!==user.uid)) return res.status(409).json({success:false,error:'Account is already assigned; owner reassignment requires an explicit migration'});
+    await db.runTransaction(async tx=>{
+      const ownerRef=doc(db,'adminUsers',user.uid), tenantRef=getTenantDoc(tenantId);
+      const [binding,current]=await Promise.all([tx.get(ownerRef),tx.get(tenantRef)]);
+      if((binding.exists && binding.data()?.tenantId!==tenantId) || (current.data()?.ownerAuthUid && current.data()?.ownerAuthUid!==user.uid)) throw new Error('Account/tenant assignment conflict');
+      tx.set(ownerRef,{uid:user.uid,email,role:'business_admin',tenantId,disabled:true},{merge:true});
+      tx.update(tenantRef,{ownerAuthUid:user.uid,ownerAuthEmail:email});
+    });
     if (user.email === email) {
       await getAuth().updateUser(user.uid, { password, displayName: displayName || user.displayName || undefined, disabled: false });
     }
-    await getAuth().setCustomUserClaims(user.uid, { role: 'business_admin', tenantId });
+    await getAuth().setCustomUserClaims(user.uid, { ...user.customClaims, role: 'business_admin', tenantId });
+    await getAuth().revokeRefreshTokens(user.uid);
     await setDoc(doc(db, 'adminUsers', user.uid), {
       uid: user.uid, email, displayName, role: 'business_admin', tenantId, disabled: false, updatedAt: new Date().toISOString()
     }, { merge: true });
@@ -1917,58 +1481,44 @@ app.post('/api/super-admin/tenants/:tenantId/owner-account/disable', requireSupe
     if (!uid) return res.status(404).json({ success: false, error: 'לא הוגדר חשבון בעלים לעסק' });
     const disabled = req.body?.disabled !== false;
     await getAuth().updateUser(uid, { disabled });
+    if(disabled) await getAuth().revokeRefreshTokens(uid);
     await setDoc(doc(db, 'adminUsers', uid), { disabled, updatedAt: new Date().toISOString() }, { merge: true });
     return res.json({ success: true, disabled });
   } catch (err: any) { return res.status(500).json({ success: false, error: err?.message }); }
 });
 
 // 9.5 Delete Tenant Endpoint
-app.delete('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Request, res: Response) => {
+app.delete('/api/super-admin/tenants/:tenantId',requireSuperAdmin,async(req,res,next)=>{
   try {
-    const { tenantId } = req.params;
-    if (!tenantId || tenantId === 'alex_beauty') {
-      return res.status(400).json({ success: false, error: 'Cannot delete default tenant' });
+    const tenantId=req.params.tenantId;
+    if(!validId(tenantId) || tenantId===PRIMARY_TENANT_ID) return res.status(400).json({success:false,error:'Cannot delete primary tenant'});
+    const tenant=await getDoc(getTenantDoc(tenantId));
+    if(!tenant.exists) return res.status(404).json({success:false,error:'Tenant not found'});
+    // Persistent tombstone immediately denies access on every server and stops reminders.
+    await getTenantDoc(tenantId).update({status:'deleted',deletedAt:new Date().toISOString()});
+    if(tenant.data()?.ownerAuthUid) {
+      await getAuth().updateUser(tenant.data()!.ownerAuthUid,{disabled:true});
+      await getAuth().revokeRefreshTokens(tenant.data()!.ownerAuthUid);
     }
-
-    deletedTenantIds.add(tenantId);
-
-    try {
-      await deleteDoc(getTenantDoc(tenantId));
-    } catch (e) {
-      console.warn(`[Delete Tenant] Warning deleting doc /tenants/${tenantId}:`, e);
-    }
-
-    try {
-      await deleteDoc(getTenantSettingsDoc(tenantId, 'config'));
-    } catch (e) {
-      console.warn(`[Delete Tenant] Warning deleting doc /tenants/${tenantId}/settings/config:`, e);
-    }
-
-    return res.json({
-      success: true,
-      message: `Tenant ${tenantId} deleted successfully`,
-    });
-  } catch (err: any) {
-    console.error('[Delete Tenant API] Error:', err);
-    return res.status(500).json({ success: false, error: err?.message });
-  }
+    const mappings=await collection(db,'domains').where('tenantId','==',tenantId).get();
+    for(const mapping of mappings.docs) await mapping.ref.delete();
+    res.json({success:true,message:'Tenant deactivated; records retained for recovery'});
+  }catch(err){next(err);}
 });
 
-// 10. Tenant Admin Data Endpoint (Local dev bypass support)
+// 10. Protected tenant admin data
 app.get('/api/admin/tenant-data', requireAdmin, async (req: Request, res: Response) => {
   try {
     const tenantId = (req.query.tenant as string) || req.tenantId || 'alex_beauty';
     const isDev = process.env.NODE_ENV !== 'production';
 
-    // Fetch live appointments from /tenants/{tenantId}/appointments, fallback to root /appointments
+    // Read the authorized tenant collection; database errors are not empty results.
     let tenantAppointments: any[] = [];
     try {
       const tenantSnap = await getDocs(getTenantAppointmentsRef(tenantId));
       tenantAppointments = tenantSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-    } catch {
-      tenantAppointments = serverAppointmentsByTenant[tenantId] || [];
-    }
+    } catch(err) { throw err; }
 
     return res.json({
       success: true,
@@ -1982,16 +1532,8 @@ app.get('/api/admin/tenant-data', requireAdmin, async (req: Request, res: Respon
   }
 });
 
-// Sync in-memory appointments
-app.post('/api/whatsapp/sync-appointments', requireAdmin, (req: Request, res: Response) => {
-  if (Array.isArray(req.body?.appointments)) {
-    const tenantId = String(req.body?.tenantId || req.tenantId || 'alex_beauty');
-    serverAppointmentsByTenant[tenantId] = req.body.appointments;
-    serverAppointments = req.body.appointments;
-    return res.json({ success: true, count: req.body.appointments.length, tenantId });
-  }
-  return res.status(400).json({ success: false, error: 'Expected appointments array' });
-});
+// Compatibility endpoint: Firestore remains the sole appointment source.
+app.post('/api/whatsapp/sync-appointments',requireAdmin,(_req,res)=>res.json({success:true,message:'Server reads confirmed appointments from Firestore'}));
 
 // Registration Webhook Endpoint
 app.post('/api/register-webhook', async (req: Request, res: Response) => {
@@ -2004,7 +1546,7 @@ app.post('/api/register-webhook', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Name and phone are required' });
     }
 
-    console.log(`[Registration Webhook] New customer: ${sanitizedName} (${sanitizedPhone})`);
+
     return res.json({ success: true, message: 'Registration received' });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message });
@@ -2014,6 +1556,12 @@ app.post('/api/register-webhook', async (req: Request, res: Response) => {
 // ----------------------------------------------------
 // Vite & Static Asset Handling
 // ----------------------------------------------------
+app.get('/api/health',(_req,res)=>res.json({success:true,service:'alex-multi-tenant'}));
+app.use('/api',(_req,res)=>res.status(404).json({success:false,error:'API route not found'}));
+app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
+  console.error('[API]',err.message);
+  res.status(err.status || 500).json({success:false,error:'הפעולה נכשלה. יש לנסות שוב או לפנות למנהלת.'});
+});
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -2055,9 +1603,11 @@ async function startServer() {
     throw bootstrapErr;
   }
 
+  if(process.env.SMS_SCHEDULER_ENABLED !== 'false') await initSmsEngine();
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Alex Beauty Server running on http://0.0.0.0:${PORT} [Israel Time: ${getIsraelTime().timeStr}]`);
   });
 }
 
-startServer();
+if(process.env.NODE_ENV!=='test') startServer().catch(err=>{console.error('[Startup]',err.message);process.exitCode=1;});
+export { app, ensurePrimaryTenant, sendRemindersForDate, checkAndDispatchDueReminders, db };

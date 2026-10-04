@@ -207,7 +207,7 @@ function MainApp() {
   const [isTorModalOpen, setIsTorModalOpen] = useState(false);
   const [isChoiceModalOpen, setIsChoiceModalOpen] = useState(false);
   const [confirmedAppointment, setConfirmedAppointment] = useState<Appointment | null>(null);
-  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [appointments, setAppointments] = useState<Appointment[]>(() => getStoredAppointments());
   const [isMyBookingOpen, setIsMyBookingOpen] = useState(false);
   const [customerApptToCancel, setCustomerApptToCancel] = useState<Appointment | null>(null);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -219,6 +219,9 @@ function MainApp() {
 
   // Subscribe to real-time Firestore appointments for the dynamic tenantId
   useEffect(() => {
+    // Keep the last tenant-scoped snapshot visible during a temporary Firestore
+    // quota/network outage; the server remains authoritative for every mutation.
+    setAppointments(getStoredAppointments());
     const unsubscribeAppointments = subscribeAppointments((remoteAppointments) => {
       const deduped = deduplicateAppointments(remoteAppointments);
       setAppointments(deduped);

@@ -83,15 +83,27 @@ function capabilities(tenantId:string):Record<string,string> {
 export function subscribeAppointments(onUpdate:(appointments:Appointment[])=>void,onError?:(error:Error)=>void,tenantId=getCurrentTenantId()):()=>void {
   let active=true, running=false;
   const poll=async()=>{
-    if(running) return;
+    if(running || (typeof document!=='undefined' && document.visibilityState==='hidden')) return;
     running=true;
     try {const data=await tenantApi('/api/appointments/list',{capabilities:capabilities(tenantId)},tenantId);if(active) onUpdate(data.appointments);}
-    catch(err){if(active){onUpdate([]);onError?.(err as Error);}} finally {running=false;}
+    catch(err){if(active){onError?.(err as Error);}} finally {running=false;}
   };
   void poll();
-  const timer=setInterval(poll,10000);
+  // v17 polled every 10s and could exhaust Firestore's daily free read quota in a
+  // few hours. v18 refreshes every 2 minutes while visible, plus immediately when
+  // the tab regains focus/auth changes. Booking/cancel flows already update local
+  // state instantly and server transactions still reject stale slot conflicts.
+  const timer=setInterval(()=>{void poll();},120000);
+  const onFocus=()=>{void poll();};
+  const onVisibility=()=>{if(document.visibilityState==='visible') void poll();};
+  if(typeof window!=='undefined') window.addEventListener('focus',onFocus);
+  if(typeof document!=='undefined') document.addEventListener('visibilitychange',onVisibility);
   const unsub=onAuthStateChanged(auth,()=>{void poll();});
-  return ()=>{active=false;clearInterval(timer);unsub();};
+  return ()=>{
+    active=false;clearInterval(timer);unsub();
+    if(typeof window!=='undefined') window.removeEventListener('focus',onFocus);
+    if(typeof document!=='undefined') document.removeEventListener('visibilitychange',onVisibility);
+  };
 }
 
 /**

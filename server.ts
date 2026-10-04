@@ -63,6 +63,87 @@ type WhereConstraint = { field: string; op: any; value: any };
 const where = (field: string, op: any, value: any): WhereConstraint => ({ field, op, value });
 const query = (ref: any, ...constraints: WhereConstraint[]) => constraints.reduce((q: any, c) => q.where(c.field, c.op, c.value), ref);
 
+// Firestore free-tier protection -------------------------------------------------
+// v17 could burn the daily read quota quickly because the browser polled every
+// 10 seconds, the Super Admin loaded every appointment/customer document just to
+// count them, and the SMS heartbeat rescanned after its due time every 30 seconds.
+// Keep short-lived server caches, aggregate counters and explicit quota backoff so
+// a quota event degrades data APIs instead of crashing/restarting the whole service.
+const clampMs = (value: string | undefined, fallback: number, min: number, max: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+};
+const APPOINTMENTS_CACHE_TTL_MS = clampMs(process.env.APPOINTMENTS_CACHE_TTL_MS, 10 * 60_000, 30_000, 30 * 60_000);
+const TENANT_CACHE_TTL_MS = clampMs(process.env.TENANT_CACHE_TTL_MS, 5 * 60_000, 10_000, 30 * 60_000);
+const SUPER_ADMIN_CACHE_TTL_MS = clampMs(process.env.SUPER_ADMIN_CACHE_TTL_MS, 2 * 60_000, 10_000, 10 * 60_000);
+const FIRESTORE_QUOTA_BACKOFF_MS = clampMs(process.env.FIRESTORE_QUOTA_BACKOFF_MS, 15 * 60_000, 60_000, 6 * 60 * 60_000);
+
+function isFirestoreQuotaError(err: any): boolean {
+  const code = err?.code;
+  const message = String(err?.message || err || '');
+  return code === 8 || code === '8' || code === 'resource-exhausted' || /RESOURCE_EXHAUSTED|quota limit exceeded|free daily read units/i.test(message);
+}
+function isRetryableFirestoreError(err: any): boolean {
+  const code = Number(err?.code);
+  return isFirestoreQuotaError(err) || [4, 10, 13, 14].includes(code) || /DEADLINE_EXCEEDED|ABORTED|INTERNAL|UNAVAILABLE/i.test(String(err?.message || ''));
+}
+
+let firestoreQuotaBackoffUntil = 0;
+function noteFirestoreQuota(err: any, source: string) {
+  if (!isFirestoreQuotaError(err)) return false;
+  firestoreQuotaBackoffUntil = Math.max(firestoreQuotaBackoffUntil, Date.now() + FIRESTORE_QUOTA_BACKOFF_MS);
+  console.warn(`[Firestore] ⚠️ quota exhausted during ${source}; backing off until ${new Date(firestoreQuotaBackoffUntil).toISOString()}`);
+  return true;
+}
+function firestoreQuotaBackoffActive() {
+  return Date.now() < firestoreQuotaBackoffUntil;
+}
+function quotaBackoffError(source: string) {
+  const err: any = new Error(`Firestore quota backoff is active for ${source} until ${new Date(firestoreQuotaBackoffUntil).toISOString()}`);
+  err.code = 8;
+  err.localQuotaBackoff = true;
+  return err;
+}
+
+type CachedAppointments = { expiresAt: number; rows: any[] };
+const appointmentListCache = new Map<string, CachedAppointments>();
+const tenantProfileCache = new Map<string, { expiresAt: number; data: any }>();
+const domainTenantCache = new Map<string, { expiresAt: number; tenantId: string }>();
+let superAdminTenantsCache: { expiresAt: number; tenants: any[] } | null = null;
+
+function invalidateTenantCaches(tenantId: string) {
+  appointmentListCache.delete(`${tenantId}:admin`);
+  appointmentListCache.delete(`${tenantId}:public`);
+  tenantProfileCache.delete(tenantId);
+  superAdminTenantsCache = null;
+}
+function invalidateAppointmentsCache(tenantId: string) {
+  appointmentListCache.delete(`${tenantId}:admin`);
+  appointmentListCache.delete(`${tenantId}:public`);
+  superAdminTenantsCache = null;
+}
+
+async function cachedAppointmentRows(tenantId: string, adminView: boolean): Promise<any[]> {
+  const key = `${tenantId}:${adminView ? 'admin' : 'public'}`;
+  const cached = appointmentListCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.rows;
+  // Once Google has told us the daily quota is exhausted, do not hammer the
+  // same database on every browser poll. Serve the last known snapshot when we
+  // have one; otherwise fail locally with 503 until the backoff expires.
+  if (firestoreQuotaBackoffActive()) {
+    if (cached) return cached.rows;
+    throw quotaBackoffError(`appointments ${tenantId}`);
+  }
+  let ref: any = getTenantAppointmentsRef(tenantId);
+  // Public availability only needs current/future slots. Avoid rereading historical
+  // appointments for every visitor. Admins still receive the complete history.
+  if (!adminView) ref = ref.where('appointment_date', '>=', israelClock().dateIso);
+  const snap = await getDocs(ref);
+  const rows = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+  appointmentListCache.set(key, { expiresAt: Date.now() + APPOINTMENTS_CACHE_TTL_MS, rows });
+  return rows;
+}
+
 const normalizePhone = phoneDigits;
 
 // Security: JSON body parser with size limit to prevent Denial of Service attacks
@@ -112,8 +193,16 @@ async function resolveTenantDomain(req: Request, res: Response, next: NextFuncti
     if (selectors.length) req.tenantId = String(selectors[0]);
     else {
       const hostname = req.hostname.toLowerCase();
-      const mapped = await getDoc(doc(db, 'domains', hostname));
-      req.tenantId = mapped.exists ? mapped.data()?.tenantId : PRIMARY_TENANT_ID;
+      const cachedDomain = domainTenantCache.get(hostname);
+      if (cachedDomain && cachedDomain.expiresAt > Date.now()) req.tenantId = cachedDomain.tenantId;
+      else if (firestoreQuotaBackoffActive() && cachedDomain) req.tenantId = cachedDomain.tenantId;
+      else {
+        if (firestoreQuotaBackoffActive()) throw quotaBackoffError(`domain ${hostname}`);
+        const mapped = await getDoc(doc(db, 'domains', hostname));
+        const resolvedTenantId = mapped.exists ? String(mapped.data()?.tenantId || '') : PRIMARY_TENANT_ID;
+        req.tenantId = resolvedTenantId;
+        if (validId(resolvedTenantId)) domainTenantCache.set(hostname, { expiresAt: Date.now() + 10 * 60_000, tenantId: resolvedTenantId });
+      }
     }
     if (!validId(req.tenantId)) return res.status(400).json({success:false,error:'Invalid tenant ID'});
     next();
@@ -133,9 +222,23 @@ app.param(['tenantId','id'], (req,res,next,value)=>{
 // ----------------------------------------------------
 async function optionalAdmin(req: Request) { return req.headers.authorization ? await decodeAdmin(req) : null; }
 async function activeTenant(tenantId: string) {
+  const cached = tenantProfileCache.get(tenantId);
+  if (cached && cached.expiresAt > Date.now()) {
+    if (!['active','trial'].includes(cached.data?.status)) throw new Error('העסק אינו פעיל או לא נמצא');
+    return cached.data;
+  }
+  if (firestoreQuotaBackoffActive()) {
+    if (cached) {
+      if (!['active','trial'].includes(cached.data?.status)) throw new Error('העסק אינו פעיל או לא נמצא');
+      return cached.data;
+    }
+    throw quotaBackoffError(`tenant ${tenantId}`);
+  }
   const snap = await getDoc(getTenantDoc(tenantId));
   if (!snap.exists || !['active','trial'].includes(snap.data()?.status)) throw new Error('העסק אינו פעיל או לא נמצא');
-  return snap.data();
+  const data = snap.data();
+  tenantProfileCache.set(tenantId, { expiresAt: Date.now() + TENANT_CACHE_TTL_MS, data });
+  return data;
 }
 async function cancelBooking(req: Request, res: Response) {
   try {
@@ -155,8 +258,12 @@ async function cancelBooking(req: Request, res: Response) {
       tx.update(ref,{status:'cancelled',updated_at:new Date().toISOString()});
       tx.set(doc(db,'tenants',tenantId,'booking_days',data.appointment_date),{updatedAt:new Date().toISOString()});
     });
+    invalidateAppointmentsCache(tenantId);
     res.json({success:true});
-  } catch(err:any) {res.status(403).json({success:false,error:err.message});}
+  } catch(err:any) {
+    const quotaExceeded = noteFirestoreQuota(err, 'cancel appointment');
+    res.status(quotaExceeded ? 503 : 403).json({success:false,error:quotaExceeded?'Firestore quota temporarily exhausted':err.message});
+  }
 }
 app.post('/api/appointments/cancel',cancelBooking);
 app.post('/api/admin/appointments/delete',requireAdmin,cancelBooking);
@@ -165,16 +272,19 @@ app.post('/api/appointments/list',async(req,res)=>{
     const tenantId=req.tenantId!;
     await activeTenant(tenantId);
     const admin=await optionalAdmin(req);
-    const canRead=admin && authorizeTenant(admin,[tenantId],tenantId)===tenantId;
+    const canRead=!!(admin && authorizeTenant(admin,[tenantId],tenantId)===tenantId);
     const capabilities=req.body?.capabilities || {};
-    const snap=await getDocs(getTenantAppointmentsRef(tenantId));
-    const appointments=snap.docs.filter((d:any)=>d.data().status!=='cancelled').map((d:any)=>{
-      const {accessTokenHash,...data}=d.data();
-      if(canRead || (accessTokenHash && typeof capabilities[d.id]==='string' && hash(capabilities[d.id])===accessTokenHash)) return {...data,id:d.id};
-      return {id:d.id,appointment_date:data.appointment_date,start_time:data.start_time,end_time:data.end_time,status:'confirmed',customer_name:'תפוס',customer_phone:'',service_id:0,service_name:'',price:0,notes:''};
+    const rows=await cachedAppointmentRows(tenantId, canRead);
+    const appointments=rows.filter((row:any)=>row.status!=='cancelled').map((row:any)=>{
+      const {id,accessTokenHash,...data}=row;
+      if(canRead || (accessTokenHash && typeof capabilities[id]==='string' && hash(capabilities[id])===accessTokenHash)) return {...data,id};
+      return {id,appointment_date:data.appointment_date,start_time:data.start_time,end_time:data.end_time,status:'confirmed',customer_name:'תפוס',customer_phone:'',service_id:0,service_name:'',price:0,notes:''};
     });
     res.json({success:true,appointments});
-  }catch(err:any){res.status(403).json({success:false,error:err.message});}
+  }catch(err:any){
+    const quotaExceeded = noteFirestoreQuota(err, 'appointments list');
+    res.status(quotaExceeded ? 503 : 403).json({success:false,error:quotaExceeded?'Firestore quota temporarily exhausted':err.message});
+  }
 });
 app.post('/api/appointments/book',async(req,res)=>{
   try {
@@ -217,8 +327,12 @@ app.post('/api/appointments/book',async(req,res)=>{
       if(customerRef && !customer?.exists) tx.create(customerRef,{full_name:saved.customer_name,phone:saved.customer_phone,notes:'',created_at:saved.created_at,last_login_at:saved.created_at});
       tx.set(guard,{updatedAt:new Date().toISOString()});
     });
+    invalidateAppointmentsCache(tenantId);
     res.json({success:true,id,accessToken});
-  }catch(err:any){res.status(409).json({success:false,error:err.message});}
+  }catch(err:any){
+    const quotaExceeded = noteFirestoreQuota(err, 'book appointment');
+    res.status(quotaExceeded ? 503 : 409).json({success:false,error:quotaExceeded?'Firestore quota temporarily exhausted':err.message});
+  }
 });
 
 app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
@@ -321,10 +435,12 @@ app.post('/api/customers/upsert', requireAdmin, async (req: Request, res: Respon
       });
     }
 
+    superAdminTenantsCache = null;
     return res.json({ success: true });
   } catch (err: any) {
     console.error('[Customers Upsert] Error:', err);
-    return res.status(500).json({ success: false, error: err.message });
+    const quotaExceeded = noteFirestoreQuota(err, 'customer upsert');
+    return res.status(quotaExceeded ? 503 : 500).json({ success: false, error: quotaExceeded ? 'Firestore quota temporarily exhausted' : err.message });
   }
 });
 
@@ -335,9 +451,9 @@ app.post('/api/customers/upsert', requireAdmin, async (req: Request, res: Respon
 app.get('/api/admin/customers', requireAdmin, async (req: Request, res: Response) => {
   try {
     const tenantId = String(req.query?.tenant || req.tenantId || 'alex_beauty');
-    const [custsSnap, apptsSnap] = await Promise.all([
+    const [custsSnap, appointmentRows] = await Promise.all([
       getDocs(collection(db, 'tenants', tenantId, 'customers')),
-      getDocs(getTenantAppointmentsRef(tenantId)),
+      cachedAppointmentRows(tenantId, true),
     ]);
 
     // מיפוי תורים לפי מספר טלפון נקי
@@ -346,8 +462,7 @@ app.get('/api/admin/customers', requireAdmin, async (req: Request, res: Response
       { count: number; lastDate: string; name: string }
     > = {};
 
-    apptsSnap.forEach((docSnap) => {
-      const data = docSnap.data();
+    appointmentRows.forEach((data: any) => {
       const phone = normalizePhone(data.customer_phone);
       if (!phone || phone.length < 7) return;
 
@@ -405,7 +520,8 @@ app.get('/api/admin/customers', requireAdmin, async (req: Request, res: Response
     return res.json({ success: true, customers: customersList });
   } catch (err: any) {
     console.error('[Admin Customers API] Error:', err);
-    return res.status(500).json({ success: false, error: err.message });
+    const quotaExceeded = noteFirestoreQuota(err, 'admin customers');
+    return res.status(quotaExceeded ? 503 : 500).json({ success: false, error: quotaExceeded ? 'Firestore quota temporarily exhausted' : err.message });
   }
 });
 
@@ -418,9 +534,11 @@ app.delete('/api/admin/customers/:id', requireAdmin, async (req: Request, res: R
     const tenantId = String(req.query?.tenant || req.tenantId || 'alex_beauty');
     if (!id) return res.status(400).json({ success: false, error: 'Missing customer id' });
     await deleteDoc(doc(db, 'tenants', tenantId, 'customers', id));
+    superAdminTenantsCache = null;
     return res.json({ success: true });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    const quotaExceeded = noteFirestoreQuota(err, 'customer delete');
+    return res.status(quotaExceeded ? 503 : 500).json({ success: false, error: quotaExceeded ? 'Firestore quota temporarily exhausted' : err.message });
   }
 });
 
@@ -593,6 +711,14 @@ function getIsraelDateString(daysOffset = 0): string {
 }
 const getIsraelTime = israelClock;
 
+// The product uses one central SMS provider for all tenants by default.
+// Per-tenant private_settings may override credentials; setting
+// ALLOW_SHARED_SMS_PROVIDER=false explicitly disables the shared fallback for
+// non-primary businesses.
+function sharedSmsProviderAllowed(tenantId: string): boolean {
+  return tenantId === PRIMARY_TENANT_ID || process.env.ALLOW_SHARED_SMS_PROVIDER !== 'false';
+}
+
 // ----------------------------------------------------------------------
 // Telnyx SMS Dispatch Gateway
 // ----------------------------------------------------------------------
@@ -601,7 +727,7 @@ const getIsraelTime = israelClock;
 async function sendSmsViaTelnyx(to: string, message: string, tenantId: string): Promise<{ success: boolean; data?: any; error?: string; uncertain?:boolean }> {
   const providerSnap = await getDoc(doc(db,'tenants',tenantId,'private_settings','sms_provider'));
   const provider = providerSnap.data() || {};
-  const shared = tenantId===PRIMARY_TENANT_ID || process.env.ALLOW_SHARED_SMS_PROVIDER==='true';
+  const shared = sharedSmsProviderAllowed(tenantId);
   const apiKey = String(provider.telnyxApiKey || (shared ? process.env.TELNYX_API_KEY : '') || '').trim();
   const fromNumber = String(provider.telnyxFromNumber || provider.telnyxFrom || (shared ? process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM : '') || '').trim();
   const profileId = String(provider.telnyxProfileId || (shared ? process.env.TELNYX_PROFILE_ID : '') || '').trim();
@@ -879,75 +1005,121 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
       message: `נשלחו ${successCount} תזכורות SMS בהצלחה`,
     };
   } catch (error: any) {
+    const quotaExceeded = noteFirestoreQuota(error, `SMS reminder ${tenantId}/${reminderType}/${targetDate}`);
     console.error(`[SMS Scheduler] ❌ שגיאה כללית:`, error);
-    return { success: false, error: error?.message };
+    return { success: false, quotaExceeded, retryable: isRetryableFirestoreError(error), error: error?.message };
   }
 }
 
 // ----------------------------------------------------------------------
-// Schedulers: Dynamic Node-Cron + 60-Second Fail-Safe Heartbeat
+// Scheduler: quota-aware, once-per-reminder-window, multi-tenant
 // ----------------------------------------------------------------------
-// One scheduler scans active tenants; Firestore claims also serialize multiple instances.
-/**
- * בדיקת תזמון חכמה ועמידה (Fail-Safe Automated Engine):
- * בודק תזכורות שממתינות לשליחה להיום (משעת הבוקר והלאה) ולמחר (משעת הערב והלאה).
- * נעילה מתמשכת מונעת ניסיון אוטומטי חוזר; תוצאה לא ודאית דורשת בדיקה.
- * פותר את בעיית תרדמת השרת (Server Sleep) כך שגם אם השרת התעורר אחרי שעת היעד — התזכורת תישלח מיד.
- */
+// The old 30-second heartbeat reread tenants/settings/appointments for the
+// remainder of the day after a reminder became due. v18 polls lightly and,
+// once a tenant/day/type has been processed, never scans that reminder again
+// in the same process. Durable Firestore reminder locks remain the final
+// duplicate-send guard across restarts and multiple instances.
+const SMS_SCHEDULER_INTERVAL_MS = clampMs(process.env.SMS_SCHEDULER_INTERVAL_MS, 5 * 60_000, 60_000, 30 * 60_000);
+const SMS_SCHEDULER_CONFIG_CACHE_MS = clampMs(process.env.SMS_SCHEDULER_CONFIG_CACHE_MS, 15 * 60_000, 60_000, 60 * 60_000);
 let isDispatchingDueReminders = false;
+let smsEngineInitialized = false;
+let schedulerConfigCache: { expiresAt: number; items: Array<{ tenantId: string; settings: any }> } | null = null;
+const completedDispatches = new Map<string, number>();
+
+function schedulerDispatchKey(tenantId: string, type: 'today' | '1day', targetDate: string) {
+  return `${tenantId}:${type}:${targetDate}`;
+}
+function pruneCompletedDispatches() {
+  const cutoff = Date.now() - 3 * 24 * 60 * 60_000;
+  for (const [key, value] of completedDispatches) if (value < cutoff) completedDispatches.delete(key);
+}
+async function getSchedulerTenantConfigs(force = false) {
+  if (!force && schedulerConfigCache && schedulerConfigCache.expiresAt > Date.now()) return schedulerConfigCache.items;
+  const snap = await getDocs(collection(db, 'tenants').select('status'));
+  const ids = snap.docs.filter((d: any) => ['active', 'trial'].includes(d.data().status)).map((d: any) => d.id);
+  const items = (await Promise.all(ids.map(async (tenantId: string) => {
+    try { return { tenantId, settings: await getTenantSmsSettings(tenantId) }; }
+    catch (err: any) {
+      if (isFirestoreQuotaError(err)) throw err;
+      console.warn(`[SMS Scheduler] settings warning for ${tenantId}:`, err?.message || err);
+      return null;
+    }
+  }))).filter(Boolean) as Array<{ tenantId: string; settings: any }>;
+  schedulerConfigCache = { expiresAt: Date.now() + SMS_SCHEDULER_CONFIG_CACHE_MS, items };
+  return items;
+}
 
 async function checkAndDispatchDueReminders(): Promise<any> {
-  if (isDispatchingDueReminders) return { success: true, checkedAt: new Date().toISOString() };
+  if (isDispatchingDueReminders) return { success: true, skipped: true, reason: 'dispatch_in_progress', checkedAt: new Date().toISOString() };
+  if (Date.now() < firestoreQuotaBackoffUntil) {
+    return { success: false, skipped: true, reason: 'firestore_quota_backoff', retryAfter: new Date(firestoreQuotaBackoffUntil).toISOString() };
+  }
   isDispatchingDueReminders = true;
   try {
+    pruneCompletedDispatches();
     const { dateIso, tomorrowIso, hour, minute } = getIsraelTime();
     const currentTotalMinutes = hour * 60 + minute;
-    let tenantIds: string[] = [PRIMARY_TENANT_ID];
-    try {
-      const snap = await getDocs(collection(db, 'tenants'));
-      tenantIds = snap.docs.filter((d:any)=>['active','trial'].includes(d.data().status)).map((d:any)=>d.id);
-    } catch (err) { throw err; }
-
+    const tenants = await getSchedulerTenantConfigs();
     const results: any[] = [];
-    for (const tenantId of tenantIds) {
-      let settings;
-      try { settings = await getTenantSmsSettings(tenantId); } catch(err:any) {results.push({tenantId,error:err.message}); continue;}
+
+    for (const { tenantId, settings } of tenants) {
       if (settings?.enabled === false || settings?.autoSendEnabled === false) continue;
       const [mH, mM] = String(settings.morningReminderTime || '08:00').split(':').map((v: string) => parseInt(v, 10) || 0);
       const [eH, eM] = String(settings.eveningReminderTime || '20:00').split(':').map((v: string) => parseInt(v, 10) || 0);
       const item: any = { tenantId };
+
+      const runDue = async (type: 'today' | '1day', targetDate: string) => {
+        const key = schedulerDispatchKey(tenantId, type, targetDate);
+        if (completedDispatches.has(key)) return { success: true, skipped: true, reason: 'already_processed_this_window' };
+        const result: any = await sendRemindersForDate(targetDate, type, tenantId, settings);
+        if (result?.quotaExceeded) {
+          noteFirestoreQuota({ code: 8, message: result.error || 'Firestore quota exceeded' }, 'SMS scheduler');
+          schedulerConfigCache = null;
+          return result;
+        }
+        // Do not repeatedly retry infrastructure failures. Quota failures are the
+        // exception because they recover after quota reset/backoff. Provider-side
+        // uncertainty is already protected by a durable reminder lock.
+        if (!result?.retryable) completedDispatches.set(key, Date.now());
+        return result;
+      };
+
       if (currentTotalMinutes >= mH * 60 + mM && settings.notifyCustomerToday !== false) {
-        item.today = await sendRemindersForDate(dateIso, 'today', tenantId, settings);
+        item.today = await runDue('today', dateIso);
+        if (item.today?.quotaExceeded) { results.push(item); break; }
       }
       if (currentTotalMinutes >= eH * 60 + eM && settings.notifyCustomer1DayBefore !== false) {
-        item.tomorrow = await sendRemindersForDate(tomorrowIso, '1day', tenantId, settings);
+        item.tomorrow = await runDue('1day', tomorrowIso);
+        if (item.tomorrow?.quotaExceeded) { results.push(item); break; }
       }
-      results.push(item);
+      if (item.today || item.tomorrow) results.push(item);
     }
     return { success: true, tenants: results, checkedAt: new Date().toISOString() };
   } catch (err: any) {
-    console.error('[Automated Reminders] ❌ שגיאה בבדיקת תזכורות תקופתית:', err?.message);
-    return { success: false, error: err?.message, checkedAt: new Date().toISOString() };
+    const quotaExceeded = noteFirestoreQuota(err, 'SMS scheduler scan');
+    if (quotaExceeded) schedulerConfigCache = null;
+    console.error('[Automated Reminders] ❌ שגיאה בבדיקת תזכורות תקופתית:', err?.message || err);
+    return { success: false, quotaExceeded, error: err?.message, checkedAt: new Date().toISOString() };
   } finally {
     isDispatchingDueReminders = false;
   }
 }
 
 async function initSmsEngine() {
-  console.log('[SMS Engine] 🚀 מאתחל מנוע SMS ותזמונים אוטומטיים (שליחה רק בשעות המוגדרות או ידנית)...');
+  if (smsEngineInitialized) return;
+  smsEngineInitialized = true;
+  console.log(`[SMS Engine] 🚀 quota-aware scheduler active; interval=${Math.round(SMS_SCHEDULER_INTERVAL_MS / 1000)}s configCache=${Math.round(SMS_SCHEDULER_CONFIG_CACHE_MS / 1000)}s`);
 
+  const initialTimer = setTimeout(() => {
+    checkAndDispatchDueReminders().catch((err) => console.warn('[SMS Engine] initial check warning:', err?.message || err));
+  }, 15_000);
+  (initialTimer as any).unref?.();
 
-  // הרצת בדיקה ראשונית בעת עליית השרת
-  setTimeout(() => {
-    checkAndDispatchDueReminders().catch(() => {});
-  }, 3000);
-
-  // בדיקת דופק קבועה כל 30 שניות לשליחה אמינה גם אחרי תרדמת שרת
-  setInterval(() => {
-    checkAndDispatchDueReminders().catch(() => {});
-  }, 30 * 1000);
+  const interval = setInterval(() => {
+    checkAndDispatchDueReminders().catch((err) => console.warn('[SMS Engine] heartbeat warning:', err?.message || err));
+  }, SMS_SCHEDULER_INTERVAL_MS);
+  (interval as any).unref?.();
 }
-
 
 // ----------------------------------------------------
 // 📡 REST API ENDPOINTS
@@ -971,7 +1143,7 @@ app.get(['/api/sms/settings', '/api/whatsapp/settings'],requireAdmin,async(req,r
 app.get('/api/whatsapp/diagnose',requireAdmin,async(req,res,next)=>{
   try {
     const tenantId=req.tenantId!, config=(await getDoc(doc(db,'tenants',tenantId,'private_settings','sms_provider'))).data() || {};
-    const shared=tenantId===PRIMARY_TENANT_ID || process.env.ALLOW_SHARED_SMS_PROVIDER==='true';
+    const shared=sharedSmsProviderAllowed(tenantId);
     const from=config.telnyxFromNumber || config.telnyxFrom || (shared ? process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM : '') || '';
     const hasCredentials=!!(config.telnyxApiKey || (shared && process.env.TELNYX_API_KEY));
     const hasProfile=!!(config.telnyxProfileId || (shared && process.env.TELNYX_PROFILE_ID));
@@ -1002,6 +1174,7 @@ app.post(['/api/sms/settings', '/api/whatsapp/sync-settings'], requireAdmin, asy
       batch.set(doc(db,'tenants',tenantId,'private_settings','sms_provider'),provider,{merge:true});
     }
     await batch.commit();
+    schedulerConfigCache = null;
     res.json({success:true,settings});
   }catch(err){next(err);}
 });
@@ -1158,8 +1331,20 @@ const PRIMARY_TENANT_PROFILE = {
   isPrimary: true,
 };
 
-async function ensurePrimaryTenant(): Promise<void> {
+const PRIMARY_MIGRATION_MARKER_ID = 'alex_primary_tenant_v18';
+async function ensurePrimaryTenant(options: { force?: boolean } = {}): Promise<{ skipped: boolean; migrated: boolean }> {
+  const markerRef = doc(db, 'system_migrations', PRIMARY_MIGRATION_MARKER_ID);
+  const [markerBefore, primaryBefore] = await Promise.all([
+    getDoc(markerRef),
+    getDoc(getTenantDoc(PRIMARY_TENANT_ID)),
+  ]);
+
+  if (!options.force && markerBefore.exists && markerBefore.data()?.status === 'completed' && primaryBefore.exists) {
+    return { skipped: true, migrated: false };
+  }
+
   // Per-document migration receipts survive cancellation/deletion and interrupted runs.
+  const previousImport = !!primaryBefore.data()?.migratedAt;
   const migrate = async (sourceCollection:string,targetCollection:string,transform=(x:any)=>x) => {
     const snap=await collection(db,sourceCollection).get();
     for(const item of snap.docs) {
@@ -1172,9 +1357,10 @@ async function ensurePrimaryTenant(): Promise<void> {
       await copyOnce(db,item.data(),target,receipt,transform);
     }
   };
-  const primaryBefore = await getDoc(getTenantDoc(PRIMARY_TENANT_ID));
-  const previousImport = !!primaryBefore.data()?.migratedAt;
-  try { await getTenantDoc(PRIMARY_TENANT_ID).create(PRIMARY_TENANT_PROFILE); } catch(err:any){if(err.code!==6) throw err;}
+
+  try { await getTenantDoc(PRIMARY_TENANT_ID).create(PRIMARY_TENANT_PROFILE); }
+  catch(err:any){ if(err.code!==6 && err.code!=='already-exists') throw err; }
+
   const configRef=getTenantSettingsDoc(PRIMARY_TENANT_ID);
   const [services,schedule]=await Promise.all([getDoc(doc(db,'settings','services_config')),getDoc(doc(db,'settings','schedule_settings'))]);
   await db.runTransaction(async tx=>{
@@ -1185,20 +1371,24 @@ async function ensurePrimaryTenant(): Promise<void> {
     if(!('scheduleSettings' in current)) patch.scheduleSettings=schedule.data() || {businessOpen:'09:20',businessClose:'20:30',fridayOpen:'09:20',fridayClose:'15:00',durationMinutes:90};
     if(Object.keys(patch).length) tx.set(configRef,patch,{merge:true});
   });
+
   await migrate('appointments','appointments',x=>({...x,tenantId:PRIMARY_TENANT_ID}));
   await migrate('customers','customers',x=>({...x,tenantId:PRIMARY_TENANT_ID}));
   await migrate('reminder_locks','reminder_locks');
+
   const legacyLogs=await collection(db,'sms_logs').get();
   for(const item of legacyLogs.docs) {
     const explicit=item.data().tenantId;
     const inferred=item.id.startsWith('sms_alex_beauty_')?PRIMARY_TENANT_ID:null;
     const targetTenant=validId(explicit)?explicit:inferred;
-    if(!targetTenant) continue; // Unattributed root logs remain private; never expose another business's customer.
+    if(!targetTenant) continue;
     await copyOnce(db,{...item.data(),tenantId:targetTenant},doc(db,'tenants',targetTenant,'sms_logs',item.id),doc(db,'migration_receipts',hash('sms_logs/'+item.id)));
   }
+
   const legacySms=await getDoc(doc(db,'settings','sms_reminders'));
   const oldSms=legacySms.exists ? legacySms : await getDoc(doc(db,'settings','reminders'));
   if(oldSms.exists) await copyOnce(db,oldSms.data(),getTenantSettingsDoc(PRIMARY_TENANT_ID,'sms_reminders'),doc(db,'migration_receipts','alex_sms_settings'),publicSettings);
+
   // Move provider secrets out of readable documents; clean old config copies atomically.
   const tenants=await collection(db,'tenants').get();
   for(const tenant of tenants.docs) {
@@ -1213,38 +1403,63 @@ async function ensurePrimaryTenant(): Promise<void> {
       if(cfg.exists) {const clean=publicSettings(cfg.data()); if(clean.smsSettings) clean.smsSettings=publicSettings(clean.smsSettings); for(const k of ['telnyxFromNumber','telnyxFrom','telnyxProfileId']) delete clean[k]; tx.set(cfgRef,clean);}
     });
   }
+
+  const now = new Date().toISOString();
+  await Promise.all([
+    setDoc(getTenantDoc(PRIMARY_TENANT_ID), { migratedAt: primaryBefore.data()?.migratedAt || now, migrationVersion: 18, updatedAt: now }, { merge: true }),
+    setDoc(markerRef, { status: 'completed', version: 18, tenantId: PRIMARY_TENANT_ID, completedAt: now }, { merge: true }),
+  ]);
+  invalidateTenantCaches(PRIMARY_TENANT_ID);
+  schedulerConfigCache = null;
+  return { skipped: false, migrated: true };
 }
 
 app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) => {
   try {
+    if (superAdminTenantsCache && superAdminTenantsCache.expiresAt > Date.now()) {
+      return res.json({ success: true, tenants: superAdminTenantsCache.tenants, cached: true });
+    }
+    if (firestoreQuotaBackoffActive()) {
+      if (superAdminTenantsCache) {
+        return res.json({ success: true, tenants: superAdminTenantsCache.tenants, cached: true, stale: true, warning: 'Firestore quota temporarily exhausted' });
+      }
+      throw quotaBackoffError('Super Admin tenant list');
+    }
     const snap = await getDocs(collection(db, 'tenants'));
     const baseTenants = snap.docs
       .map((d) => ({ id: d.id, ...d.data() } as any))
       .filter((t: any) => t.status !== 'deleted');
 
-    // Keep dashboard counters truthful. Tenant documents are the source of identity;
-    // appointment/customer counts are derived from each tenant's own collections.
+    // Aggregation count avoids downloading every appointment/customer document.
+    // Firestore bills aggregation by index work (minimum one read) instead of one
+    // full document read per record, which is crucial on the free tier.
     const tenants = await Promise.all(baseTenants.map(async (tenant: any) => {
       try {
-        const [appointmentsSnap, customersSnap] = await Promise.all([
-          getDocs(collection(db, 'tenants', tenant.id, 'appointments')),
-          getDocs(collection(db, 'tenants', tenant.id, 'customers')),
+        const [appointmentsAgg, customersAgg] = await Promise.all([
+          getTenantAppointmentsRef(tenant.id).count().get(),
+          collection(db, 'tenants', tenant.id, 'customers').count().get(),
         ]);
         return {
           ...tenant,
-          totalAppointments: appointmentsSnap.size,
-          totalCustomers: customersSnap.size,
+          totalAppointments: Number(appointmentsAgg.data().count || 0),
+          totalCustomers: Number(customersAgg.data().count || 0),
           totalRevenue: Number(tenant.totalRevenue || 0),
         };
       } catch (countErr: any) {
+        if (isFirestoreQuotaError(countErr)) throw countErr;
         console.warn(`[Tenants API] count warning for ${tenant.id}:`, countErr?.message || countErr);
-        return tenant;
+        return { ...tenant, totalRevenue: Number(tenant.totalRevenue || 0) };
       }
     }));
+    superAdminTenantsCache = { expiresAt: Date.now() + SUPER_ADMIN_CACHE_TTL_MS, tenants };
     return res.json({ success: true, tenants });
   } catch (err: any) {
+    const quotaExceeded = noteFirestoreQuota(err, 'Super Admin tenant list');
     console.error('[Tenants API] Failed:', err);
-    return res.status(500).json({ success: false, error: err?.message || 'Failed to load tenants' });
+    if (quotaExceeded && superAdminTenantsCache) {
+      return res.json({ success: true, tenants: superAdminTenantsCache.tenants, cached: true, stale: true, warning: 'Firestore quota temporarily exhausted' });
+    }
+    return res.status(quotaExceeded ? 503 : 500).json({ success: false, error: quotaExceeded ? 'Firestore quota temporarily exhausted; try again after reset' : (err?.message || 'Failed to load tenants') });
   }
 });
 
@@ -1281,6 +1496,9 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
     if(domain) tx.set(doc(db,'domains',domain),{tenantId,hostname:domain});
     if(oldMapping?.data()?.tenantId===tenantId) tx.delete(oldMapping.ref);
   });
+  invalidateTenantCaches(tenantId);
+  domainTenantCache.clear();
+  schedulerConfigCache = null;
 }
 
 // 9. Super Admin Tenant Onboarding & Domain Mapping Endpoint
@@ -1466,6 +1684,7 @@ app.post('/api/super-admin/tenants/:tenantId/owner-account', requireSuperAdmin, 
       uid: user.uid, email, displayName, role: 'business_admin', tenantId, disabled: false, updatedAt: new Date().toISOString()
     }, { merge: true });
     await setDoc(getTenantDoc(tenantId), { ownerAuthUid: user.uid, ownerAuthEmail: email, updatedAt: new Date().toISOString() }, { merge: true });
+    invalidateTenantCaches(tenantId);
     return res.json({ success: true, account: { uid: user.uid, email, role: 'business_admin', tenantId } });
   } catch (err: any) {
     console.error('[Owner account]', err);
@@ -1502,6 +1721,9 @@ app.delete('/api/super-admin/tenants/:tenantId',requireSuperAdmin,async(req,res,
     }
     const mappings=await collection(db,'domains').where('tenantId','==',tenantId).get();
     for(const mapping of mappings.docs) await mapping.ref.delete();
+    invalidateTenantCaches(tenantId);
+    domainTenantCache.clear();
+    schedulerConfigCache = null;
     res.json({success:true,message:'Tenant deactivated; records retained for recovery'});
   }catch(err){next(err);}
 });
@@ -1512,12 +1734,11 @@ app.get('/api/admin/tenant-data', requireAdmin, async (req: Request, res: Respon
     const tenantId = (req.query.tenant as string) || req.tenantId || 'alex_beauty';
     const isDev = process.env.NODE_ENV !== 'production';
 
-    // Read the authorized tenant collection; database errors are not empty results.
+    // Reuse the same short-lived cache as the main admin appointment feed.
+    // Mutations invalidate it immediately, so this saves reads without hiding local changes.
     let tenantAppointments: any[] = [];
     try {
-      const tenantSnap = await getDocs(getTenantAppointmentsRef(tenantId));
-      tenantAppointments = tenantSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
+      tenantAppointments = await cachedAppointmentRows(tenantId, true);
     } catch(err) { throw err; }
 
     return res.json({
@@ -1559,9 +1780,36 @@ app.post('/api/register-webhook', async (req: Request, res: Response) => {
 app.get('/api/health',(_req,res)=>res.json({success:true,service:'alex-multi-tenant'}));
 app.use('/api',(_req,res)=>res.status(404).json({success:false,error:'API route not found'}));
 app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
-  console.error('[API]',err.message);
+  const quotaExceeded = noteFirestoreQuota(err, 'API request');
+  console.error('[API]',err?.message || err);
+  if (quotaExceeded) return res.status(503).json({success:false,error:'מכסת Firestore היומית נוצלה זמנית. השירות יישאר פעיל ויחזור לנתונים לאחר איפוס המכסה.'});
   res.status(err.status || 500).json({success:false,error:'הפעולה נכשלה. יש לנסות שוב או לפנות למנהלת.'});
 });
+let bootstrapRetryTimer: ReturnType<typeof setTimeout> | null = null;
+async function runBootstrapMaintenance() {
+  try {
+    const result = await ensurePrimaryTenant();
+    console.log(`[Tenant Bootstrap] ✅ ${PRIMARY_TENANT_ID} migration=${result.skipped ? 'already-complete' : 'completed'}`);
+  } catch (bootstrapErr: any) {
+    const quotaExceeded = noteFirestoreQuota(bootstrapErr, 'Tenant Bootstrap');
+    if (quotaExceeded) {
+      console.warn('[Tenant Bootstrap] ⚠️ deferred because Firestore daily quota is exhausted. HTTP server remains online; retry scheduled.');
+      if (!bootstrapRetryTimer) {
+        bootstrapRetryTimer = setTimeout(() => {
+          bootstrapRetryTimer = null;
+          void runBootstrapMaintenance();
+        }, Math.max(FIRESTORE_QUOTA_BACKOFF_MS, 30 * 60_000));
+        (bootstrapRetryTimer as any)?.unref?.();
+      }
+      return;
+    }
+    // A migration problem must be visible in logs, but it must not put Render in
+    // a restart loop. Existing tenant data can still be served and repaired from
+    // the protected migration endpoint after the underlying issue is resolved.
+    console.error('[Tenant Bootstrap] ❌ maintenance failed (server kept online):', bootstrapErr?.message || bootstrapErr);
+  }
+}
+
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -1581,33 +1829,21 @@ async function startServer() {
         path.join(process.cwd(), 'index.html'),
       ];
       for (const p of candidatePaths) {
-        if (fs.existsSync(p)) {
-          return res.sendFile(p);
-        }
+        if (fs.existsSync(p)) return res.sendFile(p);
       }
       return res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  // Production bootstrap must not depend on someone opening /super-admin first.
-  // Register/migrate the real legacy Alex Beauty business before accepting traffic.
-  try {
-    await ensurePrimaryTenant();
-    const primarySnap = await getDoc(getTenantDoc(PRIMARY_TENANT_ID));
-    const appointmentSnap = await getDocs(getTenantAppointmentsRef(PRIMARY_TENANT_ID));
-    const customerSnap = await getDocs(collection(db, 'tenants', PRIMARY_TENANT_ID, 'customers'));
-    console.log(`[Tenant Bootstrap] ✅ ${PRIMARY_TENANT_ID} registered=${primarySnap.exists} appointments=${appointmentSnap.size} customers=${customerSnap.size}`);
-  } catch (bootstrapErr: any) {
-    // This is core production data. Fail deployment rather than serving a misleading empty SaaS dashboard.
-    console.error('[Tenant Bootstrap] ❌ failed:', bootstrapErr?.message || bootstrapErr);
-    throw bootstrapErr;
-  }
-
-  if(process.env.SMS_SCHEDULER_ENABLED !== 'false') await initSmsEngine();
+  // Bind the HTTP port first. Firestore quota exhaustion must never prevent
+  // Render from seeing a healthy process and must never create a restart storm.
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Alex Beauty Server running on http://0.0.0.0:${PORT} [Israel Time: ${getIsraelTime().timeStr}]`);
+    const timer = setTimeout(() => void runBootstrapMaintenance(), 1_000);
+    (timer as any).unref?.();
+    if(process.env.SMS_SCHEDULER_ENABLED !== 'false') void initSmsEngine();
   });
 }
 
-if(process.env.NODE_ENV!=='test') startServer().catch(err=>{console.error('[Startup]',err.message);process.exitCode=1;});
+if(process.env.NODE_ENV!=='test') startServer().catch(err=>{console.error('[Startup]',err?.message || err);process.exitCode=1;});
 export { app, ensurePrimaryTenant, sendRemindersForDate, checkAndDispatchDueReminders, db };

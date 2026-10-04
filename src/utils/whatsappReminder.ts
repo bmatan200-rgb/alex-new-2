@@ -156,16 +156,12 @@ export function getStoredReminderSettings(): WhatsAppReminderSettings {
 export async function getAdminApiHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'x-admin-request': 'true',
   };
 
   try {
     const token = auth.currentUser ? await auth.currentUser.getIdToken() : '';
-    const adminSession = getStoredAdminSession();
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
-    } else if (adminSession?.isAdmin) {
-      headers['Authorization'] = `Bearer admin_secret_session_active`;
     }
   } catch {
     // ignore

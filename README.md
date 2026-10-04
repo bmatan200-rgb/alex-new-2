@@ -59,3 +59,14 @@ For an existing installation that still has legacy global `/appointments` and `/
 ## v11 — Firebase roles / business-owner login
 
 The server now distinguishes `super_admin` from `business_admin` using Firebase custom claims. Set `SUPER_ADMIN_EMAILS` in Render to the Firebase Authentication email of the platform owner (comma-separated if needed). On the first login, the server bootstraps that account with the `super_admin` claim. Business-owner accounts are created from Super Admin with `role=business_admin` and an immutable `tenantId` claim. The included `firestore.rules` must be deployed to Firebase for database-level tenant isolation.
+
+## v12 – Multi-tenant production fixes
+- Server Firestore access now uses Firebase Admin SDK (FIREBASE_SERVICE_ACCOUNT) rather than the browser SDK.
+- Alex Beauty is automatically bootstrapped as the primary real tenant and legacy appointments/customers are copied idempotently without deleting originals.
+- Removed fake/demo tenant records from the Super Admin API.
+- Super Admin tenant loading now force-refreshes the Firebase token and displays API errors instead of silently showing 0.
+- Removed insecure legacy admin-header/session-secret bypasses; admin APIs require a valid Firebase ID token.
+- SMS settings/reminder dispatch are tenant-aware while the Telnyx sender credentials remain central.
+- Reminder locks are tenant-scoped.
+- Scheduled reminders skip appointments created after that day's configured reminder cutoff, preventing an appointment created after 20:00 from immediately receiving the 20:00 reminder.
+- Existing products/invoices Firestore rules are preserved in firestore.rules.

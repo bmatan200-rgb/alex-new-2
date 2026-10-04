@@ -191,14 +191,13 @@ export async function cancelAppointmentInFirestore(
   const session = getStoredAdminSession() || getStoredUserSession();
   const token = auth.currentUser
     ? await auth.currentUser.getIdToken()
-    : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+    : (localStorage.getItem('alex_admin_session_token') || '');
 
   try {
     await fetch('/api/appointments/cancel', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-admin-request': session?.isAdmin ? 'true' : 'false',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
@@ -291,7 +290,7 @@ export async function saveServicesToFirestore(
   const session = getStoredAdminSession() || getStoredUserSession();
   const token = auth.currentUser
     ? await auth.currentUser.getIdToken()
-    : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+    : (localStorage.getItem('alex_admin_session_token') || '');
 
   try {
     await fetch('/api/admin/settings/services', {
@@ -362,7 +361,7 @@ export async function saveScheduleSettingsToFirestore(
   const session = getStoredAdminSession() || getStoredUserSession();
   const token = auth.currentUser
     ? await auth.currentUser.getIdToken()
-    : (session?.isAdmin ? 'admin_secret_session_active' : (localStorage.getItem('alex_admin_session_token') || ''));
+    : (localStorage.getItem('alex_admin_session_token') || '');
 
   try {
     await fetch('/api/admin/settings/schedule', {
@@ -624,7 +623,7 @@ export async function fetchAdminCustomers(sessionToken?: string, tenantId = getC
     } else if (sessionToken) {
       token = sessionToken;
     } else if (session?.isAdmin) {
-      token = 'admin_secret_session_active';
+      token = localStorage.getItem('alex_admin_session_token') || '';
     }
 
     const headers: Record<string, string> = {};
@@ -718,7 +717,7 @@ export async function deleteCustomer(customerId: string, tenantId = getCurrentTe
   if (auth.currentUser) {
     token = await auth.currentUser.getIdToken();
   } else if (session?.isAdmin) {
-    token = 'admin_secret_session_active';
+    token = localStorage.getItem('alex_admin_session_token') || '';
   }
 
   try {

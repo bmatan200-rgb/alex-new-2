@@ -62,6 +62,7 @@ export const SuperAdminPage: React.FC = () => {
   };
   const [tenants, setTenants] = useState<TenantInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'trial' | 'suspended'>('all');
   const [activeTab, setActiveTab] = useState<'onboarding' | 'tenants' | 'system'>('tenants');
@@ -144,15 +145,19 @@ export const SuperAdminPage: React.FC = () => {
   const fetchTenants = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/tenants', { headers: await authHeaders() });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && Array.isArray(data.tenants)) {
-          setTenants(data.tenants);
-        }
+      setLoadError('');
+      // Force-refresh once so a newly bootstrapped super_admin custom claim is immediately available.
+      if (auth.currentUser) {
+        const fresh = await auth.currentUser.getIdToken(true);
+        try { localStorage.setItem('alex_admin_session_token', fresh); } catch {}
       }
-    } catch (err) {
+      const res = await fetch('/api/tenants', { headers: await authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      if (Array.isArray(data.tenants)) setTenants(data.tenants);
+    } catch (err: any) {
       console.warn('Notice loading tenants:', err);
+      setLoadError(err?.message || 'טעינת העסקים נכשלה');
     } finally {
       setLoading(false);
     }
@@ -389,11 +394,11 @@ export const SuperAdminPage: React.FC = () => {
 
           <div className="flex items-center gap-2.5 flex-wrap">
             <Link
-              to="/admin?tenant=alex_beauty"
+              to={`/admin?tenant=${encodeURIComponent((tenants.find(t => t.isPrimary || t.id === 'alex_beauty')?.tenantSlug || tenants.find(t => t.isPrimary || t.id === 'alex_beauty')?.id || 'alex_beauty'))}`}
               className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 active:bg-purple-700 text-white font-bold text-xs flex items-center gap-2 transition shadow-md shadow-purple-600/25 cursor-pointer"
             >
               <Building2 className="w-4 h-4" />
-              <span>לוח ניהול סלון (Alex Beauty)</span>
+              <span>לוח ניהול {tenants.find(t => t.isPrimary || t.id === 'alex_beauty')?.name || 'Alex Beauty'}</span>
             </Link>
 
             <Link

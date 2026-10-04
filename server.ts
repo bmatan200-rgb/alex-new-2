@@ -1,9 +1,8 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { getDoc, doc, setDoc, runTransaction, deleteDoc, collection, getDocs, query, where } from 'firebase/firestore';
-import { db } from './src/lib/firebase';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
@@ -45,6 +44,26 @@ try {
 } catch (err: any) {
   console.warn('[Firebase Admin] ⚠️ אתחול במצב Standalone:', err?.message);
 }
+
+// Server-side Firestore MUST use Firebase Admin SDK. Using the browser SDK here would
+// be evaluated by Firestore Security Rules as an unauthenticated client and would make
+// protected tenant reads/writes fail even though FIREBASE_SERVICE_ACCOUNT is configured.
+const db = getFirestore();
+
+// Small compatibility helpers keep the rest of this server readable while using Admin SDK.
+const collection = (_db: any, ...segments: string[]) => db.collection(segments.join('/'));
+const doc = (base: any, ...segments: string[]) => {
+  if (base && typeof base.doc === 'function' && segments.length === 1) return base.doc(segments[0]);
+  return db.doc(segments.join('/'));
+};
+const getDoc = (ref: any) => ref.get();
+const getDocs = (ref: any) => ref.get();
+const setDoc = (ref: any, data: any, options?: any) => options?.merge ? ref.set(data, { merge: true }) : ref.set(data);
+const deleteDoc = (ref: any) => ref.delete();
+const runTransaction = (firestore: any, fn: any) => firestore.runTransaction(fn);
+type WhereConstraint = { field: string; op: any; value: any };
+const where = (field: string, op: any, value: any): WhereConstraint => ({ field, op, value });
+const query = (ref: any, ...constraints: WhereConstraint[]) => constraints.reduce((q: any, c) => q.where(c.field, c.op, c.value), ref);
 
 const normalizePhone = (p?: string) => (p || '').replace(/\D/g, '');
 
@@ -155,7 +174,7 @@ app.post('/api/appointments/cancel', async (req, res) => {
     const token =
       (req.headers['authorization'] as string | undefined)?.replace(/^Bearer\s+/i, '') ||
       (req.body?.sessionToken as string | undefined);
-    let isAdmin = req.headers['x-admin-request'] === 'true' || token === 'admin_secret_session_active';
+    let isAdmin = false;
     if (!isAdmin && token && adminSdkReady) {
       try {
         await getAuth().verifyIdToken(token);
@@ -673,6 +692,7 @@ interface ServerAppointment {
   appointment_date: string; // YYYY-MM-DD
   start_time: string; // HH:MM
   status: string;
+  created_at?: string;
 }
 
 const serverAppointmentsByTenant: Record<string, ServerAppointment[]> = {};
@@ -829,7 +849,7 @@ async function sendSmsViaTelnyx(to: string, message: string): Promise<{ success:
 }
 
 // Generic Message Formatter
-function formatMessageTemplate(template: string, appt: any): string {
+function formatMessageTemplate(template: string, appt: any, brand: any = PRIMARY_TENANT_PROFILE): string {
   const [y, m, d] = (appt.appointment_date || '').split('-');
   const israeliDate = y && m && d ? `${d}/${m}/${y}` : (appt.appointment_date || '');
   return (template || '')
@@ -839,9 +859,9 @@ function formatMessageTemplate(template: string, appt: any): string {
     .replace(/{end_time}/g, appt.end_time || '')
     .replace(/{appointment_date}/g, israeliDate)
     .replace(/{customer_phone}/g, appt.customer_phone || '')
-    .replace(/{salon_name}/g, 'Alex טיפוח ויופי')
-    .replace(/{phone}/g, '054-6307114')
-    .replace(/{owner_name}/g, 'אלכס');
+    .replace(/{salon_name}/g, brand?.name || 'העסק')
+    .replace(/{phone}/g, brand?.phone || '')
+    .replace(/{owner_name}/g, brand?.ownerName || brand?.name || '');
 }
 
 // Fetch Confirmed Appointments from Firestore
@@ -872,6 +892,7 @@ async function fetchAppointmentsForDate(targetDate: string, tenantId = 'alex_bea
             appointment_date: d.appointment_date,
             start_time: d.start_time || '',
             status: d.status || 'confirmed',
+            created_at: d.created_at || d.createdAt || '',
           });
         }
       });
@@ -899,9 +920,9 @@ async function fetchAppointmentsForDate(targetDate: string, tenantId = 'alex_bea
 }
 
 // Lock Helpers (Deduplication across server restarts & multiple instances)
-async function tryClaimReminderLock(key: string): Promise<boolean> {
+async function tryClaimReminderLock(key: string, tenantId = 'alex_beauty'): Promise<boolean> {
   if (!db) return true;
-  const lockRef = doc(db, 'reminder_locks', key);
+  const lockRef = doc(db, 'tenants', tenantId, 'reminder_locks', key);
   try {
     return await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(lockRef);
@@ -927,20 +948,20 @@ async function tryClaimReminderLock(key: string): Promise<boolean> {
   }
 }
 
-async function markReminderLockSuccess(key: string): Promise<void> {
+async function markReminderLockSuccess(key: string, tenantId = 'alex_beauty'): Promise<void> {
   if (!db) return;
   try {
-    const lockRef = doc(db, 'reminder_locks', key);
+    const lockRef = doc(db, 'tenants', tenantId, 'reminder_locks', key);
     await setDoc(lockRef, { status: 'sent', sentAt: new Date().toISOString(), key }, { merge: true });
   } catch {
     // ignore
   }
 }
 
-async function releaseReminderLock(key: string): Promise<void> {
+async function releaseReminderLock(key: string, tenantId = 'alex_beauty'): Promise<void> {
   if (!db) return;
   try {
-    await deleteDoc(doc(db, 'reminder_locks', key));
+    await deleteDoc(doc(db, 'tenants', tenantId, 'reminder_locks', key));
   } catch {
     // ignore
   }
@@ -979,10 +1000,49 @@ function recordLogEntry(entry: SmsLogEntry) {
   }
 }
 
+async function getTenantSmsSettings(tenantId: string): Promise<any> {
+  try {
+    const snap = await getDoc(getTenantSettingsDoc(tenantId, 'sms_reminders'));
+    if (snap.exists()) return { ...DEFAULT_SMS_SETTINGS, ...snap.data() };
+    const config = await getDoc(getTenantSettingsDoc(tenantId, 'config'));
+    if (config.exists()) {
+      const data: any = config.data();
+      if (data.smsSettings) return { ...DEFAULT_SMS_SETTINGS, ...data.smsSettings };
+    }
+  } catch (err) { console.warn(`[SMS] settings load warning for ${tenantId}`, err); }
+  return tenantId === PRIMARY_TENANT_ID ? { ...activeServerSettings } : { ...DEFAULT_SMS_SETTINGS };
+}
+
+async function getTenantBrand(tenantId: string): Promise<any> {
+  try {
+    const snap = await getDoc(getTenantDoc(tenantId));
+    if (snap.exists()) return { id: snap.id, ...snap.data() };
+  } catch {}
+  return tenantId === PRIMARY_TENANT_ID ? PRIMARY_TENANT_PROFILE : { id: tenantId, name: tenantId, phone: '', ownerName: '' };
+}
+
 // ----------------------------------------------------------------------
 // Core Automated Batch Dispatcher
 // ----------------------------------------------------------------------
-async function sendRemindersForDate(targetDate: string, reminderType: 'today' | '1day') {
+function israelLocalStamp(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).formatToParts(d).reduce((a: any, p) => { a[p.type] = p.value; return a; }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+function previousIsoDate(dateIso: string): string {
+  const [y,m,d] = dateIso.split('-').map(Number);
+  const x = new Date(Date.UTC(y, m - 1, d - 1));
+  return x.toISOString().slice(0, 10);
+}
+
+async function sendRemindersForDate(targetDate: string, reminderType: 'today' | '1day', tenantId = PRIMARY_TENANT_ID, tenantSettings?: any) {
+  const smsSettings = tenantSettings || await getTenantSmsSettings(tenantId);
+  const brand = await getTenantBrand(tenantId);
   const isMorning = reminderType === 'today';
   const typeLabel = isMorning ? 'תזכורת בוקר (יום התור)' : 'תזכורת ערב (יום לפני התור)';
   const currentIsraelTime = new Date().toLocaleTimeString('he-IL', { timeZone: 'Asia/Jerusalem' });
@@ -992,18 +1052,24 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
   console.log(`[SMS Scheduler] תאריך יעד: ${targetDate} | שעה בישראל: ${currentIsraelTime}`);
   console.log(`======================================================`);
 
-  if (isMorning && activeServerSettings?.notifyCustomerToday === false) {
+  if (isMorning && smsSettings?.notifyCustomerToday === false) {
     console.log('[SMS Scheduler] ⏸️ תזכורת בוקר מבוטלת בהגדרות');
     return { success: true, count: 0, sentCount: 0, skipped: true };
   }
 
-  if (!isMorning && activeServerSettings?.notifyCustomer1DayBefore === false) {
+  if (!isMorning && smsSettings?.notifyCustomer1DayBefore === false) {
     console.log('[SMS Scheduler] ⏸️ תזכורת ערב מבוטלת בהגדרות');
     return { success: true, count: 0, sentCount: 0, skipped: true };
   }
 
   try {
-    const appointments = await fetchAppointmentsForDate(targetDate);
+    let appointments = await fetchAppointmentsForDate(targetDate, tenantId);
+    // Do not instantly send a scheduled reminder to an appointment that was created AFTER
+    // that day's configured reminder time. This fixes the 'created after 20:00 => immediate SMS' bug.
+    const cutoffDate = isMorning ? targetDate : previousIsoDate(targetDate);
+    const cutoffTime = isMorning ? String(smsSettings.morningReminderTime || '08:00') : String(smsSettings.eveningReminderTime || '20:00');
+    const cutoffStamp = `${cutoffDate} ${cutoffTime}`;
+    appointments = appointments.filter((a) => !a.created_at || israelLocalStamp(a.created_at) <= cutoffStamp);
     console.log(`[SMS Scheduler] נמצאו ${appointments.length} תורים מתאימים לתאריך ${targetDate}`);
 
     if (appointments.length === 0) {
@@ -1027,7 +1093,7 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
       const firstAppt = appts[0];
       const lockKey = `${isMorning ? 'morning' : 'evening'}_${firstAppt.id}_${targetDate}`;
 
-      const claimed = await tryClaimReminderLock(lockKey);
+      const claimed = await tryClaimReminderLock(lockKey, tenantId);
       if (!claimed) {
         console.log(`[SMS Scheduler] ⏭️ דילוג (נשלח כבר בעבר): ${firstAppt.customer_name} (${firstAppt.customer_phone})`);
         continue;
@@ -1036,22 +1102,22 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
       let messageText = '';
       if (appts.length === 1) {
         const rawTemplate = isMorning
-          ? (activeServerSettings?.morningTemplate || activeServerSettings?.customerTodayTemplate || DEFAULT_SMS_SETTINGS.morningTemplate)
-          : (activeServerSettings?.eveningTemplate || activeServerSettings?.customer1DayTemplate || DEFAULT_SMS_SETTINGS.eveningTemplate);
-        messageText = formatMessageTemplate(rawTemplate, firstAppt);
+          ? (smsSettings?.morningTemplate || smsSettings?.customerTodayTemplate || DEFAULT_SMS_SETTINGS.morningTemplate)
+          : (smsSettings?.eveningTemplate || smsSettings?.customer1DayTemplate || DEFAULT_SMS_SETTINGS.eveningTemplate);
+        messageText = formatMessageTemplate(rawTemplate, firstAppt, brand);
       } else {
         const [y, m, d] = targetDate.split('-');
         const israeliDate = `${d}/${m}/${y}`;
         const appointmentsList = appts.map((a) => `✨ בשעה ${a.start_time} - ${a.service_name}`).join('\n');
         messageText = isMorning
-          ? `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך להיום (${israeliDate}):\n${appointmentsList}\nלבירור: 054-6307114\nנתראה! 💖`
-          : `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך למחר (${israeliDate}):\n${appointmentsList}\nלבירור: 054-6307114\nמחכים לראותך! 💖`;
+          ? `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך להיום (${israeliDate}):\n${appointmentsList}\nלבירור: ${brand?.phone || ''}\nנתראה! 💖`
+          : `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך למחר (${israeliDate}):\n${appointmentsList}\nלבירור: ${brand?.phone || ''}\nמחכים לראותך! 💖`;
       }
 
       const res = await sendSmsViaTelnyx(firstAppt.customer_phone, messageText);
 
       const logEntry: SmsLogEntry = {
-        id: `sms_${Date.now()}_${firstAppt.id}`,
+        id: `sms_${tenantId}_${Date.now()}_${firstAppt.id}`,
         recipientName: firstAppt.customer_name,
         recipientPhone: firstAppt.customer_phone,
         messageText,
@@ -1067,11 +1133,11 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 
       if (res.success) {
         successCount += appts.length;
-        await markReminderLockSuccess(lockKey);
+        await markReminderLockSuccess(lockKey, tenantId);
         results.push({ customer: firstAppt.customer_name, phone: firstAppt.customer_phone, success: true });
       } else {
         failedCount += appts.length;
-        await releaseReminderLock(lockKey);
+        await releaseReminderLock(lockKey, tenantId);
         results.push({ customer: firstAppt.customer_name, phone: firstAppt.customer_phone, success: false, error: res.error });
       }
     }
@@ -1196,54 +1262,37 @@ async function loadPersistedSettings() {
  */
 let isDispatchingDueReminders = false;
 
-async function checkAndDispatchDueReminders(): Promise<{
-  success: boolean;
-  todayResult?: any;
-  tomorrowResult?: any;
-  checkedAt: string;
-}> {
-  if (isDispatchingDueReminders) {
-    return { success: true, checkedAt: new Date().toISOString() };
-  }
+async function checkAndDispatchDueReminders(): Promise<any> {
+  if (isDispatchingDueReminders) return { success: true, checkedAt: new Date().toISOString() };
   isDispatchingDueReminders = true;
-
   try {
-    if (activeServerSettings?.enabled === false || activeServerSettings?.autoSendEnabled === false) {
-      return { success: true, checkedAt: new Date().toISOString() };
-    }
-
-    const { dateIso, tomorrowIso, hour, minute, timeStr } = getIsraelTime();
+    const { dateIso, tomorrowIso, hour, minute } = getIsraelTime();
     const currentTotalMinutes = hour * 60 + minute;
+    let tenantIds: string[] = [PRIMARY_TENANT_ID];
+    try {
+      const snap = await getDocs(collection(db, 'tenants'));
+      tenantIds = Array.from(new Set([PRIMARY_TENANT_ID, ...snap.docs.map((d: any) => d.id)]));
+    } catch {}
 
-    const morningTimeStr = activeServerSettings?.morningReminderTime || '08:00';
-    const [mH, mM] = morningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
-    const targetMornTotalMinutes = mH * 60 + mM;
-
-    const eveningTimeStr = activeServerSettings?.eveningReminderTime || '20:00';
-    const [eH, eM] = eveningTimeStr.split(':').map((v: string) => parseInt(v, 10) || 0);
-    const targetEveTotalMinutes = eH * 60 + eM;
-
-    let todayResult: any = null;
-    let tomorrowResult: any = null;
-
-    // 1. תזכורות בוקר לתורי היום: נשלח אם השעה הנוכחית היא משעת הבוקר המוגדרת והלאה
-    if (currentTotalMinutes >= targetMornTotalMinutes) {
-      if (activeServerSettings?.notifyCustomerToday !== false) {
-        todayResult = await sendRemindersForDate(dateIso, 'today');
+    const results: any[] = [];
+    for (const tenantId of tenantIds) {
+      const settings = await getTenantSmsSettings(tenantId);
+      if (settings?.enabled === false || settings?.autoSendEnabled === false) continue;
+      const [mH, mM] = String(settings.morningReminderTime || '08:00').split(':').map((v: string) => parseInt(v, 10) || 0);
+      const [eH, eM] = String(settings.eveningReminderTime || '20:00').split(':').map((v: string) => parseInt(v, 10) || 0);
+      const item: any = { tenantId };
+      if (currentTotalMinutes >= mH * 60 + mM && settings.notifyCustomerToday !== false) {
+        item.today = await sendRemindersForDate(dateIso, 'today', tenantId, settings);
       }
-    }
-
-    // 2. תזכורות ערב לתורי מחר: נשלח אם השעה הנוכחית היא משעת הערב המוגדרת והלאה
-    if (currentTotalMinutes >= targetEveTotalMinutes) {
-      if (activeServerSettings?.notifyCustomer1DayBefore !== false) {
-        tomorrowResult = await sendRemindersForDate(tomorrowIso, '1day');
+      if (currentTotalMinutes >= eH * 60 + eM && settings.notifyCustomer1DayBefore !== false) {
+        item.tomorrow = await sendRemindersForDate(tomorrowIso, '1day', tenantId, settings);
       }
+      results.push(item);
     }
-
-    return { success: true, todayResult, tomorrowResult, checkedAt: new Date().toISOString() };
+    return { success: true, tenants: results, checkedAt: new Date().toISOString() };
   } catch (err: any) {
     console.error('[Automated Reminders] ❌ שגיאה בבדיקת תזכורות תקופתית:', err?.message);
-    return { success: false, checkedAt: new Date().toISOString() };
+    return { success: false, error: err?.message, checkedAt: new Date().toISOString() };
   } finally {
     isDispatchingDueReminders = false;
   }
@@ -1282,19 +1331,12 @@ app.all(['/api/sms/check-due', '/api/reminders/heartbeat'], async (_req: Request
 });
 
 // 1. Get SMS settings
-app.get(['/api/sms/settings', '/api/whatsapp/settings'], requireAdmin, (req: Request, res: Response) => {
-  const morning = activeServerSettings.morningTemplate || activeServerSettings.customerTodayTemplate;
-  const evening = activeServerSettings.eveningTemplate || activeServerSettings.customer1DayTemplate;
-  res.json({
-    success: true,
-    settings: {
-      ...activeServerSettings,
-      morningTemplate: morning,
-      customerTodayTemplate: morning,
-      eveningTemplate: evening,
-      customer1DayTemplate: evening,
-    },
-  });
+app.get(['/api/sms/settings', '/api/whatsapp/settings'], requireAdmin, async (req: Request, res: Response) => {
+  const tenantId = String(req.query?.tenant || req.tenantId || PRIMARY_TENANT_ID);
+  const settings = await getTenantSmsSettings(tenantId);
+  const morning = settings.morningTemplate || settings.customerTodayTemplate;
+  const evening = settings.eveningTemplate || settings.customer1DayTemplate;
+  res.json({ success: true, settings: { ...settings, morningTemplate: morning, customerTodayTemplate: morning, eveningTemplate: evening, customer1DayTemplate: evening } });
 });
 
 // 2. Save SMS settings & reschedule immediately
@@ -1319,26 +1361,33 @@ app.post(['/api/sms/settings', '/api/whatsapp/sync-settings'], requireAdmin, asy
       activeServerSettings.customer1DayTemplate ||
       DEFAULT_SMS_SETTINGS.eveningTemplate;
 
-    activeServerSettings = {
-      ...activeServerSettings,
+    const tenantIdForSettings = String(req.body?.tenantId || req.tenantId || PRIMARY_TENANT_ID);
+    const tenantSettings = {
+      ...(await getTenantSmsSettings(tenantIdForSettings)),
       ...settings,
       morningTemplate: morningText,
       customerTodayTemplate: morningText,
       eveningTemplate: eveningText,
       customer1DayTemplate: eveningText,
     };
-
-    scheduleOrUpdateCronJobs();
+    if (tenantIdForSettings === PRIMARY_TENANT_ID) {
+      activeServerSettings = { ...activeServerSettings, ...tenantSettings };
+      scheduleOrUpdateCronJobs();
+    }
 
     // Trigger immediate check to process any pending reminders under new time
     checkAndDispatchDueReminders().catch(() => {});
 
     if (db) {
       try {
-        await setDoc(doc(db, 'settings', 'sms_reminders'), activeServerSettings, { merge: true });
-        await setDoc(doc(db, 'settings', 'reminders'), activeServerSettings, { merge: true });
+        const tenantId = tenantIdForSettings;
+        await setDoc(getTenantSettingsDoc(tenantId, 'sms_reminders'), tenantSettings, { merge: true });
+        if (tenantId === PRIMARY_TENANT_ID) {
+          // Keep legacy Alex settings mirrored during the migration period.
+          await setDoc(doc(db, 'settings', 'sms_reminders'), tenantSettings, { merge: true });
+        }
       } catch (dbErr) {
-        console.warn('[SMS Settings] אזהרה: שמירה ב-Firestore נכשלה (נשמר בזיכרון השרת):', dbErr);
+        console.warn('[SMS Settings] אזהרה: שמירה ב-Firestore נכשלה:', dbErr);
       }
     }
 
@@ -1349,7 +1398,7 @@ app.post(['/api/sms/settings', '/api/whatsapp/sync-settings'], requireAdmin, asy
       tomorrow: activeServerSettings.notifyCustomer1DayBefore,
     });
 
-    return res.json({ success: true, settings: activeServerSettings });
+    return res.json({ success: true, settings: tenantSettings });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message });
   }
@@ -1361,13 +1410,13 @@ app.post(['/api/sms/send-batch', '/api/whatsapp/trigger-morning', '/api/whatsapp
   const { dateIso, tomorrowIso } = getIsraelTime();
   const targetDate = reqType === 'today' ? dateIso : tomorrowIso;
 
-  const result = await sendRemindersForDate(targetDate, reqType);
+  const result = await sendRemindersForDate(targetDate, reqType, String(req.body?.tenantId || req.tenantId || PRIMARY_TENANT_ID));
   return res.json(result);
 });
 
 app.post(['/api/whatsapp/trigger-evening', '/api/whatsapp/test-1day-evening'], requireAdmin, async (req: Request, res: Response) => {
   const { tomorrowIso } = getIsraelTime();
-  const result = await sendRemindersForDate(tomorrowIso, '1day');
+  const result = await sendRemindersForDate(tomorrowIso, '1day', String(req.body?.tenantId || req.tenantId || PRIMARY_TENANT_ID));
   return res.json(result);
 });
 
@@ -1452,102 +1501,68 @@ app.get('/api/sms/logs', requireAdmin, (req: Request, res: Response) => {
 // 7. Multi-Tenant List
 const deletedTenantIds = new Set<string>();
 
-app.get('/api/tenants', requireSuperAdmin, async (req: Request, res: Response) => {
-  const defaultTenants = [
-    {
-      id: 'alex_beauty',
-      tenantSlug: 'alex_beauty',
-      name: 'Alex טיפוח ויופי',
-      tagline: 'מניקור מקצועי ולק ג׳ל',
-      ownerName: 'אלכסנדרה ביטון',
-      phone: '054-6307114',
-      email: 'alex@beauty.co.il',
-      address: 'הנרי קנדל 12',
-      city: 'באר שבע',
-      primaryColor: '#9333ea',
-      status: 'active',
-      plan: 'pro',
-      createdAt: '2024-01-15',
-      isPrimary: true,
-    },
-    {
-      id: 'yossibarber',
-      tenantSlug: 'yossibarber',
-      name: 'יוסי ברברשופ • Barber & Cuts',
-      tagline: 'עיצוב שיער וזקן לגברים, דירוגים וטיפוח',
-      ownerName: 'יוסי כהן',
-      phone: '052-7788990',
-      email: 'yosi@barber.co.il',
-      address: 'רוטשילד 32',
-      city: 'ראשון לציון',
-      primaryColor: '#2563eb',
-      status: 'active',
-      plan: 'pro',
-      createdAt: '2024-02-20',
-    },
-    {
-      id: 'glam_studio_tlv',
-      tenantSlug: 'glam_studio_tlv',
-      name: 'Glam Studio TLV',
-      tagline: 'עיצוב גבות, ריסים ומניקור פרימיום',
-      ownerName: 'מיה שטרן',
-      phone: '052-8899123',
-      email: 'mia@glamstudio.co.il',
-      address: 'דיזנגוף 140',
-      city: 'תל אביב',
-      primaryColor: '#ec4899',
-      status: 'active',
-      plan: 'enterprise',
-      createdAt: '2024-03-10',
-    },
-    {
-      id: 'maya_nails_haifa',
-      tenantSlug: 'maya_nails_haifa',
-      name: 'Maya Nails & Spa',
-      tagline: 'מניקור פדיקור רפואי וטיפוח',
-      ownerName: 'מאיה לוי',
-      phone: '050-4455667',
-      email: 'maya@mayanails.co.il',
-      address: 'מוריה 45',
-      city: 'חיפה',
-      primaryColor: '#0ea5e9',
-      status: 'active',
-      plan: 'starter',
-      createdAt: '2024-06-01',
-    },
-    {
-      id: 'noa_beauty_herzliya',
-      tenantSlug: 'noa_beauty_herzliya',
-      name: 'נועה בוטיק יופי',
-      tagline: 'קליניקה לאסתטיקה וטיפולי פנים מתקדמים',
-      ownerName: 'נועה אברהם',
-      phone: '054-1122334',
-      email: 'noa@noabeauty.co.il',
-      address: 'שנקר 14',
-      city: 'הרצליה פיתוח',
-      primaryColor: '#f59e0b',
-      status: 'trial',
-      plan: 'pro',
-      createdAt: '2024-09-12',
-    },
-  ];
+const PRIMARY_TENANT_ID = 'alex_beauty';
+const PRIMARY_TENANT_PROFILE = {
+  id: PRIMARY_TENANT_ID,
+  tenantSlug: PRIMARY_TENANT_ID,
+  name: 'Alex טיפוח ויופי',
+  tagline: 'מניקור מקצועי ולק ג׳ל',
+  ownerName: 'אלכסנדרה ביטון',
+  phone: '054-6307114',
+  email: 'alex@beauty.co.il',
+  address: 'הנרי קנדל 12',
+  city: 'באר שבע',
+  primaryColor: '#9333ea',
+  secondaryColor: '#c4b5fd',
+  status: 'active',
+  plan: 'pro',
+  createdAt: '2024-01-15',
+  isPrimary: true,
+};
 
+async function ensurePrimaryTenant(): Promise<void> {
+  const tenantRef = getTenantDoc(PRIMARY_TENANT_ID);
+  const existing = await getDoc(tenantRef);
+  if (!existing.exists()) {
+    await setDoc(tenantRef, { ...PRIMARY_TENANT_PROFILE, migratedAt: new Date().toISOString() }, { merge: true });
+  }
+
+  const configRef = getTenantSettingsDoc(PRIMARY_TENANT_ID, 'config');
+  const config = await getDoc(configRef);
+  if (!config.exists()) {
+    await setDoc(configRef, {
+      services: [{ id: 1, name: "לק ג'ל", duration_minutes: 90, price: 150, category: 'nails', description: 'מניקור יסודי משולב ומריחת לק ג׳ל איכותי בגימור מושלם' }],
+      scheduleSettings: { businessOpen: '09:20', businessClose: '20:30', fridayOpen: '09:20', fridayClose: '15:00', durationMinutes: 90 },
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+  }
+
+  // Idempotent legacy migration: copy only missing docs; never delete the old collections.
+  const [legacyAppointments, legacyCustomers] = await Promise.all([
+    getDocs(collection(db, 'appointments')),
+    getDocs(collection(db, 'customers')),
+  ]);
+  for (const item of legacyAppointments.docs) {
+    const target = getTenantAppointmentDoc(PRIMARY_TENANT_ID, item.id);
+    if (!(await getDoc(target)).exists()) await setDoc(target, { ...item.data(), tenantId: PRIMARY_TENANT_ID }, { merge: true });
+  }
+  for (const item of legacyCustomers.docs) {
+    const target = doc(db, 'tenants', PRIMARY_TENANT_ID, 'customers', item.id);
+    if (!(await getDoc(target)).exists()) await setDoc(target, { ...item.data(), tenantId: PRIMARY_TENANT_ID }, { merge: true });
+  }
+}
+
+app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) => {
   try {
+    await ensurePrimaryTenant();
     const snap = await getDocs(collection(db, 'tenants'));
-    const firestoreTenants = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    
-    // Merge firestore tenants with default tenants (avoid duplicates)
-    const combined = [...firestoreTenants];
-    for (const def of defaultTenants) {
-      if (!combined.some((t: any) => t.id === def.id)) {
-        combined.push(def);
-      }
-    }
-    const filtered = combined.filter((t: any) => !deletedTenantIds.has(t.id));
-    return res.json({ success: true, tenants: filtered });
-  } catch (err) {
-    const filtered = defaultTenants.filter((t: any) => !deletedTenantIds.has(t.id));
-    return res.json({ success: true, tenants: filtered });
+    const tenants = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((t: any) => !deletedTenantIds.has(t.id));
+    return res.json({ success: true, tenants });
+  } catch (err: any) {
+    console.error('[Tenants API] Failed:', err);
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to load tenants' });
   }
 });
 
@@ -1555,6 +1570,9 @@ app.get('/api/tenants', requireSuperAdmin, async (req: Request, res: Response) =
 app.get('/api/tenant/current', async (req: Request, res: Response) => {
   try {
     const tenantId = req.tenantId || 'alex_beauty';
+    if (tenantId === PRIMARY_TENANT_ID) {
+      try { await ensurePrimaryTenant(); } catch (e) { console.warn('[Tenant API] primary tenant bootstrap warning', e); }
+    }
 
     // Fetch tenant profile from /tenants/{tenantId}
     let tenantProfile: any = null;

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
 import { Link } from 'react-router-dom';
 import {
   Building2,
@@ -164,7 +165,25 @@ export const SuperAdminPage: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchTenants();
+    // Firebase restores auth asynchronously after a hard refresh. In v14 the first
+    // /api/tenants request could run before currentUser existed, leaving a valid
+    // Super Admin screen showing a misleading zero-business state.
+    let fired = false;
+    const unsubscribe = onAuthStateChanged(auth, () => {
+      if (fired) return;
+      fired = true;
+      fetchTenants();
+    });
+    const fallback = window.setTimeout(() => {
+      if (!fired) {
+        fired = true;
+        fetchTenants();
+      }
+    }, 1500);
+    return () => {
+      window.clearTimeout(fallback);
+      unsubscribe();
+    };
   }, []);
 
   // Auto-generate slug when name changes if tenantId is empty or matches previous auto-slug
@@ -965,6 +984,14 @@ export const SuperAdminPage: React.FC = () => {
                 </div>
               </form>
             </div>
+          </div>
+        )}
+
+        {loadError && (
+          <div dir="rtl" className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-red-800">
+            <div className="font-bold">טעינת העסקים נכשלה</div>
+            <div className="mt-1 text-sm">{loadError}</div>
+            <button type="button" onClick={fetchTenants} className="mt-3 rounded-xl bg-red-700 px-4 py-2 text-sm font-bold text-white">נסה שוב</button>
           </div>
         )}
 

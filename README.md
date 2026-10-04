@@ -77,3 +77,10 @@ The server now distinguishes `super_admin` from `business_admin` using Firebase 
 - Reminder locks are tenant-scoped.
 - Scheduled reminders skip appointments created after that day's configured reminder cutoff, preventing an appointment created after 20:00 from immediately receiving the 20:00 reminder.
 - Existing products/invoices Firestore rules are preserved in firestore.rules.
+
+## v15 – Primary tenant bootstrap fix
+- Registers the real legacy Alex Beauty business (`alex_beauty`) during server startup, before traffic is accepted.
+- Idempotently copies missing legacy root appointments/customers into the Alex tenant; source documents are never deleted.
+- Super Admin waits for Firebase Auth restoration before requesting the protected tenant list.
+- Tenant API derives live appointment/customer counts per tenant.
+- Super Admin now surfaces API/auth failures instead of silently showing a misleading zero-business state.

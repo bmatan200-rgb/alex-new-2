@@ -1592,9 +1592,29 @@ app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) 
   try {
     await ensurePrimaryTenant();
     const snap = await getDocs(collection(db, 'tenants'));
-    const tenants = snap.docs
-      .map((d) => ({ id: d.id, ...d.data() }))
+    const baseTenants = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as any))
       .filter((t: any) => !deletedTenantIds.has(t.id));
+
+    // Keep dashboard counters truthful. Tenant documents are the source of identity;
+    // appointment/customer counts are derived from each tenant's own collections.
+    const tenants = await Promise.all(baseTenants.map(async (tenant: any) => {
+      try {
+        const [appointmentsSnap, customersSnap] = await Promise.all([
+          getDocs(collection(db, 'tenants', tenant.id, 'appointments')),
+          getDocs(collection(db, 'tenants', tenant.id, 'customers')),
+        ]);
+        return {
+          ...tenant,
+          totalAppointments: appointmentsSnap.size,
+          totalCustomers: customersSnap.size,
+          totalRevenue: Number(tenant.totalRevenue || 0),
+        };
+      } catch (countErr: any) {
+        console.warn(`[Tenants API] count warning for ${tenant.id}:`, countErr?.message || countErr);
+        return tenant;
+      }
+    }));
     return res.json({ success: true, tenants });
   } catch (err: any) {
     console.error('[Tenants API] Failed:', err);
@@ -2019,6 +2039,20 @@ async function startServer() {
       }
       return res.sendFile(path.join(distPath, 'index.html'));
     });
+  }
+
+  // Production bootstrap must not depend on someone opening /super-admin first.
+  // Register/migrate the real legacy Alex Beauty business before accepting traffic.
+  try {
+    await ensurePrimaryTenant();
+    const primarySnap = await getDoc(getTenantDoc(PRIMARY_TENANT_ID));
+    const appointmentSnap = await getDocs(getTenantAppointmentsRef(PRIMARY_TENANT_ID));
+    const customerSnap = await getDocs(collection(db, 'tenants', PRIMARY_TENANT_ID, 'customers'));
+    console.log(`[Tenant Bootstrap] ✅ ${PRIMARY_TENANT_ID} registered=${primarySnap.exists()} appointments=${appointmentSnap.size} customers=${customerSnap.size}`);
+  } catch (bootstrapErr: any) {
+    // This is core production data. Fail deployment rather than serving a misleading empty SaaS dashboard.
+    console.error('[Tenant Bootstrap] ❌ failed:', bootstrapErr?.message || bootstrapErr);
+    throw bootstrapErr;
   }
 
   app.listen(PORT, '0.0.0.0', () => {

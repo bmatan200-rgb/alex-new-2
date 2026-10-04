@@ -55,3 +55,7 @@ For an existing installation that still has legacy global `/appointments` and `/
 - Cover images are now compressed to a Firestore-safe size before save.
 - API JSON limit increased to safely accept the compressed tenant cover payload.
 - Public tenant app continues to read `coverImage` only from its own tenant document.
+
+## v11 — Firebase roles / business-owner login
+
+The server now distinguishes `super_admin` from `business_admin` using Firebase custom claims. Set `SUPER_ADMIN_EMAILS` in Render to the Firebase Authentication email of the platform owner (comma-separated if needed). On the first login, the server bootstraps that account with the `super_admin` claim. Business-owner accounts are created from Super Admin with `role=business_admin` and an immutable `tenantId` claim. The included `firestore.rules` must be deployed to Firebase for database-level tenant isolation.

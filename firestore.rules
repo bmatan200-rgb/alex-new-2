@@ -2,31 +2,37 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isSuper() { return signedIn() && request.auth.token.role == 'super_admin'; }
+    function isBusinessAdmin(tenantId) {
+      return signedIn()
+        && request.auth.token.role == 'business_admin'
+        && request.auth.token.tenantId == tenantId;
+    }
+    function canManage(tenantId) { return isSuper() || isBusinessAdmin(tenantId); }
 
-    // Global Domain Mapping for Multi-Tenant resolution
+    // Publicly readable for domain -> tenant resolution; writable only by Super Admin.
     match /domains/{hostname} {
       allow read: if true;
-      allow write: if true;
+      allow write: if isSuper();
     }
 
-    // Tenant Root Info & Branding
     match /tenants/{tenantId} {
+      // Branding/business profile is public; only admins may change it.
       allow read: if true;
-      allow write: if true;
+      allow write: if isSuper();
 
-      // Tenant Configuration (services, schedule settings, templates)
       match /settings/{docId} {
         allow read: if true;
-        allow write: if true;
+        allow write: if canManage(tenantId);
       }
 
-      // Tenant Customers
       match /customers/{customerId} {
-        allow read, write: if true;
+        allow read, write: if canManage(tenantId);
       }
 
-      // Tenant Appointments
       match /appointments/{appointmentId} {
+        // Current booking UI reads appointments to calculate occupied slots.
         allow read: if true;
         allow create: if request.resource.data.customer_name is string
                       && request.resource.data.customer_name.size() > 0
@@ -38,37 +44,21 @@ service cloud.firestore {
                       && request.resource.data.start_time is string
                       && request.resource.data.end_time is string
                       && request.resource.data.status in ['confirmed', 'cancelled'];
-        allow update: if request.resource.data.status in ['confirmed', 'cancelled'];
-        allow delete: if true;
+        allow update, delete: if canManage(tenantId);
       }
     }
 
-    // Legacy root collections are kept only for the one-time migration endpoint.
-    // Application code no longer reads or writes these collections.
-    match /appointments/{appointmentId} {
-      allow read, write: if true;
-    }
-    match /settings/{docId} {
-      allow read, write: if true;
-    }
-    match /customers/{customerId} {
-      allow read, write: if true;
-    }
+    // Role directory is server-managed through Firebase Admin SDK only.
+    match /adminUsers/{uid} { allow read, write: if false; }
 
-    // Shared operational logs
-    match /reminder_locks/{lockId} {
-      allow read, write: if true;
-    }
-    match /sms_logs/{logId} {
-      allow read, write: if true;
-    }
-    match /whatsapp_logs/{logId} {
-      allow read, write: if true;
-    }
+    // Legacy/global operational collections are server-only.
+    match /appointments/{id} { allow read, write: if false; }
+    match /settings/{id} { allow read, write: if false; }
+    match /customers/{id} { allow read, write: if false; }
+    match /reminder_locks/{id} { allow read, write: if false; }
+    match /sms_logs/{id} { allow read, write: if false; }
+    match /whatsapp_logs/{id} { allow read, write: if false; }
 
-    match /{document=**} {
-      allow read, write: if false;
-    }
+    match /{document=**} { allow read, write: if false; }
   }
 }
-

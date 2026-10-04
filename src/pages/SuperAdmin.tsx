@@ -38,7 +38,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { doc, deleteDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db, auth } from '../lib/firebase';
 import { Appointment, Service, TenantInfo, ScheduleSettings } from '../types';
 import { formatILS } from '../utils/dateUtils';
 
@@ -56,6 +56,10 @@ const COLOR_PALETTES = [
 ];
 
 export const SuperAdminPage: React.FC = () => {
+  const authHeaders = async (json = false) => {
+    const token = auth.currentUser ? await auth.currentUser.getIdToken() : (localStorage.getItem('alex_admin_session_token') || '');
+    return { ...(json ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  };
   const [tenants, setTenants] = useState<TenantInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -69,6 +73,7 @@ export const SuperAdminPage: React.FC = () => {
   const [ownerName, setOwnerName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
+  const [ownerPassword, setOwnerPassword] = useState('');
   const [city, setCity] = useState('');
   const [address, setAddress] = useState('');
   const [customDomain, setCustomDomain] = useState('');
@@ -118,20 +123,10 @@ export const SuperAdminPage: React.FC = () => {
     try {
       const targetId = tenantToDelete.id;
 
-      // 1. Delete from Firestore directly
-      await deleteDoc(doc(db, 'tenants', targetId));
-      try {
-        await deleteDoc(doc(db, 'tenants', targetId, 'settings', 'config'));
-      } catch (e) {
-        // subcollection cleanup
-      }
-
-      // 2. Also notify backend endpoint if available
-      try {
-        await fetch(`/api/super-admin/tenants/${targetId}`, { method: 'DELETE' });
-      } catch (e) {
-        // ignore server network error if firestore delete succeeded
-      }
+      // Delete only through the protected Super Admin API
+      const deleteRes = await fetch(`/api/super-admin/tenants/${targetId}`, { method: 'DELETE', headers: await authHeaders() });
+      const deleteData = await deleteRes.json().catch(() => ({}));
+      if (!deleteRes.ok || !deleteData.success) throw new Error(deleteData.error || 'מחיקת העסק נכשלה');
 
       // 3. Immediately remove from UI state
       setTenants((prev) => prev.filter((t) => t.id !== targetId));
@@ -149,7 +144,7 @@ export const SuperAdminPage: React.FC = () => {
   const fetchTenants = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/tenants');
+      const res = await fetch('/api/tenants', { headers: await authHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.tenants)) {
@@ -239,7 +234,7 @@ export const SuperAdminPage: React.FC = () => {
 
   const resetTenantForm = () => {
     setEditingTenantId(null);
-    setTenantId(''); setName(''); setTagline(''); setOwnerName(''); setPhone(''); setEmail('');
+    setTenantId(''); setName(''); setTagline(''); setOwnerName(''); setPhone(''); setEmail(''); setOwnerPassword('');
     setCity(''); setAddress(''); setCustomDomain(''); setPrimaryColor('#7c3aed'); setSecondaryColor('#c4b5fd');
     setPlan('pro'); setCoverImage(''); setCoverImageError(''); setServices([]);
     setBusinessOpen(''); setBusinessClose(''); setFridayOpen(''); setFridayClose(''); setCreatedResult(null);
@@ -248,7 +243,7 @@ export const SuperAdminPage: React.FC = () => {
   const handleEditTenant = async (tenant: TenantInfo) => {
     setIsLoadingEdit(true);
     try {
-      const res = await fetch(`/api/super-admin/tenants/${encodeURIComponent(tenant.id)}`);
+      const res = await fetch(`/api/super-admin/tenants/${encodeURIComponent(tenant.id)}`, { headers: await authHeaders() });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'לא ניתן לטעון את העסק');
       const t = data.tenant || tenant;
@@ -313,12 +308,22 @@ export const SuperAdminPage: React.FC = () => {
 
       const res = await fetch(editingTenantId ? `/api/super-admin/tenants/${encodeURIComponent(editingTenantId)}` : '/api/super-admin/tenants', {
         method: editingTenantId ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders(true),
         body: JSON.stringify(payload),
       });
 
       const data = await res.json();
       if (data.success) {
+        const savedTenantId = editingTenantId || finalTenantId;
+        if (email.trim() && ownerPassword) {
+          const ownerRes = await fetch(`/api/super-admin/tenants/${encodeURIComponent(savedTenantId)}/owner-account`, {
+            method: 'POST', headers: await authHeaders(true),
+            body: JSON.stringify({ email: email.trim(), password: ownerPassword, displayName: (ownerName || name).trim() }),
+          });
+          const ownerData = await ownerRes.json().catch(() => ({}));
+          if (!ownerRes.ok || !ownerData.success) throw new Error(ownerData.error || 'העסק נשמר, אך יצירת חשבון בעל העסק נכשלה');
+          setOwnerPassword('');
+        }
         setLastSaveWasEdit(!!editingTenantId);
         setCreatedResult({
           tenantId: editingTenantId || finalTenantId,
@@ -642,6 +647,19 @@ export const SuperAdminPage: React.FC = () => {
                         placeholder="salon@beauty.co.il"
                         className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-white font-medium focus:border-purple-500 focus:outline-none"
                       />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-300 font-bold mb-1.5">סיסמה זמנית לבעל העסק</label>
+                      <input
+                        type="password"
+                        value={ownerPassword}
+                        onChange={(e) => setOwnerPassword(e.target.value)}
+                        placeholder={editingTenantId ? "השאר ריק כדי לא לשנות סיסמה" : "לפחות 6 תווים"}
+                        minLength={6}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-white font-medium focus:border-purple-500 focus:outline-none"
+                      />
+                      <p className="text-[10px] text-slate-500 mt-1">הסיסמה נשמרת רק ב-Firebase Authentication ולא במסד הנתונים.</p>
                     </div>
 
                     <div>

@@ -11,7 +11,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { useNavigate, Link } from 'react-router-dom';
-import { auth, signInWithEmailAndPassword } from '../lib/firebase';
+import { auth, signInWithEmailAndPassword, signOut } from '../lib/firebase';
 import { UserSession } from '../types';
 import { saveAdminSession, SALON_INFO } from '../utils/storage';
 
@@ -59,12 +59,30 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
         // ignore
       }
 
+      const profileRes = await fetch('/api/auth/me', {
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      const profileData = await profileRes.json().catch(() => ({}));
+      if (!profileRes.ok || !profileData?.success) {
+        await signOut(auth).catch(() => {});
+        throw new Error(profileData?.error || 'לחשבון אין הרשאת ניהול במערכת');
+      }
+      const profile = profileData.user || {};
+      // /api/auth/me may bootstrap the configured Super Admin claim on first login.
+      // Force-refresh once so Firestore Rules immediately see the new role.
+      if (profile.role === 'super_admin') {
+        const refreshedToken = await user.getIdToken(true);
+        try { localStorage.setItem('alex_admin_session_token', refreshedToken); } catch {}
+      }
       const nowIso = new Date().toISOString();
       const adminSession: UserSession = {
-        name: user.displayName || 'אלכסנדרה ביטון (מנהלת)',
+        name: user.displayName || (profile.role === 'super_admin' ? 'Super Admin' : 'בעל/ת העסק'),
         email: user.email || trimmedEmail,
         phone: SALON_INFO.phone,
         isAdmin: true,
+        role: profile.role,
+        tenantId: profile.tenantId,
+        uid: profile.uid,
         loggedInAt: nowIso,
         acceptedTerms: true,
         acceptedTermsAt: nowIso,
@@ -75,7 +93,8 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
 
       setTimeout(() => {
         onLoginSuccess(adminSession);
-        navigate('/admin/dashboard', { replace: true });
+        if (profile.role === 'super_admin') navigate('/super-admin', { replace: true });
+        else navigate(`/admin/dashboard?tenant=${encodeURIComponent(profile.tenantId)}`, { replace: true });
       }, 600);
     } catch (err: any) {
       console.error('[Admin Login Error]:', err);

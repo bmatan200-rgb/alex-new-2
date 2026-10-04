@@ -574,45 +574,78 @@ app.delete('/api/admin/customers/:id', requireAdmin, async (req: Request, res: R
  * מחרוזת קבועה בקוד גלויה לכל מי שרואה את הריפו. כל "גיבוי" כזה
  * הופך את האימות כולו לקישוט.
  */
-async function requireAdmin(req: Request, res: Response, next: NextFunction) {
+type AdminRole = 'super_admin' | 'business_admin';
+
+type AdminPayload = {
+  uid: string;
+  email?: string;
+  role: AdminRole;
+  tenantId?: string;
+};
+
+function getSuperAdminEmails() {
+  return (process.env.SUPER_ADMIN_EMAILS || process.env.ADMIN_EMAILS || '')
+    .split(',').map((v) => v.trim().toLowerCase()).filter(Boolean);
+}
+
+async function decodeAdmin(req: Request): Promise<AdminPayload | null> {
+  if (!adminSdkReady) return null;
   const token = (req.headers['authorization'] as string | undefined)?.replace(/^Bearer\s+/i, '');
-
-  if (!adminSdkReady) {
-    // בשרת עצמאי ב-Render ללא FIREBASE_SERVICE_ACCOUNT נאפשר בקשת ניהול
-    console.warn('[Auth] Firebase Admin אינו מוגדר — מאפשר בקשת ניהול במצב שרת עצמאי (Render)');
-    return next();
-  }
-
-  if (!token) {
-    if (req.headers['x-admin-request'] === 'true') {
-      return next();
+  if (!token) return null;
+  const decoded: any = await getAuth().verifyIdToken(token);
+  const email = String(decoded.email || '').toLowerCase();
+  const superEmails = getSuperAdminEmails();
+  if (decoded.role === 'super_admin' || superEmails.includes(email)) {
+    // Bootstrap/migrate the configured owner into a real Firebase custom claim.
+    if (decoded.role !== 'super_admin' && superEmails.includes(email)) {
+      await getAuth().setCustomUserClaims(decoded.uid, { role: 'super_admin' });
     }
-    return res.status(401).json({ success: false, error: 'נדרשת התחברות כמנהלת' });
+    return { uid: decoded.uid, email: decoded.email, role: 'super_admin' };
   }
+  if (decoded.role === 'business_admin' && decoded.tenantId) {
+    return { uid: decoded.uid, email: decoded.email, role: 'business_admin', tenantId: String(decoded.tenantId) };
+  }
+  return null;
+}
 
+async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   try {
-    const decoded = await getAuth().verifyIdToken(token);
+    const admin = await decodeAdmin(req);
+    if (!admin) return res.status(403).json({ success: false, error: 'לחשבון אין הרשאת ניהול' });
 
-    const allowList = (process.env.ADMIN_EMAILS || '')
-      .split(',')
-      .map((v) => v.trim().toLowerCase())
-      .filter(Boolean);
-
-    if (allowList.length > 0 && !allowList.includes((decoded.email || '').toLowerCase())) {
-      console.warn(`[Auth] נדחתה גישה למייל שאינו ברשימה: ${decoded.email}`);
-      return res.status(403).json({ success: false, error: 'אין לך הרשאת מנהלת' });
+    if (admin.role === 'business_admin') {
+      const requestedTenant = String(req.body?.tenantId || req.query?.tenant || req.headers['x-tenant-id'] || '');
+      if (requestedTenant && requestedTenant !== admin.tenantId) {
+        return res.status(403).json({ success: false, error: 'אין הרשאה לעסק אחר' });
+      }
+      req.tenantId = admin.tenantId;
+      if (req.body && typeof req.body === 'object') req.body.tenantId = admin.tenantId;
     }
-
-    (req as any).adminPayload = { uid: decoded.uid, email: decoded.email };
+    (req as any).adminPayload = admin;
     return next();
   } catch (err: any) {
-    console.warn('[Auth] אימות טוקן נכשל:', err?.message);
-    if (req.headers['x-admin-request'] === 'true') {
-      return next();
-    }
+    console.warn('[Auth] token verification failed:', err?.message);
     return res.status(401).json({ success: false, error: 'ההתחברות פגה, יש להתחבר מחדש' });
   }
 }
+
+async function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
+  try {
+    const admin = await decodeAdmin(req);
+    if (!admin || admin.role !== 'super_admin') {
+      return res.status(403).json({ success: false, error: 'נדרשת הרשאת Super Admin' });
+    }
+    (req as any).adminPayload = admin;
+    return next();
+  } catch {
+    return res.status(401).json({ success: false, error: 'ההתחברות פגה, יש להתחבר מחדש' });
+  }
+}
+
+app.get('/api/auth/me', requireAdmin, (req: Request, res: Response) => {
+  const admin = (req as any).adminPayload as AdminPayload;
+  res.json({ success: true, user: admin });
+});
 
 // ----------------------------------------------------
 // 💬 SMS & AUTOMATED REMINDERS ENGINE (Rebuilt & Hardened)
@@ -1419,7 +1452,7 @@ app.get('/api/sms/logs', requireAdmin, (req: Request, res: Response) => {
 // 7. Multi-Tenant List
 const deletedTenantIds = new Set<string>();
 
-app.get('/api/tenants', async (req: Request, res: Response) => {
+app.get('/api/tenants', requireSuperAdmin, async (req: Request, res: Response) => {
   const defaultTenants = [
     {
       id: 'alex_beauty',
@@ -1598,7 +1631,7 @@ app.get('/api/tenant/current', async (req: Request, res: Response) => {
 });
 
 // 9. Super Admin Tenant Onboarding & Domain Mapping Endpoint
-app.post('/api/super-admin/tenants', async (req: Request, res: Response) => {
+app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const {
       tenantId: rawTenantId,
@@ -1698,7 +1731,7 @@ app.post('/api/super-admin/tenants', async (req: Request, res: Response) => {
 });
 
 // 9.4 Super Admin: load one tenant for editing
-app.get('/api/super-admin/tenants/:tenantId', async (req: Request, res: Response) => {
+app.get('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const tenantId = String(req.params.tenantId || '').trim();
     if (!tenantId) return res.status(400).json({ success: false, error: 'Tenant ID is required' });
@@ -1718,7 +1751,7 @@ app.get('/api/super-admin/tenants/:tenantId', async (req: Request, res: Response
 });
 
 // 9.45 Super Admin: update an existing tenant. Tenant ID stays immutable.
-app.put('/api/super-admin/tenants/:tenantId', async (req: Request, res: Response) => {
+app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const tenantId = String(req.params.tenantId || '').trim();
     if (!tenantId) return res.status(400).json({ success: false, error: 'Tenant ID is required' });
@@ -1772,8 +1805,51 @@ app.put('/api/super-admin/tenants/:tenantId', async (req: Request, res: Response
   }
 });
 
+// Super Admin: create/replace the Firebase login for one business owner.
+app.post('/api/super-admin/tenants/:tenantId/owner-account', requireSuperAdmin, async (req: Request, res: Response) => {
+  try {
+    const tenantId = String(req.params.tenantId || '').trim();
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    const displayName = String(req.body?.displayName || '').trim();
+    if (!tenantId || !email) return res.status(400).json({ success: false, error: 'חובה להזין עסק ואימייל' });
+    if (password.length < 6) return res.status(400).json({ success: false, error: 'הסיסמה הזמנית חייבת להכיל לפחות 6 תווים' });
+    const tenantSnap = await getDoc(getTenantDoc(tenantId));
+    if (!tenantSnap.exists()) return res.status(404).json({ success: false, error: 'העסק לא נמצא' });
+
+    let user;
+    try { user = await getAuth().getUserByEmail(email); }
+    catch { user = await getAuth().createUser({ email, password, displayName: displayName || undefined, emailVerified: false }); }
+    if (user.email === email) {
+      await getAuth().updateUser(user.uid, { password, displayName: displayName || user.displayName || undefined, disabled: false });
+    }
+    await getAuth().setCustomUserClaims(user.uid, { role: 'business_admin', tenantId });
+    await setDoc(doc(db, 'adminUsers', user.uid), {
+      uid: user.uid, email, displayName, role: 'business_admin', tenantId, disabled: false, updatedAt: new Date().toISOString()
+    }, { merge: true });
+    await setDoc(getTenantDoc(tenantId), { ownerAuthUid: user.uid, ownerAuthEmail: email, updatedAt: new Date().toISOString() }, { merge: true });
+    return res.json({ success: true, account: { uid: user.uid, email, role: 'business_admin', tenantId } });
+  } catch (err: any) {
+    console.error('[Owner account]', err);
+    return res.status(500).json({ success: false, error: err?.message || 'שגיאה ביצירת חשבון בעל העסק' });
+  }
+});
+
+app.post('/api/super-admin/tenants/:tenantId/owner-account/disable', requireSuperAdmin, async (req: Request, res: Response) => {
+  try {
+    const tenantId = String(req.params.tenantId || '').trim();
+    const tenantSnap = await getDoc(getTenantDoc(tenantId));
+    const uid = String(tenantSnap.data()?.ownerAuthUid || '');
+    if (!uid) return res.status(404).json({ success: false, error: 'לא הוגדר חשבון בעלים לעסק' });
+    const disabled = req.body?.disabled !== false;
+    await getAuth().updateUser(uid, { disabled });
+    await setDoc(doc(db, 'adminUsers', uid), { disabled, updatedAt: new Date().toISOString() }, { merge: true });
+    return res.json({ success: true, disabled });
+  } catch (err: any) { return res.status(500).json({ success: false, error: err?.message }); }
+});
+
 // 9.5 Delete Tenant Endpoint
-app.delete('/api/super-admin/tenants/:tenantId', async (req: Request, res: Response) => {
+app.delete('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const { tenantId } = req.params;
     if (!tenantId || tenantId === 'alex_beauty') {
@@ -1805,21 +1881,10 @@ app.delete('/api/super-admin/tenants/:tenantId', async (req: Request, res: Respo
 });
 
 // 10. Tenant Admin Data Endpoint (Local dev bypass support)
-app.get('/api/admin/tenant-data', async (req: Request, res: Response) => {
+app.get('/api/admin/tenant-data', requireAdmin, async (req: Request, res: Response) => {
   try {
     const tenantId = (req.query.tenant as string) || req.tenantId || 'alex_beauty';
     const isDev = process.env.NODE_ENV !== 'production';
-
-    // In local development, allow fetching without strict session validation
-    if (!isDev) {
-      const token =
-        (req.headers['authorization'] as string | undefined)?.replace(/^Bearer\s+/i, '') ||
-        (req.query.token as string | undefined);
-      const isAdminReq = req.headers['x-admin-request'] === 'true' || token === 'admin_secret_session_active';
-      if (!isAdminReq) {
-        return res.status(401).json({ success: false, error: 'Unauthorized admin access' });
-      }
-    }
 
     // Fetch live appointments from /tenants/{tenantId}/appointments, fallback to root /appointments
     let tenantAppointments: any[] = [];

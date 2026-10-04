@@ -92,7 +92,8 @@ function AdminRouteView({
   const navigate = useNavigate();
   const { tenant, tenantId } = useTenant();
   const urlTenant = searchParams.get('tenant') || (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('tenant') : '');
-  const tenantParam = urlTenant || tenantId || tenant.id || 'alex_beauty';
+  const requestedTenant = urlTenant || tenantId || tenant.id || 'alex_beauty';
+  const tenantParam = adminSession?.role === 'business_admin' && adminSession.tenantId ? adminSession.tenantId : requestedTenant;
 
   // Check if in local development environment
   const isLocalDev = Boolean(
@@ -121,7 +122,8 @@ function AdminRouteView({
 
     // Trigger tenant data fetch endpoint
     if (tenantParam) {
-      fetch(`/api/admin/tenant-data?tenant=${encodeURIComponent(tenantParam)}`)
+      const token = localStorage.getItem('alex_admin_session_token') || '';
+      fetch(`/api/admin/tenant-data?tenant=${encodeURIComponent(tenantParam)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
         .then((r) => r.json())
         .then((data) => {
           if (data && data.success) {
@@ -172,14 +174,16 @@ function AdminRouteView({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            <Link
-              to="/super-admin"
-              className="px-3 py-1.5 rounded-xl bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 hover:text-white border border-indigo-800/80 text-xs font-bold transition flex items-center gap-1.5"
-              title="כניסה ללוח Super Admin מרובה סלונים"
-            >
-              <Layers className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Super Admin</span>
-            </Link>
+            {adminSession?.role === 'super_admin' && (
+              <Link
+                to="/super-admin"
+                className="px-3 py-1.5 rounded-xl bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 hover:text-white border border-indigo-800/80 text-xs font-bold transition flex items-center gap-1.5"
+                title="כניסה ללוח Super Admin מרובה סלונים"
+              >
+                <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Super Admin</span>
+              </Link>
+            )}
 
             <Link
               to={`/?tenant=${tenantParam}`}

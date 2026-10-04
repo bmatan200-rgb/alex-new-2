@@ -10,45 +10,74 @@ import { createServer as createViteServer } from 'vite';
 const app = express();
 const PORT = 3000;
 
-// אתחול Firebase Admin לאימות טוקני התחברות של מנהלות (מוגן מפני קריסה)
+// Firebase Admin must always use the explicit Render service-account secret.
+// Never fall back to Application Default Credentials on Render: there is no ADC there,
+// and that fallback caused the v12 deploy crash (NO_ADC_FOUND).
 let adminSdkReady = false;
-try {
-  if (getApps().length === 0) {
-    const saJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-    let initialized = false;
+let db: ReturnType<typeof getFirestore>;
 
-    if (saJson && typeof saJson === 'string') {
-      const trimmed = saJson.trim();
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        try {
-          const parsedCreds = JSON.parse(trimmed);
-          if (parsedCreds && parsedCreds.project_id) {
-            initializeApp({
-              credential: cert(parsedCreds),
-              projectId: parsedCreds.project_id || 'gen-lang-client-0382531831',
-            });
-            initialized = true;
-          }
-        } catch (parseErr: any) {
-          console.warn('[Firebase Admin] ⚠️ שגיאת פענוח Service Account JSON (עובר לאתחול לפי projectId):', parseErr?.message);
-        }
-      }
-    }
+function parseFirebaseServiceAccount(rawValue?: string) {
+  if (!rawValue || !rawValue.trim()) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT is missing or empty');
+  }
 
-    if (!initialized) {
-      initializeApp({ projectId: 'gen-lang-client-0382531831' });
+  let raw = rawValue.trim();
+  let parsed: any;
+
+  // Render secrets are commonly stored in one of three forms:
+  // 1) raw JSON, 2) JSON wrapped as a quoted string, 3) base64 encoded JSON.
+  const tryJson = (value: string) => {
+    try { return JSON.parse(value); } catch { return null; }
+  };
+
+  parsed = tryJson(raw);
+  if (typeof parsed === 'string') parsed = tryJson(parsed);
+
+  if (!parsed || typeof parsed !== 'object') {
+    try {
+      const decoded = Buffer.from(raw, 'base64').toString('utf8').trim();
+      parsed = tryJson(decoded);
+      if (typeof parsed === 'string') parsed = tryJson(parsed);
+    } catch {
+      // handled by validation below
     }
   }
-  adminSdkReady = true;
-  console.log('[Firebase Admin] ✅ מוכן לאימות טוקנים (מצב פעיל)');
-} catch (err: any) {
-  console.warn('[Firebase Admin] ⚠️ אתחול במצב Standalone:', err?.message);
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT is not valid JSON/base64 JSON');
+  }
+
+  // cert() expects real newlines in the PEM key. Render values are often pasted with \\n.
+  if (typeof parsed.private_key === 'string') {
+    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  }
+
+  if (!parsed.project_id || !parsed.client_email || !parsed.private_key) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT is missing project_id/client_email/private_key');
+  }
+
+  return parsed;
 }
 
-// Server-side Firestore MUST use Firebase Admin SDK. Using the browser SDK here would
-// be evaluated by Firestore Security Rules as an unauthenticated client and would make
-// protected tenant reads/writes fail even though FIREBASE_SERVICE_ACCOUNT is configured.
-const db = getFirestore();
+try {
+  const serviceAccount = parseFirebaseServiceAccount(process.env.FIREBASE_SERVICE_ACCOUNT);
+  const adminApp = getApps()[0] || initializeApp({
+    credential: cert(serviceAccount),
+    projectId: serviceAccount.project_id,
+  });
+
+  // Bind Firestore explicitly to the credentialed Admin app. This prevents the SDK
+  // from attempting Google Application Default Credentials.
+  db = getFirestore(adminApp);
+  adminSdkReady = true;
+  console.log(`[Firebase Admin] ✅ Service Account מחובר לפרויקט ${serviceAccount.project_id}`);
+} catch (err: any) {
+  console.error('[Firebase Admin] ❌ לא ניתן לאתחל FIREBASE_SERVICE_ACCOUNT:', err?.message || err);
+  // Authentication, tenant isolation, migrations and reminders all depend on Admin SDK.
+  // Failing clearly is safer than starting a half-working server or silently using ADC.
+  process.exit(1);
+  throw err;
+}
 
 // Small compatibility helpers keep the rest of this server readable while using Admin SDK.
 const collection = (_db: any, ...segments: string[]) => db.collection(segments.join('/'));

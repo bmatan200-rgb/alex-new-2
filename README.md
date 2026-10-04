@@ -48,3 +48,10 @@ For an existing installation that still has legacy global `/appointments` and `/
 - Removed public customer-page footer links to Tenant Admin and Super Admin.
 - Added 15-minute and 20-minute treatment duration options to business creation/editing.
 - Added 15/20-minute quick presets in the admin treatment-duration settings and extended the duration slider down to 15 minutes.
+
+
+## v10 – Tenant Cover persistence fix
+- Fixed Super Admin cover uploads that could exceed the Express JSON request limit.
+- Cover images are now compressed to a Firestore-safe size before save.
+- API JSON limit increased to safely accept the compressed tenant cover payload.
+- Public tenant app continues to read `coverImage` only from its own tenant document.

@@ -49,7 +49,9 @@ try {
 const normalizePhone = (p?: string) => (p || '').replace(/\D/g, '');
 
 // Security: JSON body parser with size limit to prevent Denial of Service attacks
-app.use(express.json({ limit: '500kb' }));
+// Tenant cover images are sent as compressed data URLs from Super Admin.
+// Keep this above the client-side cover cap; Firestore still receives a much smaller (<400KB) image.
+app.use(express.json({ limit: '2mb' }));
 
 // Basic Security Headers Middleware
 app.use((req: Request, res: Response, next: NextFunction) => {

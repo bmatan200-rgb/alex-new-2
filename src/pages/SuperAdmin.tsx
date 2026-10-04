@@ -218,9 +218,16 @@ export const SuperAdminPage: React.FC = () => {
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
-        if (dataUrl.length > 850000) {
-          setCoverImageError('לאחר דחיסה התמונה עדיין גדולה. נסה תמונה קטנה יותר.');
+        // Keep the image comfortably below both the API body limit and Firestore's 1MB document limit.
+        // Reduce JPEG quality progressively so a cover selected on a phone reliably persists to the tenant.
+        let quality = 0.72;
+        let dataUrl = canvas.toDataURL('image/jpeg', quality);
+        while (dataUrl.length > 360000 && quality > 0.34) {
+          quality -= 0.08;
+          dataUrl = canvas.toDataURL('image/jpeg', quality);
+        }
+        if (dataUrl.length > 420000) {
+          setCoverImageError('התמונה גדולה מדי גם לאחר דחיסה. נסה תמונה קטנה יותר.');
           return;
         }
         setCoverImage(dataUrl);

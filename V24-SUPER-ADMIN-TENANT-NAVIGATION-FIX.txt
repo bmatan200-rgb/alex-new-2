@@ -1,0 +1,13 @@
+V24 — Super Admin → Tenant Admin navigation fix
+
+מטרה:
+למנוע את ההבהוב של מסך ההתחברות כאשר Super Admin פותח ניהול של אבי/אלכס/עסק אחר.
+
+שינויים נקודתיים בלבד:
+1. כפתור "אדמין עסק" ב-Super Admin משתמש בניווט פנימי ישיר ל-/admin/dashboard?tenant=... במקום לפתוח טאב חדש דרך /admin.
+2. adminSession נטען מיד מה-session המקומי הקיים בזמן פתיחת האפליקציה.
+3. בזמן שחזור Firebase Auth מוצג מסך טעינה ניטרלי ולא AdminLoginPage.
+4. אין signIn/signOut נוסף, אין החלפת משתמש Firebase, ואין שינוי הרשאות/Firestore/SMS.
+5. Super Admin נשאר המשתמש המחובר ומקבל רק context של ה-tenant הנבחר.
+
+גרסה: 24.0.0

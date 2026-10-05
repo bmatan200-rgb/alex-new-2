@@ -69,6 +69,7 @@ function AdminRouteView({
   services,
   scheduleSettings,
   adminSession,
+  adminAuthReady,
   onAdminLoginSuccess,
   onAdminLogout,
   onAddAppointment,
@@ -81,6 +82,7 @@ function AdminRouteView({
   services: Service[];
   scheduleSettings: ScheduleSettings;
   adminSession: UserSession | null;
+  adminAuthReady: boolean;
   onAdminLoginSuccess: (session: UserSession) => void;
   onAdminLogout: () => void;
   onAddAppointment: (a: Omit<Appointment, 'id'>) => Promise<void>;
@@ -99,6 +101,13 @@ function AdminRouteView({
   const canAccess = Boolean(adminSession?.isAdmin && (adminSession.role === 'super_admin' || (adminSession.role === 'business_admin' && adminSession.tenantId === requestedTenant)));
 
   if (!canAccess) {
+    if (!adminAuthReady) {
+      return (
+        <div className="min-h-screen bg-slate-950 text-slate-200 flex items-center justify-center" dir="rtl">
+          <div className="text-sm font-bold">טוען את ממשק הניהול…</div>
+        </div>
+      );
+    }
     return <AdminLoginPage onLoginSuccess={onAdminLoginSuccess} />;
   }
 
@@ -200,7 +209,10 @@ function MainApp() {
   } = useTenant();
 
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
-  const [adminSession, setAdminSession] = useState<UserSession | null>(null);
+  const [adminSession, setAdminSession] = useState<UserSession | null>(() => getStoredAdminSession());
+  // V24: hydrate the existing admin identity immediately so Super Admin -> tenant admin
+  // navigation never flashes the login screen while Firebase restores the same session.
+  const [adminAuthReady, setAdminAuthReady] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [isTermsOpen, setIsTermsOpen] = useState<boolean>(false);
 
@@ -267,6 +279,7 @@ function MainApp() {
         setCurrentUser(null);
         saveAdminSession(session);setAdminSession(session);
       }catch {if(active){clearAdminSession();setAdminSession(null);}}
+      finally { if (active) setAdminAuthReady(true); }
     });
     return ()=>{active=false;unsubscribe();};
   },[tenantId]);
@@ -731,6 +744,7 @@ function MainApp() {
               services={services}
               scheduleSettings={scheduleSettings}
               adminSession={adminSession}
+              adminAuthReady={adminAuthReady}
               onAdminLoginSuccess={handleAdminLoginSuccess}
               onAdminLogout={handleAdminLogout}
               onAddAppointment={handleAddManualAppointment}
@@ -753,6 +767,7 @@ function MainApp() {
               services={services}
               scheduleSettings={scheduleSettings}
               adminSession={adminSession}
+              adminAuthReady={adminAuthReady}
               onAdminLoginSuccess={handleAdminLoginSuccess}
               onAdminLogout={handleAdminLogout}
               onAddAppointment={handleAddManualAppointment}

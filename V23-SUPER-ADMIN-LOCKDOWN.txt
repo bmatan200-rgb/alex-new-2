@@ -1,0 +1,13 @@
+V23.0.0 — SUPER ADMIN LOCKDOWN
+
+Security rule:
+- The ONLY global Super Admin email is: bmatan200@gmail.com
+- A Firebase custom claim alone can never grant Super Admin to any other email.
+- alexbiton200@gmail.com, avi@beauty.co.il and every future owner are business_admin only and remain tenant-scoped.
+- If a non-BMatan account carries a stale super_admin claim, the server ignores it and normalizes the account back to business_admin when a valid tenant binding exists.
+- /api/auth/me now verifies identity without forcing the alex_beauty tenant, so Avi and future tenants can authenticate correctly.
+- /super-admin verifies /api/auth/me first. Non-super users are redirected to their own /admin/dashboard tenant and never load the tenant list.
+- The UI shows the Super Admin badge only after the server confirms role=super_admin.
+
+Render:
+SUPER_ADMIN_EMAILS may remain bmatan200@gmail.com. V23 hard-locks the server to this exact canonical account even if an extra email is accidentally added to the env var.

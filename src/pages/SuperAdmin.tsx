@@ -62,6 +62,7 @@ const COLOR_PALETTES = [
 export const SuperAdminPage: React.FC = () => {
   const navigate = useNavigate();
   const [signedInEmail, setSignedInEmail] = useState<string>(() => auth.currentUser?.email || '');
+  const [superAdminAuthorized, setSuperAdminAuthorized] = useState(false);
   const authHeaders = async (json = false) => {
     const token = auth.currentUser ? await auth.currentUser.getIdToken() : (localStorage.getItem('alex_admin_session_token') || '');
     return { ...(json ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
@@ -147,48 +148,57 @@ export const SuperAdminPage: React.FC = () => {
     }
   };
 
-  // Fetch tenants from API
-  const fetchTenants = async () => {
+  // V23: verify the server-side role before showing or loading any Super Admin data.
+  // The page location itself never implies privilege.
+  const verifySuperAdminAndFetch = async (user: typeof auth.currentUser) => {
     try {
       setLoading(true);
       setLoadError('');
-      // Force-refresh once so a newly bootstrapped super_admin custom claim is immediately available.
-      if (auth.currentUser) {
-        const fresh = await auth.currentUser.getIdToken(true);
-        try { localStorage.setItem('alex_admin_session_token', fresh); } catch {}
+      setSuperAdminAuthorized(false);
+
+      if (!user) {
+        navigate('/admin', { replace: true });
+        return;
       }
-      const res = await fetch('/api/tenants', { headers: await authHeaders() });
+
+      const fresh = await user.getIdToken(true);
+      try { localStorage.setItem('alex_admin_session_token', fresh); } catch {}
+
+      const profileRes = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${fresh}` } });
+      const profileData = await profileRes.json().catch(() => ({}));
+      if (!profileRes.ok || !profileData?.success) throw new Error(profileData?.error || `HTTP ${profileRes.status}`);
+
+      const profile = profileData.user || {};
+      if (profile.role !== 'super_admin') {
+        const targetTenant = profile.tenantId ? encodeURIComponent(profile.tenantId) : '';
+        navigate(targetTenant ? `/admin/dashboard?tenant=${targetTenant}` : '/admin', { replace: true });
+        return;
+      }
+
+      setSuperAdminAuthorized(true);
+      setSignedInEmail(user.email || profile.email || '');
+
+      const res = await fetch('/api/tenants', { headers: { Authorization: `Bearer ${fresh}` } });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
       if (Array.isArray(data.tenants)) setTenants(data.tenants);
     } catch (err: any) {
-      console.warn('Notice loading tenants:', err);
-      setLoadError(err?.message || 'טעינת העסקים נכשלה');
+      console.warn('Notice loading Super Admin:', err);
+      setSuperAdminAuthorized(false);
+      setLoadError(err?.message || 'אימות Super Admin נכשל');
     } finally {
       setLoading(false);
     }
   };
 
+  const fetchTenants = async () => verifySuperAdminAndFetch(auth.currentUser);
+
   useEffect(() => {
-    // Firebase restores auth asynchronously after a hard refresh. Keep the visible
-    // account identity in sync and only fetch tenants once the auth state settles.
-    let fired = false;
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setSignedInEmail(user?.email || '');
-      if (fired) return;
-      fired = true;
-      fetchTenants();
+      verifySuperAdminAndFetch(user);
     });
-    const fallback = window.setTimeout(() => {
-      if (!fired) {
-        fired = true;
-        fetchTenants();
-      }
-    }, 1500);
-    return () => {
-      window.clearTimeout(fallback);
-      unsubscribe();
-    };
+    return () => unsubscribe();
   }, []);
 
   const handleSuperAdminLogout = async () => {
@@ -404,6 +414,31 @@ export const SuperAdminPage: React.FC = () => {
     });
   }, [tenants, searchQuery, statusFilter]);
 
+  // Never render privileged Super Admin controls until the server has explicitly
+  // confirmed this Firebase identity as the one global Super Admin account.
+  if (!superAdminAuthorized) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6" dir="rtl">
+        <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-7 text-center shadow-xl">
+          <ShieldCheck className="mx-auto mb-4 h-10 w-10 text-purple-600" />
+          <h1 className="text-lg font-black text-slate-950">מאמת הרשאת Super Admin...</h1>
+          <p className="mt-2 text-sm font-medium text-slate-500">
+            {loadError || (loading ? 'המערכת בודקת את החשבון המחובר מול השרת.' : 'החשבון הזה אינו מורשה למסך Super Admin. מעביר לניהול העסק שלך...')}
+          </p>
+          {loadError && (
+            <button
+              type="button"
+              onClick={() => navigate('/admin', { replace: true })}
+              className="mt-5 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-black text-white"
+            >
+              חזרה להתחברות
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-['Heebo',sans-serif]" dir="rtl">
       {/* Top Navbar */}
@@ -431,8 +466,10 @@ export const SuperAdminPage: React.FC = () => {
           <div className="flex items-center gap-2.5 flex-wrap">
             <div className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold flex items-center gap-2" title="החשבון המחובר כעת">
               <UserCircle2 className="w-4 h-4 text-purple-600" />
-              <span className="max-w-[220px] truncate">{signedInEmail || 'חשבון Super Admin'}</span>
-              <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 text-[10px] font-black">Super Admin</span>
+              <span className="max-w-[220px] truncate">{signedInEmail || 'מאמת חשבון...'}</span>
+              {superAdminAuthorized && (
+                <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 text-[10px] font-black">Super Admin</span>
+              )}
             </div>
 
             <Link

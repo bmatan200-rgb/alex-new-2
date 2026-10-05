@@ -556,9 +556,14 @@ type AdminPayload = {
   tenantId?: string;
 };
 
+// V23 security invariant: there is exactly ONE Super Admin account.
+// Do not trust a stale/custom Firebase claim by itself. Even if another user somehow
+// carries role=super_admin, the server will never grant global access unless the
+// authenticated Firebase email is the canonical account below.
+const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
+
 function getSuperAdminEmails() {
-  return (process.env.SUPER_ADMIN_EMAILS || process.env.ADMIN_EMAILS || '')
-    .split(',').map((v) => v.trim().toLowerCase()).filter(Boolean);
+  return [PRIMARY_SUPER_ADMIN_EMAIL];
 }
 
 async function decodeAdmin(req: Request): Promise<AdminPayload | null> {
@@ -567,25 +572,52 @@ async function decodeAdmin(req: Request): Promise<AdminPayload | null> {
   if (!token) return null;
   const decoded: any = await getAuth().verifyIdToken(token, true);
   const currentUser = await getAuth().getUser(decoded.uid);
-  if(currentUser.disabled) return null;
+  if (currentUser.disabled) return null;
+
   const claims = currentUser.customClaims || {};
-  const email = String(currentUser.email || '').toLowerCase();
-  const superEmails = getSuperAdminEmails();
-  if (claims.role === 'super_admin' || (currentUser.emailVerified && superEmails.includes(email))) {
-    // Bootstrap/migrate the configured owner into a real Firebase custom claim.
-    if (claims.role !== 'super_admin' && currentUser.emailVerified && superEmails.includes(email)) {
-      await getAuth().setCustomUserClaims(decoded.uid, { ...claims, role: 'super_admin' });
+  const email = String(currentUser.email || decoded.email || '').trim().toLowerCase();
+
+  // Hard server-side allowlist: only bmatan200@gmail.com can ever be Super Admin.
+  if (email === PRIMARY_SUPER_ADMIN_EMAIL) {
+    if (claims.role !== 'super_admin' || claims.tenantId) {
+      const { tenantId: _legacyTenantId, ...restClaims } = claims as any;
+      await getAuth().setCustomUserClaims(decoded.uid, { ...restClaims, role: 'super_admin' });
     }
-    return { uid: decoded.uid, email: decoded.email, role: 'super_admin' };
+    return { uid: decoded.uid, email: currentUser.email || decoded.email, role: 'super_admin' };
   }
-  if (claims.role === 'business_admin' && validId(claims.tenantId)) {
-    const binding=await getDoc(doc(db,'adminUsers',decoded.uid));
-    if(binding.exists && binding.data()?.disabled===true) return null;
-    const tenant = await getDoc(getTenantDoc(claims.tenantId));
-    if(!tenant.exists || !['active','trial'].includes(tenant.data()?.status) || tenant.data()?.ownerAuthUid !== decoded.uid) return null;
-    return { uid: decoded.uid, email: currentUser.email, role: 'business_admin', tenantId: claims.tenantId };
+
+  // Every other account is tenant-scoped only. A stale super_admin claim never grants
+  // access. If the account has a valid business binding, normalize it back to
+  // business_admin so Alex/Avi/any future owner can still sign in normally.
+  const binding = await getDoc(doc(db, 'adminUsers', decoded.uid));
+  const bindingData = binding.exists ? (binding.data() || {}) : {};
+  const tenantId = validId(bindingData?.tenantId)
+    ? String(bindingData.tenantId)
+    : (validId(claims.tenantId) ? String(claims.tenantId) : '');
+
+  if (bindingData?.disabled === true || !tenantId) return null;
+
+  const tenant = await getDoc(getTenantDoc(tenantId));
+  if (!tenant.exists || !['active', 'trial'].includes(tenant.data()?.status) || tenant.data()?.ownerAuthUid !== decoded.uid) return null;
+
+  if (claims.role !== 'business_admin' || claims.tenantId !== tenantId) {
+    const { role: _legacyRole, tenantId: _legacyTenantId, ...restClaims } = claims as any;
+    await getAuth().setCustomUserClaims(decoded.uid, { ...restClaims, role: 'business_admin', tenantId });
   }
-  return null;
+
+  return { uid: decoded.uid, email: currentUser.email || decoded.email, role: 'business_admin', tenantId };
+}
+
+async function requireIdentity(req: Request, res: Response, next: NextFunction) {
+  try {
+    const admin = await decodeAdmin(req);
+    if (!admin) return res.status(403).json({ success: false, error: 'לחשבון אין הרשאת ניהול' });
+    (req as any).adminPayload = admin;
+    return next();
+  } catch (err: any) {
+    console.warn('[Auth] token verification failed:', err?.message);
+    return res.status(401).json({ success: false, error: 'ההתחברות פגה, יש להתחבר מחדש' });
+  }
 }
 
 async function requireAdmin(req: Request, res: Response, next: NextFunction) {
@@ -639,7 +671,7 @@ function requireCronSecret(req: Request, res: Response, next: NextFunction) {
   return next();
 }
 
-app.get('/api/auth/me', requireAdmin, (req: Request, res: Response) => {
+app.get('/api/auth/me', requireIdentity, (req: Request, res: Response) => {
   const admin = (req as any).adminPayload as AdminPayload;
   res.json({ success: true, user: admin });
 });

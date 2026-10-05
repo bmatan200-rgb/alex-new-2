@@ -146,3 +146,11 @@ npm audit --omit=dev
 ### הערה על קובץ ה־ZIP של v18
 
 ה־ZIP אינו כולל את `dist/` הישן של v17 כדי למנוע הרצה בטעות של bundle ישן. Render צריך להישאר עם Build Command `npm ci && npm run build`; התיקייה `dist/` תיווצר מחדש בכל deploy.
+
+## Secure external Cron heartbeat (v18.0.3)
+
+Use one cron job for the entire multi-tenant system. Set `CRON_SECRET` in Render to a random value of at least 24 characters, then call `GET /api/cron/heartbeat`.
+
+Preferred authentication is the `x-cron-secret: <CRON_SECRET>` header. `Authorization: Bearer <CRON_SECRET>` and `?key=<CRON_SECRET>` are also supported. The query-string form is only a fallback because URLs may be retained in third-party request history.
+
+The endpoint runs the central reminder scheduler, which already iterates all active/trial tenants. Do not create one cron job per tenant. The existing `/api/sms/check-due` and `/api/reminders/heartbeat` endpoints remain protected by Firebase Super Admin authentication.

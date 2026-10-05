@@ -395,6 +395,14 @@ function MainApp() {
                 currentUser={currentUser}
                 onOpenAuthModal={() => setIsAuthModalOpen(true)}
                 onLogout={handleCustomerLogout}
+                adminSession={
+                  adminSession?.isAdmin &&
+                  (adminSession.role === 'super_admin' ||
+                    (adminSession.role === 'business_admin' && adminSession.tenantId === tenantId))
+                    ? adminSession
+                    : null
+                }
+                onGoToAdmin={() => navigate(`/admin?tenant=${encodeURIComponent(tenantId)}`)}
               />
 
               {/* Main Content Container */}

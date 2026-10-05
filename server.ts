@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { validId, validTime, validDate, phoneDigits, hash, reminderKey, overlaps, israelClock, parseFirebaseServiceAccount, authorizeTenant, publicSettings, claimOnce, copyOnce } from './server/core';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
@@ -615,6 +615,30 @@ async function requireSuperAdmin(req: Request, res: Response, next: NextFunction
   }
 }
 
+// Secure machine authentication for cron-job.org / external wake-up calls.
+function safeSecretEquals(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+function requireCronSecret(req: Request, res: Response, next: NextFunction) {
+  const expected = String(process.env.CRON_SECRET || '').trim();
+  if (expected.length < 24) {
+    return res.status(503).json({ success: false, error: 'CRON_SECRET is not configured. Set a random secret of at least 24 characters in Render.' });
+  }
+  const authHeader = String(req.headers.authorization || '');
+  const bearer = authHeader.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || '';
+  const headerSecret = String(req.headers['x-cron-secret'] || '').trim();
+  const querySecret = typeof req.query.key === 'string' ? req.query.key.trim() : '';
+  const provided = headerSecret || bearer || querySecret;
+  if (!provided || !safeSecretEquals(provided, expected)) {
+    return res.status(401).json({ success: false, error: 'Invalid cron secret' });
+  }
+  return next();
+}
+
 app.get('/api/auth/me', requireAdmin, (req: Request, res: Response) => {
   const admin = (req as any).adminPayload as AdminPayload;
   res.json({ success: true, user: admin });
@@ -1125,13 +1149,24 @@ async function initSmsEngine() {
 // 📡 REST API ENDPOINTS
 // ----------------------------------------------------
 
-// Endpoint לבדיקת דופק וסנכרון תזכורות ממתינות (נקרא גם ע"י ה-Frontend וה-Cron)
+// Authenticated manual trigger for Super Admin users.
 app.all(['/api/sms/check-due', '/api/reminders/heartbeat'], requireSuperAdmin, async (_req: Request, res: Response) => {
   try {
     const result = await checkAndDispatchDueReminders();
     return res.json(result);
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Secure machine-to-machine heartbeat for cron-job.org. One Cron serves ALL tenants.
+app.all('/api/cron/heartbeat', requireCronSecret, async (_req: Request, res: Response) => {
+  try {
+    const result = await checkAndDispatchDueReminders();
+    return res.status(200).json({ success: result?.success !== false, cron: true, scheduler: result, checkedAt: new Date().toISOString() });
+  } catch (err: any) {
+    console.error('[Cron] heartbeat failed:', err?.message || err);
+    return res.status(500).json({ success: false, cron: true, error: err?.message || 'Cron heartbeat failed' });
   }
 });
 
@@ -1841,6 +1876,11 @@ async function startServer() {
     console.log(`Alex Beauty Server running on http://0.0.0.0:${PORT} [Israel Time: ${getIsraelTime().timeStr}]`);
     const timer = setTimeout(() => void runBootstrapMaintenance(), 1_000);
     (timer as any).unref?.();
+    if (String(process.env.CRON_SECRET || '').trim().length >= 24) {
+      console.log('[Cron] ✅ secure heartbeat endpoint enabled at /api/cron/heartbeat');
+    } else {
+      console.warn('[Cron] ⚠️ CRON_SECRET missing/too short; /api/cron/heartbeat will return 503');
+    }
     if(process.env.SMS_SCHEDULER_ENABLED !== 'false') void initSmsEngine();
   });
 }

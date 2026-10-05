@@ -1,0 +1,7 @@
+v18.0.3 - Secure central Cron heartbeat
+
+- Added /api/cron/heartbeat for cron-job.org.
+- Requires CRON_SECRET (minimum 24 chars).
+- Supports x-cron-secret header, Bearer auth, or ?key= fallback.
+- One Cron triggers the scheduler for all active/trial tenants.
+- Existing Super Admin reminder endpoints stay Firebase-authenticated.

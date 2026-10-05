@@ -1,0 +1,7 @@
+v18.0.4 – Back to Admin button
+
+- Customer site now shows “חזרה לניהול” only when a valid admin session exists.
+- business_admin sees the button only for the tenant assigned to that account.
+- super_admin can return to the currently viewed tenant admin.
+- Ordinary customers never see the admin-return button.
+- The button preserves the current tenantId and navigates to /admin?tenant=<tenantId>.

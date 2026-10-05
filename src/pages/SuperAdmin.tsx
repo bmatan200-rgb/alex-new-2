@@ -1033,6 +1033,7 @@ export const SuperAdminPage: React.FC = () => {
                 // Build a deployment-safe customer URL for every current/future tenant.
                 // Relative URL keeps the active Render/custom-domain origin instead of localhost.
                 const customerSiteUrl = `/?tenant=${encodeURIComponent(tenantSlug)}`;
+                const adminSiteUrl = `/admin?tenant=${encodeURIComponent(tenantSlug)}`;
 
                 return (
                   <div
@@ -1107,13 +1108,16 @@ export const SuperAdminPage: React.FC = () => {
                           <span>עריכת עסק</span>
                         </button>
 
-                        <Link
-                          to={`/admin?tenant=${t.tenantSlug || t.id}`}
+                        <a
+                          href={adminSiteUrl}
+                          target="_blank"
+                          rel="noreferrer"
                           className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold flex items-center gap-1 transition shadow-xs cursor-pointer active:scale-95"
+                          title={`פתיחת אדמין של ${t.name}`}
                         >
                           <ShieldCheck className="w-3 h-3" />
-                          <span>ניהול סלון</span>
-                        </Link>
+                          <span>אדמין עסק</span>
+                        </a>
                       </div>
 
                       {/* Delete Salon Button (Requirement 1 & 2: Hidden/disabled for default core tenant alex_beauty) */}

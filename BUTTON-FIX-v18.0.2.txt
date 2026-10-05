@@ -1,0 +1,6 @@
+v18.0.2 - Super Admin direct launch buttons
+
+- Customer site button opens /?tenant=<tenantId> in a new tab.
+- New per-tenant "Admin business" button opens /admin?tenant=<tenantId> in a new tab.
+- Both URLs are generated dynamically from tenantSlug/tenantId, so future businesses work automatically.
+- No tenant IDs are hard-coded.

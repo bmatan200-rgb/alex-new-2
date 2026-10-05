@@ -1,0 +1,4 @@
+Button fix v18.0.1:
+- Customer-site button now uses the active deployment origin with /?tenant=<slug>.
+- Works automatically for current and future tenants.
+- Removed localhost fallback URLs from SuperAdmin create/edit result.

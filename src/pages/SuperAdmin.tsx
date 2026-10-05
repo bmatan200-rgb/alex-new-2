@@ -351,8 +351,8 @@ export const SuperAdminPage: React.FC = () => {
         setLastSaveWasEdit(!!editingTenantId);
         setCreatedResult({
           tenantId: editingTenantId || finalTenantId,
-          testUrl: data.testUrl || `http://localhost:3000?tenant=${finalTenantId}`,
-          adminUrl: data.adminUrl || `http://localhost:3000/admin?tenant=${finalTenantId}`,
+          testUrl: data.testUrl || `/?tenant=${encodeURIComponent(finalTenantId)}`,
+          adminUrl: data.adminUrl || `/admin?tenant=${encodeURIComponent(finalTenantId)}`,
           name: name.trim(),
           customDomain: customDomain.trim(),
         });
@@ -1030,8 +1030,9 @@ export const SuperAdminPage: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {filteredTenants.map((t) => {
                 const tenantSlug = t.tenantSlug || t.id;
-                const localTestClientUrl = `http://localhost:3000?tenant=${tenantSlug}`;
-                const localTestAdminUrl = `http://localhost:3000/admin?tenant=${tenantSlug}`;
+                // Build a deployment-safe customer URL for every current/future tenant.
+                // Relative URL keeps the active Render/custom-domain origin instead of localhost.
+                const customerSiteUrl = `/?tenant=${encodeURIComponent(tenantSlug)}`;
 
                 return (
                   <div
@@ -1087,13 +1088,13 @@ export const SuperAdminPage: React.FC = () => {
                     <div className="bg-slate-950 rounded-xl p-3 flex items-center justify-between gap-2 flex-wrap border border-slate-800">
                       <div className="flex items-center gap-2 flex-wrap">
                         <a
-                          href={localTestClientUrl}
+                          href={customerSiteUrl}
                           target="_blank"
                           rel="noreferrer"
                           className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg text-xs font-bold flex items-center gap-1 transition"
                         >
                           <ExternalLink className="w-3 h-3 text-purple-400" />
-                          <span>אתר לקוחות (?tenant={tenantSlug})</span>
+                          <span>אתר לקוחות</span>
                         </a>
 
                         <button

@@ -1,0 +1,8 @@
+v18.0.6 – Admin identity & logout UX
+
+- Super Admin header now always shows the currently authenticated email and role.
+- Added a visible Super Admin logout button.
+- Logout signs out Firebase Auth, clears only the admin session/token, and returns to /admin.
+- Business Admin header already shows the active admin identity and now retains its visible logout action.
+- Super Admin can enter a tenant dashboard and return via the existing Super Admin link without signing out.
+- Customer session remains isolated from admin logout/session.

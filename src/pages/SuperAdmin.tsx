@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   Building2,
   Users,
@@ -37,9 +37,12 @@ import {
   X,
   Image as ImageIcon,
   Upload,
+  LogOut,
+  UserCircle2,
 } from 'lucide-react';
 import { doc, deleteDoc } from 'firebase/firestore';
-import { db, auth } from '../lib/firebase';
+import { db, auth, signOut } from '../lib/firebase';
+import { clearAdminSession } from '../utils/storage';
 import { Appointment, Service, TenantInfo, ScheduleSettings } from '../types';
 import { formatILS } from '../utils/dateUtils';
 
@@ -57,6 +60,8 @@ const COLOR_PALETTES = [
 ];
 
 export const SuperAdminPage: React.FC = () => {
+  const navigate = useNavigate();
+  const [signedInEmail, setSignedInEmail] = useState<string>(() => auth.currentUser?.email || '');
   const authHeaders = async (json = false) => {
     const token = auth.currentUser ? await auth.currentUser.getIdToken() : (localStorage.getItem('alex_admin_session_token') || '');
     return { ...(json ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
@@ -165,11 +170,11 @@ export const SuperAdminPage: React.FC = () => {
   };
 
   useEffect(() => {
-    // Firebase restores auth asynchronously after a hard refresh. In v14 the first
-    // /api/tenants request could run before currentUser existed, leaving a valid
-    // Super Admin screen showing a misleading zero-business state.
+    // Firebase restores auth asynchronously after a hard refresh. Keep the visible
+    // account identity in sync and only fetch tenants once the auth state settles.
     let fired = false;
-    const unsubscribe = onAuthStateChanged(auth, () => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setSignedInEmail(user?.email || '');
       if (fired) return;
       fired = true;
       fetchTenants();
@@ -185,6 +190,18 @@ export const SuperAdminPage: React.FC = () => {
       unsubscribe();
     };
   }, []);
+
+  const handleSuperAdminLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.warn('Firebase signOut warning:', err);
+    } finally {
+      clearAdminSession();
+      setSignedInEmail('');
+      navigate('/admin', { replace: true });
+    }
+  };
 
   // Auto-generate slug when name changes if tenantId is empty or matches previous auto-slug
   const handleNameChange = (val: string) => {
@@ -412,6 +429,12 @@ export const SuperAdminPage: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2.5 flex-wrap">
+            <div className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold flex items-center gap-2" title="החשבון המחובר כעת">
+              <UserCircle2 className="w-4 h-4 text-purple-600" />
+              <span className="max-w-[220px] truncate">{signedInEmail || 'חשבון Super Admin'}</span>
+              <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 text-[10px] font-black">Super Admin</span>
+            </div>
+
             <Link
               to={`/admin?tenant=${encodeURIComponent((tenants.find(t => t.isPrimary || t.id === 'alex_beauty')?.tenantSlug || tenants.find(t => t.isPrimary || t.id === 'alex_beauty')?.id || 'alex_beauty'))}`}
               className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 active:bg-purple-700 text-white font-bold text-xs flex items-center gap-2 transition shadow-md shadow-purple-600/25 cursor-pointer"
@@ -427,6 +450,16 @@ export const SuperAdminPage: React.FC = () => {
               <ExternalLink className="w-3.5 h-3.5 text-purple-400" />
               <span>תצוגת לקוחות</span>
             </Link>
+
+            <button
+              type="button"
+              onClick={handleSuperAdminLogout}
+              className="px-3.5 py-2 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer"
+              title="התנתקות והחלפת משתמש"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>התנתק</span>
+            </button>
           </div>
         </div>
       </header>

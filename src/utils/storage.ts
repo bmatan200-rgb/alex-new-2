@@ -260,9 +260,9 @@ export function clearAdminSession(): void {
 
 export function clearUserSession(): void {
   try {
+    // Customer logout must never clear an active admin session.
+    // Admin and customer identities are intentionally isolated.
     localStorage.removeItem(tenantStorageKey(STORAGE_KEY_USER_SESSION));
-    localStorage.removeItem(STORAGE_KEY_ADMIN_SESSION);
-    localStorage.removeItem('alex_admin_session_token');
     [
       'alex_beauty_user_session_v1',
       'alex_beauty_user_session_v2',

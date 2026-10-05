@@ -261,6 +261,10 @@ function MainApp() {
         if(!active) return;
         const profile=result.user;
         const session:UserSession={name:user.displayName || user.email || '',phone:'',email:user.email || '',isAdmin:true,role:profile.role,tenantId:profile.tenantId,uid:profile.uid,loggedInAt:new Date().toISOString()};
+        // Admin preview must never inherit a stale customer identity from this browser.
+        // Clear only the customer session; the Firebase/admin session remains active.
+        clearUserSession();
+        setCurrentUser(null);
         saveAdminSession(session);setAdminSession(session);
       }catch {if(active){clearAdminSession();setAdminSession(null);}}
     });
@@ -288,6 +292,10 @@ function MainApp() {
 
   // Admin Login callback
   const handleAdminLoginSuccess = (session: UserSession) => {
+    // Entering admin mode clears any previous customer identity on this browser
+    // so visiting the public site cannot accidentally book as another customer.
+    clearUserSession();
+    setCurrentUser(null);
     saveAdminSession(session);
     setAdminSession(session);
     showToast(`שלום ${session.name}, התחברת בהצלחה לממשק המנהל!`);

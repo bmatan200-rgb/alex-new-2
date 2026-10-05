@@ -1,0 +1,6 @@
+v18.0.5 - Customer/Admin session isolation
+
+- Admin login/auth restoration now clears any stale customer session for the active tenant.
+- Customer logout no longer clears the admin session or admin auth token.
+- Visiting the public customer site from Admin starts in admin-preview mode with no inherited customer identity.
+- A customer identity is created only after an explicit customer login/registration action.

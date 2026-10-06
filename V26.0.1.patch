@@ -1,0 +1,528 @@
+diff -ruN v26repo/alex-multi-tenant-v26/CHANGELOG-V26.0.1.md alex-v26.0.1-work/CHANGELOG-V26.0.1.md
+--- v26repo/alex-multi-tenant-v26/CHANGELOG-V26.0.1.md	1970-01-01 00:00:00.000000000 +0000
++++ alex-v26.0.1-work/CHANGELOG-V26.0.1.md	2026-10-06 17:40:03.919933906 +0000
+@@ -0,0 +1,22 @@
++# V26.0.1 — Customer session persistence + booking performance hotfix
++
++## Fixed
++- Customer registration/session is restored after refresh per business (tenant-scoped localStorage).
++- Firebase Admin session restoration no longer deletes a real customer session in the same browser.
++- Admin logout no longer deletes the customer booking cancellation capability token.
++- Public customer registration and public booking skip Firebase Admin token hydration, so an admin login in another tab cannot slow down or elevate the public flow.
++- Booking no longer makes the redundant customer-directory upsert request from the browser; the server booking/registration paths remain responsible for the tenant-scoped customer record.
++- The server batches independent Firestore document reads inside the booking transaction with Transaction.getAll while keeping the booking-day guard and same-day overlap query that prevent double bookings.
++- Slow bookings (>=800ms server-side) are logged with tenant and duration, and responses expose a Server-Timing booking duration for diagnosis.
++
++## Security / isolation retained
++- No Super Admin, business-admin, Firestore Rules, tenant ID, SMS or migration policy was relaxed.
++- Public bookings are still validated server-side for active tenant, service, duration, opening hours, past time and overlapping appointments.
++- Admin-created appointments explicitly require an authenticated manager token.
++
++## Deployment acceptance
++1. Render build must complete the existing source + dist verification.
++2. GET /api/health must return version 26.0.1.
++3. Register a customer, refresh the customer page, and confirm the customer stays signed in.
++4. Create a booking and confirm it appears once, blocks the slot, and cancellation releases it.
++5. If booking still feels slow, inspect Render for [Performance] slow booking lines; they now report the server-side duration.
+diff -ruN v26repo/alex-multi-tenant-v26/DEPLOY-V26.0.1-HE.md alex-v26.0.1-work/DEPLOY-V26.0.1-HE.md
+--- v26repo/alex-multi-tenant-v26/DEPLOY-V26.0.1-HE.md	1970-01-01 00:00:00.000000000 +0000
++++ alex-v26.0.1-work/DEPLOY-V26.0.1-HE.md	2026-10-06 17:44:27.669810741 +0000
+@@ -0,0 +1,28 @@
++# פריסה — V26.0.1
++
++הגרסה מתקנת שני נושאים בלבד: שמירת לקוח אחרי Refresh ושיפור מסלול קביעת התור. היא מבוססת ישירות על V26 הפעילה ולא משנה את כללי ה-Super Admin, בידוד העסקים, Firestore Rules או SMS.
++
++## GitHub
++
++יש להחליף את קבצי הפרויקט בתוכן התיקייה שב-ZIP ולבצע commit, לדוגמה:
++
++`V26.0.1 customer session + booking performance`
++
++החיבור של ChatGPT ל-GitHub בשיחה זו הוא לקריאה בלבד ולכן ה-ZIP מוכן ומלא, אבל לא ניתן היה לבצע push אוטומטי לחשבון.
++
++## Render
++
++מאחר ש-Auto Deploy הושבת לאחר rollback, לאחר שה-commit נמצא ב-main:
++
++1. Render → השירות `alex-new-2`.
++2. Manual Deploy → Deploy latest commit.
++3. להמתין לסיום Build + Deploy.
++4. לפתוח `/api/health` ולוודא שמוחזר `version: 26.0.1`.
++
++## בדיקה אחרי פריסה
++
++- לקוח נרשם → Refresh → נשאר מחובר.
++- לקוח של Avi לא מופיע כלקוח מחובר ב-Alex ולהפך.
++- קובעים תור → התור מופיע פעם אחת → השעה נתפסת.
++- מבטלים → השעה משתחררת.
++- אם קביעת תור עדיין איטית, לחפש ב-Render Logs שורה שמתחילה ב-`[Performance] slow booking`; היא כוללת את זמן השרת במילישניות.
+diff -ruN v26repo/alex-multi-tenant-v26/V26.0.1-VERIFICATION.md alex-v26.0.1-work/V26.0.1-VERIFICATION.md
+--- v26repo/alex-multi-tenant-v26/V26.0.1-VERIFICATION.md	1970-01-01 00:00:00.000000000 +0000
++++ alex-v26.0.1-work/V26.0.1-VERIFICATION.md	2026-10-06 17:44:27.158941118 +0000
+@@ -0,0 +1,28 @@
++# V26.0.1 verification record
++
++This package was prepared from the exact V26 files currently on GitHub `bmatan200-rgb/alex-new-2` at commit `1314830d4cae12a8a2c86758be4a5946b514c009`.
++
++## Checks completed in this packaging environment
++
++- Baseline file identity against GitHub V26: PASS for the critical server/client/test files using Git blob hashes.
++- `npm run verify:source`: PASS.
++- TypeScript/TSX syntax transpile across all 41 `.ts/.tsx` source files: PASS.
++- Tenant authorization and overlap core checks: PASS.
++- Customer session persistence and per-tenant isolation test with simulated localStorage/window: PASS.
++- Admin logout preserving customer cancellation capability (`booking_access__<tenant>`): PASS.
++- Secret scan for embedded Firebase private keys / non-empty Telnyx secrets: PASS.
++- Firestore transaction batching uses documented `Transaction.getAll(...)` while retaining the booking-day guard and same-day overlap read before writes.
++
++## Not executed here
++
++A full `npm ci`, Vite/esbuild production build and Firebase emulator integration suite could not run in this container because dependencies are not installed and external npm registry access is unavailable. The Render build remains configured to execute source verification, the production build and `verify-dist` automatically.
++
++## Deployment acceptance
++
++1. Deploy this package/repository state to Render.
++2. Confirm `/api/health` returns `version: 26.0.1`.
++3. Register a customer, refresh the page, and confirm the customer stays signed in.
++4. Switch between `alex_beauty` and `avi` and confirm the customer profile does not cross tenants.
++5. Book one appointment and confirm it appears once and blocks the slot.
++6. Cancel it and confirm the slot reopens.
++7. If booking still feels slow, inspect Render logs for `[Performance] slow booking ... duration=...ms`.
+diff -ruN v26repo/alex-multi-tenant-v26/V26.0.1.patch alex-v26.0.1-work/V26.0.1.patch
+--- v26repo/alex-multi-tenant-v26/V26.0.1.patch	1970-01-01 00:00:00.000000000 +0000
++++ alex-v26.0.1-work/V26.0.1.patch	2026-10-06 17:44:27.671640916 +0000
+@@ -0,0 +1,90 @@
++diff -ruN v26repo/alex-multi-tenant-v26/CHANGELOG-V26.0.1.md alex-v26.0.1-work/CHANGELOG-V26.0.1.md
++--- v26repo/alex-multi-tenant-v26/CHANGELOG-V26.0.1.md	1970-01-01 00:00:00.000000000 +0000
+++++ alex-v26.0.1-work/CHANGELOG-V26.0.1.md	2026-10-06 17:40:03.919933906 +0000
++@@ -0,0 +1,22 @@
+++# V26.0.1 — Customer session persistence + booking performance hotfix
+++
+++## Fixed
+++- Customer registration/session is restored after refresh per business (tenant-scoped localStorage).
+++- Firebase Admin session restoration no longer deletes a real customer session in the same browser.
+++- Admin logout no longer deletes the customer booking cancellation capability token.
+++- Public customer registration and public booking skip Firebase Admin token hydration, so an admin login in another tab cannot slow down or elevate the public flow.
+++- Booking no longer makes the redundant customer-directory upsert request from the browser; the server booking/registration paths remain responsible for the tenant-scoped customer record.
+++- The server batches independent Firestore document reads inside the booking transaction with Transaction.getAll while keeping the booking-day guard and same-day overlap query that prevent double bookings.
+++- Slow bookings (>=800ms server-side) are logged with tenant and duration, and responses expose a Server-Timing booking duration for diagnosis.
+++
+++## Security / isolation retained
+++- No Super Admin, business-admin, Firestore Rules, tenant ID, SMS or migration policy was relaxed.
+++- Public bookings are still validated server-side for active tenant, service, duration, opening hours, past time and overlapping appointments.
+++- Admin-created appointments explicitly require an authenticated manager token.
+++
+++## Deployment acceptance
+++1. Render build must complete the existing source + dist verification.
+++2. GET /api/health must return version 26.0.1.
+++3. Register a customer, refresh the customer page, and confirm the customer stays signed in.
+++4. Create a booking and confirm it appears once, blocks the slot, and cancellation releases it.
+++5. If booking still feels slow, inspect Render for [Performance] slow booking lines; they now report the server-side duration.
++diff -ruN v26repo/alex-multi-tenant-v26/DEPLOY-V26.0.1-HE.md alex-v26.0.1-work/DEPLOY-V26.0.1-HE.md
++--- v26repo/alex-multi-tenant-v26/DEPLOY-V26.0.1-HE.md	1970-01-01 00:00:00.000000000 +0000
+++++ alex-v26.0.1-work/DEPLOY-V26.0.1-HE.md	2026-10-06 17:44:27.669810741 +0000
++@@ -0,0 +1,28 @@
+++# פריסה — V26.0.1
+++
+++הגרסה מתקנת שני נושאים בלבד: שמירת לקוח אחרי Refresh ושיפור מסלול קביעת התור. היא מבוססת ישירות על V26 הפעילה ולא משנה את כללי ה-Super Admin, בידוד העסקים, Firestore Rules או SMS.
+++
+++## GitHub
+++
+++יש להחליף את קבצי הפרויקט בתוכן התיקייה שב-ZIP ולבצע commit, לדוגמה:
+++
+++`V26.0.1 customer session + booking performance`
+++
+++החיבור של ChatGPT ל-GitHub בשיחה זו הוא לקריאה בלבד ולכן ה-ZIP מוכן ומלא, אבל לא ניתן היה לבצע push אוטומטי לחשבון.
+++
+++## Render
+++
+++מאחר ש-Auto Deploy הושבת לאחר rollback, לאחר שה-commit נמצא ב-main:
+++
+++1. Render → השירות `alex-new-2`.
+++2. Manual Deploy → Deploy latest commit.
+++3. להמתין לסיום Build + Deploy.
+++4. לפתוח `/api/health` ולוודא שמוחזר `version: 26.0.1`.
+++
+++## בדיקה אחרי פריסה
+++
+++- לקוח נרשם → Refresh → נשאר מחובר.
+++- לקוח של Avi לא מופיע כלקוח מחובר ב-Alex ולהפך.
+++- קובעים תור → התור מופיע פעם אחת → השעה נתפסת.
+++- מבטלים → השעה משתחררת.
+++- אם קביעת תור עדיין איטית, לחפש ב-Render Logs שורה שמתחילה ב-`[Performance] slow booking`; היא כוללת את זמן השרת במילישניות.
++diff -ruN v26repo/alex-multi-tenant-v26/V26.0.1-VERIFICATION.md alex-v26.0.1-work/V26.0.1-VERIFICATION.md
++--- v26repo/alex-multi-tenant-v26/V26.0.1-VERIFICATION.md	1970-01-01 00:00:00.000000000 +0000
+++++ alex-v26.0.1-work/V26.0.1-VERIFICATION.md	2026-10-06 17:44:27.158941118 +0000
++@@ -0,0 +1,28 @@
+++# V26.0.1 verification record
+++
+++This package was prepared from the exact V26 files currently on GitHub `bmatan200-rgb/alex-new-2` at commit `1314830d4cae12a8a2c86758be4a5946b514c009`.
+++
+++## Checks completed in this packaging environment
+++
+++- Baseline file identity against GitHub V26: PASS for the critical server/client/test files using Git blob hashes.
+++- `npm run verify:source`: PASS.
+++- TypeScript/TSX syntax transpile across all 41 `.ts/.tsx` source files: PASS.
+++- Tenant authorization and overlap core checks: PASS.
+++- Customer session persistence and per-tenant isolation test with simulated localStorage/window: PASS.
+++- Admin logout preserving customer cancellation capability (`booking_access__<tenant>`): PASS.
+++- Secret scan for embedded Firebase private keys / non-empty Telnyx secrets: PASS.
+++- Firestore transaction batching uses documented `Transaction.getAll(...)` while retaining the booking-day guard and same-day overlap read before writes.
+++
+++## Not executed here
+++
+++A full `npm ci`, Vite/esbuild production build and Firebase emulator integration suite could not run in this container because dependencies are not installed and external npm registry access is unavailable. The Render build remains configured to execute source verification, the production build and `verify-dist` automatically.
+++
+++## Deployment acceptance
+++
+++1. Deploy this package/repository state to Render.
+++2. Confirm `/api/health` returns `version: 26.0.1`.
+++3. Register a customer, refresh the page, and confirm the customer stays signed in.
+++4. Switch between `alex_beauty` and `avi` and confirm the customer profile does not cross tenants.
+++5. Book one appointment and confirm it appears once and blocks the slot.
+++6. Cancel it and confirm the slot reopens.
+++7. If booking still feels slow, inspect Render logs for `[Performance] slow booking ... duration=...ms`.
+diff -ruN v26repo/alex-multi-tenant-v26/package-lock.json alex-v26.0.1-work/package-lock.json
+--- v26repo/alex-multi-tenant-v26/package-lock.json	2026-10-06 14:20:43.000000000 +0000
++++ alex-v26.0.1-work/package-lock.json	2026-10-06 17:40:03.918925003 +0000
+@@ -1,12 +1,12 @@
+ {
+   "name": "alex-multi-tenant",
+-  "version": "26.0.0",
++  "version": "26.0.1",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+       "name": "alex-multi-tenant",
+-      "version": "26.0.0",
++      "version": "26.0.1",
+       "dependencies": {
+         "@tailwindcss/vite": "^4.1.14",
+         "@types/canvas-confetti": "^1.9.0",
+diff -ruN v26repo/alex-multi-tenant-v26/package.json alex-v26.0.1-work/package.json
+--- v26repo/alex-multi-tenant-v26/package.json	2026-10-06 14:25:13.000000000 +0000
++++ alex-v26.0.1-work/package.json	2026-10-06 17:40:03.918013707 +0000
+@@ -1,7 +1,7 @@
+ {
+   "name": "alex-multi-tenant",
+   "private": true,
+-  "version": "26.0.0",
++  "version": "26.0.1",
+   "type": "module",
+   "scripts": {
+     "dev": "node --import tsx server.ts",
+diff -ruN v26repo/alex-multi-tenant-v26/scripts/verify-dist.mjs alex-v26.0.1-work/scripts/verify-dist.mjs
+--- v26repo/alex-multi-tenant-v26/scripts/verify-dist.mjs	2026-10-06 14:26:47.000000000 +0000
++++ alex-v26.0.1-work/scripts/verify-dist.mjs	2026-10-06 17:40:03.919632320 +0000
+@@ -7,7 +7,7 @@
+ assert.match(server, /api\/register-webhook/, 'built server is missing the legacy registration compatibility route');
+ assert.match(server, /API route not found/, 'built server is missing the API catch-all');
+ assert.ok(server.indexOf('api/customer/register') < server.indexOf('API route not found'), 'built API catch-all precedes customer registration');
+-assert.match(server, /26\.0\.0/, 'built server does not contain V26 version marker');
++assert.match(server, /26\.0\.1/, 'built server does not contain V26.0.1 version marker');
+ 
+ function files(dir) {
+   return readdirSync(dir).flatMap(name => {
+diff -ruN v26repo/alex-multi-tenant-v26/scripts/verify-v26.mjs alex-v26.0.1-work/scripts/verify-v26.mjs
+--- v26repo/alex-multi-tenant-v26/scripts/verify-v26.mjs	2026-10-06 14:26:47.000000000 +0000
++++ alex-v26.0.1-work/scripts/verify-v26.mjs	2026-10-06 17:41:59.130579323 +0000
+@@ -4,8 +4,13 @@
+ const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8');
+ const rules = readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');
+ const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
++const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
++const storage = readFileSync(new URL('../src/utils/storage.ts', import.meta.url), 'utf8');
++const firebase = readFileSync(new URL('../src/lib/firebase.ts', import.meta.url), 'utf8');
++const authModal = readFileSync(new URL('../src/components/AuthModal.tsx', import.meta.url), 'utf8');
++const torFlow = readFileSync(new URL('../src/components/TorModalFlow.tsx', import.meta.url), 'utf8');
+ 
+-assert.equal(pkg.version, '26.0.0');
++assert.equal(pkg.version, '26.0.1');
+ assert.match(server, /const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail\.com'/);
+ assert.match(server, /if \(email === PRIMARY_SUPER_ADMIN_EMAIL\) \{/);
+ assert.doesNotMatch(server, /email === PRIMARY_SUPER_ADMIN_EMAIL && currentUser\.emailVerified/);
+@@ -21,4 +26,15 @@
+ assert.match(server, /authorizeTenant\(admin,\[req\.body\?\.tenantId,req\.query\.tenant,req\.headers\['x-tenant-id'\]\]/);
+ assert.match(server, /tenant\.data\(\)\?\.ownerAuthUid !== decoded\.uid/);
+ 
++// V26.0.1 regression guards.
++assert.match(app, /setCurrentUser\(getStoredUserSession\(\)\)/);
++assert.doesNotMatch(app, /Clear only the customer session/);
++assert.match(app, /addAppointmentToFirestore\(newApp as any, tenantId, \{ asAdmin: true \}\)/);
++assert.doesNotMatch(storage, /removeItem\(`booking_access__\$\{tenantId\}`\)/);
++assert.match(firebase, /auth:options\.asAdmin\?'required':'none'/);
++assert.match(firebase, /if\(!options\.asAdmin\)/);
++assert.match(authModal, /tenantId, \{ auth: 'none' \}/);
++assert.doesNotMatch(torFlow, /upsertCustomerToFirestore/);
++assert.match(server, /getAll\(\.\.\.refs\)/);
++
+ console.log('V26 source verification passed');
+diff -ruN v26repo/alex-multi-tenant-v26/server.ts alex-v26.0.1-work/server.ts
+--- v26repo/alex-multi-tenant-v26/server.ts	2026-10-06 14:26:19.000000000 +0000
++++ alex-v26.0.1-work/server.ts	2026-10-06 17:40:03.917907547 +0000
+@@ -287,26 +287,36 @@
+   }
+ });
+ app.post('/api/appointments/book',async(req,res)=>{
++  const bookingStartedAt=Date.now();
++  const recordBookingTiming=()=>{
++    const durationMs=Date.now()-bookingStartedAt;
++    res.setHeader('Server-Timing',`booking;dur=${durationMs}`);
++    if(durationMs>=800) console.warn(`[Performance] slow booking tenant=${req.tenantId || 'unknown'} duration=${durationMs}ms`);
++  };
+   try {
+-    if(isDispatchRateLimited('book:'+req.ip)) return res.status(429).json({success:false,error:'יש להמתין לפני קביעת תור נוסף'});
++    if(isDispatchRateLimited('book:'+req.ip)) {recordBookingTiming();return res.status(429).json({success:false,error:'יש להמתין לפני קביעת תור נוסף'});}
+     const tenantId=req.tenantId!;
+     const admin=await optionalAdmin(req);
+-    const canManage=admin && authorizeTenant(admin,[tenantId],tenantId)===tenantId;
++    const canManage=!!(admin && authorizeTenant(admin,[tenantId],tenantId)===tenantId);
+     const a=req.body?.appointment || {};
+-    if(!validDate(a.appointment_date) || !validTime(a.start_time) || !validTime(a.end_time) || a.start_time>=a.end_time || typeof a.customer_name!=='string' || !a.customer_name.trim() || a.customer_name.length>100 || (!canManage && !phoneDigits(a.customer_phone))) return res.status(400).json({success:false,error:'פרטי תור לא תקינים'});
++    if(!validDate(a.appointment_date) || !validTime(a.start_time) || !validTime(a.end_time) || a.start_time>=a.end_time || typeof a.customer_name!=='string' || !a.customer_name.trim() || a.customer_name.length>100 || (!canManage && !phoneDigits(a.customer_phone))) {recordBookingTiming();return res.status(400).json({success:false,error:'פרטי תור לא תקינים'});}
+     const accessToken=randomBytes(32).toString('hex');
+     const id=validId(req.body.requestId) ? req.body.requestId : randomUUID();
+     const ref=getTenantAppointmentDoc(tenantId,id);
++    const tenantRef=getTenantDoc(tenantId);
++    const configRef=getTenantSettingsDoc(tenantId);
++    const guard=doc(db,'tenants',tenantId,'booking_days',a.appointment_date);
++    const customerRef=phoneDigits(a.customer_phone)?doc(db,'tenants',tenantId,'customers','cust_'+phoneDigits(a.customer_phone)):null;
+     await db.runTransaction(async tx=>{
+-      const tenant=await tx.get(getTenantDoc(tenantId));
++      // Independent document reads are batched into one Firestore round trip.
++      // The booking-day guard and same-day overlap query remain in the same
++      // transaction, so the double-booking protection is unchanged.
++      const refs:any[]=[tenantRef,configRef,guard,ref,...(customerRef?[customerRef]:[])];
++      const snapshots:any[]=await (tx as any).getAll(...refs);
++      const tenant=snapshots[0], config=snapshots[1], existing=snapshots[3];
++      const customer=customerRef?snapshots[4]:null;
+       if(!tenant.exists || !['active','trial'].includes(tenant.data()?.status)) throw new Error('העסק אינו פעיל');
+-      const config=await tx.get(getTenantSettingsDoc(tenantId));
+-      const guard=doc(db,'tenants',tenantId,'booking_days',a.appointment_date);
+-      await tx.get(guard);
+-      const existing=await tx.get(ref);
+       if(existing.exists) throw new Error('בקשה זו כבר נשמרה; יש לרענן את היומן');
+-      const sameDay=await tx.get(getTenantAppointmentsRef(tenantId).where('appointment_date','==',a.appointment_date));
+-      if(sameDay.docs.some((d:any)=>overlaps(d.data(),a))) throw new Error('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
+       let service:any;
+       if(!canManage){
+         service=config.data()?.services?.find((x:any)=>String(x.id)===String(a.service_id));
+@@ -320,16 +330,18 @@
+         const open=day===5?sch.fridayOpen:sch.businessOpen, close=day===5?sch.fridayClose:sch.businessClose;
+         if(day===6 || !validTime(open) || !validTime(close) || a.start_time<open || a.end_time>close) throw new Error('השעה מחוץ לשעות הפעילות');
+       }
+-      const customerRef=phoneDigits(a.customer_phone)?doc(db,'tenants',tenantId,'customers','cust_'+phoneDigits(a.customer_phone)):null;
+-      const customer=customerRef ? await tx.get(customerRef):null;
++      const sameDay=await tx.get(getTenantAppointmentsRef(tenantId).where('appointment_date','==',a.appointment_date));
++      if(sameDay.docs.some((d:any)=>overlaps(d.data(),a))) throw new Error('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
+       const saved={customer_name:a.customer_name.trim(),customer_phone:String(a.customer_phone||''),service_id:a.service_id ?? 0,service_name:service?.name || String(a.service_name||''),price:service?.price ?? Number(a.price||0),appointment_date:a.appointment_date,start_time:a.start_time,end_time:a.end_time,status:'confirmed',notes:String(a.notes||'').slice(0,2000),created_at:new Date().toISOString(),tenantId,accessTokenHash:hash(accessToken)};
+       tx.create(ref,saved);
+       if(customerRef && !customer?.exists) tx.create(customerRef,{full_name:saved.customer_name,phone:saved.customer_phone,notes:'',created_at:saved.created_at,last_login_at:saved.created_at});
+       tx.set(guard,{updatedAt:new Date().toISOString()});
+     });
+     invalidateAppointmentsCache(tenantId);
++    recordBookingTiming();
+     res.json({success:true,id,accessToken});
+   }catch(err:any){
++    recordBookingTiming();
+     const quotaExceeded = noteFirestoreQuota(err, 'book appointment');
+     res.status(quotaExceeded ? 503 : 409).json({success:false,error:quotaExceeded?'Firestore quota temporarily exhausted':err.message});
+   }
+@@ -595,7 +607,7 @@
+ // carries role=super_admin, the server will never grant global access unless the
+ // authenticated Firebase email is the canonical account below.
+ const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
+-const APP_VERSION = '26.0.0';
++const APP_VERSION = '26.0.1';
+ 
+ function getSuperAdminEmails() {
+   return [PRIMARY_SUPER_ADMIN_EMAIL];
+diff -ruN v26repo/alex-multi-tenant-v26/src/App.tsx alex-v26.0.1-work/src/App.tsx
+--- v26repo/alex-multi-tenant-v26/src/App.tsx	2026-10-06 05:13:59.000000000 +0000
++++ alex-v26.0.1-work/src/App.tsx	2026-10-06 17:40:03.915374282 +0000
+@@ -224,6 +224,12 @@
+   const [customerApptToCancel, setCustomerApptToCancel] = useState<Appointment | null>(null);
+   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+ 
++  // Customer identity is browser-local and tenant-scoped. Restore the matching
++  // customer whenever the active business changes, including after a hard refresh.
++  useEffect(() => {
++    setCurrentUser(getStoredUserSession());
++  }, [tenantId]);
++
+   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
+     setToastMessage({ text, type });
+     setTimeout(() => setToastMessage(null), 4000);
+@@ -273,10 +279,8 @@
+         if(!active) return;
+         const profile=result.user;
+         const session:UserSession={name:user.displayName || user.email || '',phone:'',email:user.email || '',isAdmin:true,role:profile.role,tenantId:profile.tenantId,uid:profile.uid,loggedInAt:new Date().toISOString()};
+-        // Admin preview must never inherit a stale customer identity from this browser.
+-        // Clear only the customer session; the Firebase/admin session remains active.
+-        clearUserSession();
+-        setCurrentUser(null);
++        // Firebase admin identity and the public customer profile are separate.
++        // Never erase a tenant-scoped customer session during admin auth hydration.
+         saveAdminSession(session);setAdminSession(session);
+       }catch {if(active){clearAdminSession();setAdminSession(null);}}
+       finally { if (active) setAdminAuthReady(true); }
+@@ -305,10 +309,8 @@
+ 
+   // Admin Login callback
+   const handleAdminLoginSuccess = (session: UserSession) => {
+-    // Entering admin mode clears any previous customer identity on this browser
+-    // so visiting the public site cannot accidentally book as another customer.
+-    clearUserSession();
+-    setCurrentUser(null);
++    // Admin and customer identities intentionally coexist in separate storage.
++    // Logging in as a manager must not erase an already registered customer.
+     saveAdminSession(session);
+     setAdminSession(session);
+     showToast(`שלום ${session.name}, התחברת בהצלחה לממשק המנהל!`);
+@@ -354,7 +356,7 @@
+ 
+   const handleAddManualAppointment = async (newApp: Omit<Appointment, 'id'>) => {
+     try {
+-      const savedId = await addAppointmentToFirestore(newApp as any, tenantId);
++      const savedId = await addAppointmentToFirestore(newApp as any, tenantId, { asAdmin: true });
+       const appWithId = { ...newApp, id: savedId } as Appointment;
+       saveAppointment(appWithId);
+       setAppointments((prev) => deduplicateAppointments([appWithId, ...prev]));
+diff -ruN v26repo/alex-multi-tenant-v26/src/components/AuthModal.tsx alex-v26.0.1-work/src/components/AuthModal.tsx
+--- v26repo/alex-multi-tenant-v26/src/components/AuthModal.tsx	2026-10-06 05:03:25.000000000 +0000
++++ alex-v26.0.1-work/src/components/AuthModal.tsx	2026-10-06 17:40:03.915121931 +0000
+@@ -87,7 +87,7 @@
+         phone: phone.trim(),
+         acceptedTerms: true,
+         signatureDataUrl: signatureDataUrl || '',
+-      }, tenantId);
++      }, tenantId, { auth: 'none' });
+     } catch (err: any) {
+       setIsSubmitting(false);
+       setError(err?.message || 'לא ניתן לשמור את פרטי ההרשמה. נסו שוב.');
+diff -ruN v26repo/alex-multi-tenant-v26/src/components/TorModalFlow.tsx alex-v26.0.1-work/src/components/TorModalFlow.tsx
+--- v26repo/alex-multi-tenant-v26/src/components/TorModalFlow.tsx	2026-10-06 05:00:24.000000000 +0000
++++ alex-v26.0.1-work/src/components/TorModalFlow.tsx	2026-10-06 17:40:03.916898083 +0000
+@@ -39,7 +39,7 @@
+   HEBREW_WEEKDAYS,
+ } from '../utils/dateUtils';
+ import { SALON_INFO, saveUserSession } from '../utils/storage';
+-import { addAppointmentToFirestore, upsertCustomerToFirestore } from '../lib/firebase';
++import { addAppointmentToFirestore } from '../lib/firebase';
+ import { ExistingBookingChoiceModal } from './ExistingBookingChoiceModal';
+ import { CancelAppointmentConfirmModal } from './CancelAppointmentConfirmModal';
+ import { useTenant } from '../context/TenantContext';
+@@ -287,7 +287,7 @@
+     else if (step === 'day') setStep('treatment');
+   };
+ 
+-  const executeBookingSubmission = async (nameToUse: string, phoneToUse: string, adminFlag: boolean) => {
++  const executeBookingSubmission = async (nameToUse: string, phoneToUse: string) => {
+     setIsSubmitting(true);
+ 
+     try {
+@@ -320,18 +320,9 @@
+         signatureDataUrl: currentUser?.signatureDataUrl,
+       });
+ 
+-      // Save or update customer record in Firestore customers directory
+-      if (!adminFlag) {
+-        upsertCustomerToFirestore({
+-          full_name: nameToUse,
+-          phone: phoneToUse,
+-        }).catch((err) => {
+-          console.warn('[Customer Directory] upsert notice:', err);
+-        });
+-      }
+-
+-      // Save to Firestore & local storage
+-      const savedId = await addAppointmentToFirestore(newAppt as any, tenantId);
++      // The booking endpoint already creates the tenant-scoped customer record
++      // when needed. Avoid a second API request here.
++      const savedId = await addAppointmentToFirestore(newAppt as any, tenantId, { asAdmin: false });
+ 
+       setIsSubmitting(false);
+       onBookSuccess({ ...newAppt, id: savedId } as Appointment);
+@@ -393,7 +384,7 @@
+       return;
+     }
+ 
+-    await executeBookingSubmission(cleanName, cleanPhone, isAdmin);
++    await executeBookingSubmission(cleanName, cleanPhone);
+   };
+ 
+   if (!isOpen) return null;
+diff -ruN v26repo/alex-multi-tenant-v26/src/lib/firebase.ts alex-v26.0.1-work/src/lib/firebase.ts
+--- v26repo/alex-multi-tenant-v26/src/lib/firebase.ts	2026-10-04 18:49:18.000000000 +0000
++++ alex-v26.0.1-work/src/lib/firebase.ts	2026-10-06 17:41:59.130379371 +0000
+@@ -69,9 +69,21 @@
+ /**
+  * Real-time listener for appointments (Multi-Tenant aware)
+  */
+-export async function tenantApi(path: string, body?: any, tenantId = getCurrentTenantId()) {
+-  await auth.authStateReady();
+-  const token=auth.currentUser ? await auth.currentUser.getIdToken() : '';
++export type TenantApiAuthMode = 'auto' | 'required' | 'none';
++
++export async function tenantApi(
++  path: string,
++  body?: any,
++  tenantId = getCurrentTenantId(),
++  options: { auth?: TenantApiAuthMode } = {}
++) {
++  const authMode = options.auth ?? 'auto';
++  let token = '';
++  if (authMode !== 'none') {
++    await auth.authStateReady();
++    token = auth.currentUser ? await auth.currentUser.getIdToken() : '';
++    if (authMode === 'required' && !token) throw new Error('נדרשת התחברות מנהל');
++  }
+   const res=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','x-tenant-id':tenantId,...(token?{Authorization:`Bearer ${token}`}:{})},...(body===undefined?{}:{body:JSON.stringify({...body,tenantId})})});
+   const data=await res.json();
+   if(!res.ok || !data.success) throw new Error(data.error || 'הפעולה נכשלה');
+@@ -120,10 +132,16 @@
+   return `appt_${date}_${startTime.replace(':', '')}`;
+ }
+ 
+-export async function addAppointmentToFirestore(appointment:Omit<Appointment,'id'>|Appointment,tenantId=getCurrentTenantId()):Promise<string> {
++export async function addAppointmentToFirestore(
++  appointment:Omit<Appointment,'id'>|Appointment,
++  tenantId=getCurrentTenantId(),
++  options:{asAdmin?:boolean}={}
++):Promise<string> {
+   try {
+-    const data=await tenantApi('/api/appointments/book',{appointment,requestId:crypto.randomUUID()},tenantId);
+-    localStorage.setItem('booking_access__'+tenantId,JSON.stringify({...capabilities(tenantId),[data.id]:data.accessToken}));
++    const data=await tenantApi('/api/appointments/book',{appointment,requestId:crypto.randomUUID()},tenantId,{auth:options.asAdmin?'required':'none'});
++    if(!options.asAdmin) {
++      localStorage.setItem('booking_access__'+tenantId,JSON.stringify({...capabilities(tenantId),[data.id]:data.accessToken}));
++    }
+     return data.id;
+   }catch(err:any){if(err.message.includes('השעה הזו כבר נתפסה')) throw new SlotTakenError();throw err;}
+ }
+diff -ruN v26repo/alex-multi-tenant-v26/src/utils/storage.ts alex-v26.0.1-work/src/utils/storage.ts
+--- v26repo/alex-multi-tenant-v26/src/utils/storage.ts	2026-10-06 04:59:10.000000000 +0000
++++ alex-v26.0.1-work/src/utils/storage.ts	2026-10-06 17:40:03.914392300 +0000
+@@ -256,7 +256,8 @@
+     const tenantId = getStorageTenantId();
+     localStorage.removeItem(`appointments_${tenantId}`);
+     localStorage.removeItem(`${STORAGE_KEY_APPOINTMENTS}__${tenantId}`);
+-    localStorage.removeItem(`booking_access__${tenantId}`);
++    // booking_access__<tenant> is a customer self-service cancellation capability.
++    // Admin logout must never destroy it.
+   } catch {
+     // Ignore
+   }
+diff -ruN v26repo/alex-multi-tenant-v26/tests/integration.test.ts alex-v26.0.1-work/tests/integration.test.ts
+--- v26repo/alex-multi-tenant-v26/tests/integration.test.ts	2026-10-06 14:26:47.000000000 +0000
++++ alex-v26.0.1-work/tests/integration.test.ts	2026-10-06 17:40:03.919742677 +0000
+@@ -229,7 +229,7 @@
+     }
+     assert.ok(ready,output);
+     const html=await nativeFetch('http://127.0.0.1:43187/');assert.equal(html.status,200);assert.match(await html.text(),/<div id="root">/);
+-    const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'26.0.0');
++    const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'26.0.1');
+     const registerRoute=await nativeFetch('http://127.0.0.1:43187/api/customer/register',{method:'POST',headers:{'Content-Type':'application/json','x-tenant-id':'alex_beauty'},body:JSON.stringify({full_name:'x',phone:'bad',acceptedTerms:false})});
+     assert.equal(registerRoute.status,400);assert.doesNotMatch(await registerRoute.text(),/API route not found/);
+     const missing=await nativeFetch('http://127.0.0.1:43187/api/unknown');assert.equal(missing.status,404);assert.match(missing.headers.get('content-type')||'',/json/);

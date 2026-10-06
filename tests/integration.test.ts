@@ -229,7 +229,7 @@ test('built production server boots with named database and serves API plus SPA'
     }
     assert.ok(ready,output);
     const html=await nativeFetch('http://127.0.0.1:43187/');assert.equal(html.status,200);assert.match(await html.text(),/<div id="root">/);
-    const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'26.0.0');
+    const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'26.0.1');
     const registerRoute=await nativeFetch('http://127.0.0.1:43187/api/customer/register',{method:'POST',headers:{'Content-Type':'application/json','x-tenant-id':'alex_beauty'},body:JSON.stringify({full_name:'x',phone:'bad',acceptedTerms:false})});
     assert.equal(registerRoute.status,400);assert.doesNotMatch(await registerRoute.text(),/API route not found/);
     const missing=await nativeFetch('http://127.0.0.1:43187/api/unknown');assert.equal(missing.status,404);assert.match(missing.headers.get('content-type')||'',/json/);

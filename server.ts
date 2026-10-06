@@ -287,26 +287,36 @@ app.post('/api/appointments/list',async(req,res)=>{
   }
 });
 app.post('/api/appointments/book',async(req,res)=>{
+  const bookingStartedAt=Date.now();
+  const recordBookingTiming=()=>{
+    const durationMs=Date.now()-bookingStartedAt;
+    res.setHeader('Server-Timing',`booking;dur=${durationMs}`);
+    if(durationMs>=800) console.warn(`[Performance] slow booking tenant=${req.tenantId || 'unknown'} duration=${durationMs}ms`);
+  };
   try {
-    if(isDispatchRateLimited('book:'+req.ip)) return res.status(429).json({success:false,error:'יש להמתין לפני קביעת תור נוסף'});
+    if(isDispatchRateLimited('book:'+req.ip)) {recordBookingTiming();return res.status(429).json({success:false,error:'יש להמתין לפני קביעת תור נוסף'});}
     const tenantId=req.tenantId!;
     const admin=await optionalAdmin(req);
-    const canManage=admin && authorizeTenant(admin,[tenantId],tenantId)===tenantId;
+    const canManage=!!(admin && authorizeTenant(admin,[tenantId],tenantId)===tenantId);
     const a=req.body?.appointment || {};
-    if(!validDate(a.appointment_date) || !validTime(a.start_time) || !validTime(a.end_time) || a.start_time>=a.end_time || typeof a.customer_name!=='string' || !a.customer_name.trim() || a.customer_name.length>100 || (!canManage && !phoneDigits(a.customer_phone))) return res.status(400).json({success:false,error:'פרטי תור לא תקינים'});
+    if(!validDate(a.appointment_date) || !validTime(a.start_time) || !validTime(a.end_time) || a.start_time>=a.end_time || typeof a.customer_name!=='string' || !a.customer_name.trim() || a.customer_name.length>100 || (!canManage && !phoneDigits(a.customer_phone))) {recordBookingTiming();return res.status(400).json({success:false,error:'פרטי תור לא תקינים'});}
     const accessToken=randomBytes(32).toString('hex');
     const id=validId(req.body.requestId) ? req.body.requestId : randomUUID();
     const ref=getTenantAppointmentDoc(tenantId,id);
+    const tenantRef=getTenantDoc(tenantId);
+    const configRef=getTenantSettingsDoc(tenantId);
+    const guard=doc(db,'tenants',tenantId,'booking_days',a.appointment_date);
+    const customerRef=phoneDigits(a.customer_phone)?doc(db,'tenants',tenantId,'customers','cust_'+phoneDigits(a.customer_phone)):null;
     await db.runTransaction(async tx=>{
-      const tenant=await tx.get(getTenantDoc(tenantId));
+      // Independent document reads are batched into one Firestore round trip.
+      // The booking-day guard and same-day overlap query remain in the same
+      // transaction, so the double-booking protection is unchanged.
+      const refs:any[]=[tenantRef,configRef,guard,ref,...(customerRef?[customerRef]:[])];
+      const snapshots:any[]=await (tx as any).getAll(...refs);
+      const tenant=snapshots[0], config=snapshots[1], existing=snapshots[3];
+      const customer=customerRef?snapshots[4]:null;
       if(!tenant.exists || !['active','trial'].includes(tenant.data()?.status)) throw new Error('העסק אינו פעיל');
-      const config=await tx.get(getTenantSettingsDoc(tenantId));
-      const guard=doc(db,'tenants',tenantId,'booking_days',a.appointment_date);
-      await tx.get(guard);
-      const existing=await tx.get(ref);
       if(existing.exists) throw new Error('בקשה זו כבר נשמרה; יש לרענן את היומן');
-      const sameDay=await tx.get(getTenantAppointmentsRef(tenantId).where('appointment_date','==',a.appointment_date));
-      if(sameDay.docs.some((d:any)=>overlaps(d.data(),a))) throw new Error('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
       let service:any;
       if(!canManage){
         service=config.data()?.services?.find((x:any)=>String(x.id)===String(a.service_id));
@@ -320,16 +330,18 @@ app.post('/api/appointments/book',async(req,res)=>{
         const open=day===5?sch.fridayOpen:sch.businessOpen, close=day===5?sch.fridayClose:sch.businessClose;
         if(day===6 || !validTime(open) || !validTime(close) || a.start_time<open || a.end_time>close) throw new Error('השעה מחוץ לשעות הפעילות');
       }
-      const customerRef=phoneDigits(a.customer_phone)?doc(db,'tenants',tenantId,'customers','cust_'+phoneDigits(a.customer_phone)):null;
-      const customer=customerRef ? await tx.get(customerRef):null;
+      const sameDay=await tx.get(getTenantAppointmentsRef(tenantId).where('appointment_date','==',a.appointment_date));
+      if(sameDay.docs.some((d:any)=>overlaps(d.data(),a))) throw new Error('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
       const saved={customer_name:a.customer_name.trim(),customer_phone:String(a.customer_phone||''),service_id:a.service_id ?? 0,service_name:service?.name || String(a.service_name||''),price:service?.price ?? Number(a.price||0),appointment_date:a.appointment_date,start_time:a.start_time,end_time:a.end_time,status:'confirmed',notes:String(a.notes||'').slice(0,2000),created_at:new Date().toISOString(),tenantId,accessTokenHash:hash(accessToken)};
       tx.create(ref,saved);
       if(customerRef && !customer?.exists) tx.create(customerRef,{full_name:saved.customer_name,phone:saved.customer_phone,notes:'',created_at:saved.created_at,last_login_at:saved.created_at});
       tx.set(guard,{updatedAt:new Date().toISOString()});
     });
     invalidateAppointmentsCache(tenantId);
+    recordBookingTiming();
     res.json({success:true,id,accessToken});
   }catch(err:any){
+    recordBookingTiming();
     const quotaExceeded = noteFirestoreQuota(err, 'book appointment');
     res.status(quotaExceeded ? 503 : 409).json({success:false,error:quotaExceeded?'Firestore quota temporarily exhausted':err.message});
   }
@@ -595,7 +607,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '26.0.0';
+const APP_VERSION = '26.0.1';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];

@@ -39,7 +39,7 @@ import {
   HEBREW_WEEKDAYS,
 } from '../utils/dateUtils';
 import { SALON_INFO, saveUserSession } from '../utils/storage';
-import { addAppointmentToFirestore, upsertCustomerToFirestore } from '../lib/firebase';
+import { addAppointmentToFirestore } from '../lib/firebase';
 import { ExistingBookingChoiceModal } from './ExistingBookingChoiceModal';
 import { CancelAppointmentConfirmModal } from './CancelAppointmentConfirmModal';
 import { useTenant } from '../context/TenantContext';
@@ -287,7 +287,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     else if (step === 'day') setStep('treatment');
   };
 
-  const executeBookingSubmission = async (nameToUse: string, phoneToUse: string, adminFlag: boolean) => {
+  const executeBookingSubmission = async (nameToUse: string, phoneToUse: string) => {
     setIsSubmitting(true);
 
     try {
@@ -320,18 +320,9 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         signatureDataUrl: currentUser?.signatureDataUrl,
       });
 
-      // Save or update customer record in Firestore customers directory
-      if (!adminFlag) {
-        upsertCustomerToFirestore({
-          full_name: nameToUse,
-          phone: phoneToUse,
-        }).catch((err) => {
-          console.warn('[Customer Directory] upsert notice:', err);
-        });
-      }
-
-      // Save to Firestore & local storage
-      const savedId = await addAppointmentToFirestore(newAppt as any, tenantId);
+      // The booking endpoint already creates the tenant-scoped customer record
+      // when needed. Avoid a second API request here.
+      const savedId = await addAppointmentToFirestore(newAppt as any, tenantId, { asAdmin: false });
 
       setIsSubmitting(false);
       onBookSuccess({ ...newAppt, id: savedId } as Appointment);
@@ -393,7 +384,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
       return;
     }
 
-    await executeBookingSubmission(cleanName, cleanPhone, isAdmin);
+    await executeBookingSubmission(cleanName, cleanPhone);
   };
 
   if (!isOpen) return null;

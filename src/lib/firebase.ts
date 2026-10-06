@@ -69,9 +69,21 @@ export function getTenantSettingsDocRef(tenantId = 'alex_beauty', docId = 'confi
 /**
  * Real-time listener for appointments (Multi-Tenant aware)
  */
-export async function tenantApi(path: string, body?: any, tenantId = getCurrentTenantId()) {
-  await auth.authStateReady();
-  const token=auth.currentUser ? await auth.currentUser.getIdToken() : '';
+export type TenantApiAuthMode = 'auto' | 'required' | 'none';
+
+export async function tenantApi(
+  path: string,
+  body?: any,
+  tenantId = getCurrentTenantId(),
+  options: { auth?: TenantApiAuthMode } = {}
+) {
+  const authMode = options.auth ?? 'auto';
+  let token = '';
+  if (authMode !== 'none') {
+    await auth.authStateReady();
+    token = auth.currentUser ? await auth.currentUser.getIdToken() : '';
+    if (authMode === 'required' && !token) throw new Error('נדרשת התחברות מנהל');
+  }
   const res=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','x-tenant-id':tenantId,...(token?{Authorization:`Bearer ${token}`}:{})},...(body===undefined?{}:{body:JSON.stringify({...body,tenantId})})});
   const data=await res.json();
   if(!res.ok || !data.success) throw new Error(data.error || 'הפעולה נכשלה');
@@ -120,10 +132,16 @@ export function slotDocId(date: string, startTime: string): string {
   return `appt_${date}_${startTime.replace(':', '')}`;
 }
 
-export async function addAppointmentToFirestore(appointment:Omit<Appointment,'id'>|Appointment,tenantId=getCurrentTenantId()):Promise<string> {
+export async function addAppointmentToFirestore(
+  appointment:Omit<Appointment,'id'>|Appointment,
+  tenantId=getCurrentTenantId(),
+  options:{asAdmin?:boolean}={}
+):Promise<string> {
   try {
-    const data=await tenantApi('/api/appointments/book',{appointment,requestId:crypto.randomUUID()},tenantId);
-    localStorage.setItem('booking_access__'+tenantId,JSON.stringify({...capabilities(tenantId),[data.id]:data.accessToken}));
+    const data=await tenantApi('/api/appointments/book',{appointment,requestId:crypto.randomUUID()},tenantId,{auth:options.asAdmin?'required':'none'});
+    if(!options.asAdmin) {
+      localStorage.setItem('booking_access__'+tenantId,JSON.stringify({...capabilities(tenantId),[data.id]:data.accessToken}));
+    }
     return data.id;
   }catch(err:any){if(err.message.includes('השעה הזו כבר נתפסה')) throw new SlotTakenError();throw err;}
 }

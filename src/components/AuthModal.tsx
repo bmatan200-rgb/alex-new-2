@@ -87,7 +87,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         phone: phone.trim(),
         acceptedTerms: true,
         signatureDataUrl: signatureDataUrl || '',
-      }, tenantId);
+      }, tenantId, { auth: 'none' });
     } catch (err: any) {
       setIsSubmitting(false);
       setError(err?.message || 'לא ניתן לשמור את פרטי ההרשמה. נסו שוב.');

@@ -256,7 +256,8 @@ export function clearAdminSession(): void {
     const tenantId = getStorageTenantId();
     localStorage.removeItem(`appointments_${tenantId}`);
     localStorage.removeItem(`${STORAGE_KEY_APPOINTMENTS}__${tenantId}`);
-    localStorage.removeItem(`booking_access__${tenantId}`);
+    // booking_access__<tenant> is a customer self-service cancellation capability.
+    // Admin logout must never destroy it.
   } catch {
     // Ignore
   }

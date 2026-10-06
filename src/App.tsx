@@ -224,6 +224,12 @@ function MainApp() {
   const [customerApptToCancel, setCustomerApptToCancel] = useState<Appointment | null>(null);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
+  // Customer identity is browser-local and tenant-scoped. Restore the matching
+  // customer whenever the active business changes, including after a hard refresh.
+  useEffect(() => {
+    setCurrentUser(getStoredUserSession());
+  }, [tenantId]);
+
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMessage({ text, type });
     setTimeout(() => setToastMessage(null), 4000);
@@ -273,10 +279,8 @@ function MainApp() {
         if(!active) return;
         const profile=result.user;
         const session:UserSession={name:user.displayName || user.email || '',phone:'',email:user.email || '',isAdmin:true,role:profile.role,tenantId:profile.tenantId,uid:profile.uid,loggedInAt:new Date().toISOString()};
-        // Admin preview must never inherit a stale customer identity from this browser.
-        // Clear only the customer session; the Firebase/admin session remains active.
-        clearUserSession();
-        setCurrentUser(null);
+        // Firebase admin identity and the public customer profile are separate.
+        // Never erase a tenant-scoped customer session during admin auth hydration.
         saveAdminSession(session);setAdminSession(session);
       }catch {if(active){clearAdminSession();setAdminSession(null);}}
       finally { if (active) setAdminAuthReady(true); }
@@ -305,10 +309,8 @@ function MainApp() {
 
   // Admin Login callback
   const handleAdminLoginSuccess = (session: UserSession) => {
-    // Entering admin mode clears any previous customer identity on this browser
-    // so visiting the public site cannot accidentally book as another customer.
-    clearUserSession();
-    setCurrentUser(null);
+    // Admin and customer identities intentionally coexist in separate storage.
+    // Logging in as a manager must not erase an already registered customer.
     saveAdminSession(session);
     setAdminSession(session);
     showToast(`שלום ${session.name}, התחברת בהצלחה לממשק המנהל!`);
@@ -354,7 +356,7 @@ function MainApp() {
 
   const handleAddManualAppointment = async (newApp: Omit<Appointment, 'id'>) => {
     try {
-      const savedId = await addAppointmentToFirestore(newApp as any, tenantId);
+      const savedId = await addAppointmentToFirestore(newApp as any, tenantId, { asAdmin: true });
       const appWithId = { ...newApp, id: savedId } as Appointment;
       saveAppointment(appWithId);
       setAppointments((prev) => deduplicateAppointments([appWithId, ...prev]));

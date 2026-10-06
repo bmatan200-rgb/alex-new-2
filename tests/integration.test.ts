@@ -56,12 +56,15 @@ before(async()=>{
   });
 });
 after(async()=>{globalThis.fetch=nativeFetch;await rules?.cleanup();await new Promise<void>(resolve=>server.close(()=>resolve()));await db.terminate();});
-test('public registration stores tenant-scoped consent and is not routed through admin-only upsert',async()=>{
+test('public registration stores tenant-scoped consent and both current/legacy routes use the same persistence',async()=>{
   const result=await api('/api/customer/register',{full_name:'New Customer',phone:'0546307114',acceptedTerms:true,signatureDataUrl:'data:image/png;base64,AA=='},undefined,'alex_beauty');
   assert.equal(result.success,true);
   const customer=(await db.doc('tenants/alex_beauty/customers/cust_972546307114').get()).data();
   assert.equal(customer?.termsConsent?.accepted,true);assert.equal(customer?.termsConsent?.version,'2026-10-01');
   assert.ok(customer?.signatureDataUrl?.startsWith('data:image/png;base64,'));
+  const legacy=await api('/api/register-webhook',{name:'Legacy Cached Client',phone:'0522222222',acceptedTerms:true,signatureDataUrl:'data:image/png;base64,AA=='},undefined,'alex_beauty');
+  assert.equal(legacy.success,true);
+  assert.equal((await db.doc('tenants/alex_beauty/customers/cust_972522222222').get()).data()?.full_name,'Legacy Cached Client');
   assert.equal((await api('/api/customer/register',{full_name:'x',phone:'bad',acceptedTerms:false})).success,false);
 });
 test('global SMS maintenance switch blocks scheduled and manual sends',async()=>{
@@ -84,13 +87,12 @@ test('tenant-configured Friday hours are used for public and admin slot calculat
 test('named database is explicitly selected',()=>{assert.equal(db.databaseId,'ai-studio-alex-0ace37ff-f441-4c64-bdb6-3ba856e2147c');});
 test('anonymous/ordinary Firebase users cannot administer or run scheduler',async()=>{assert.equal((await api('/api/tenants')).status,403);assert.equal((await api('/api/admin/customers',undefined,userToken)).status,403);assert.equal((await api('/api/sms/check-due')).status,403);});
 test('tenant role cannot cross tenant boundary via query/header/body',async()=>{assert.notEqual((await api('/api/admin/customers',undefined,ownerToken,'other')).status,200);assert.equal((await api('/api/admin/customers?tenant=other',undefined,ownerToken)).status,400);assert.equal((await api('/api/admin/settings/services',{tenantId:'other',services:[]},ownerToken)).status,400);assert.equal((await api('/api/admin/migrate-legacy-alex',{},ownerToken)).status,403);});
-test('only the verified canonical identity can bootstrap super admin',async()=>{
+test('canonical super admin works even when Firebase emailVerified is false; every other account stays scoped',async()=>{
   await getAuth().updateUser('super',{emailVerified:false});
-  assert.equal((await api('/api/auth/me',undefined,superToken)).status,403);
-  await getAuth().updateUser('super',{emailVerified:true});
   const login=await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=fake`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'bmatan200@gmail.com',password:'Test12345!',returnSecureToken:true})});
-  const verified=(await login.json()).idToken;
-  assert.equal((await api('/api/auth/me',undefined,verified)).user.role,'super_admin');
+  const token=(await login.json()).idToken;
+  assert.equal((await api('/api/auth/me',undefined,token)).user.role,'super_admin');
+  assert.equal((await api('/api/tenants',undefined,token)).status,200);
   const unrelated=await account('unrelated','unrelated@example.com',{role:'super_admin'},true);
   assert.equal((await api('/api/tenants',undefined,unrelated)).status,403);
 });
@@ -99,11 +101,11 @@ test('Firestore rules deny public PII, writes, lock edits and provider secrets',
   const owner=rules.authenticatedContext('owner',{role:'business_admin',tenantId:'alex_beauty'}).firestore();
   const other=rules.authenticatedContext('other-owner',{role:'business_admin',tenantId:'other'}).firestore();
   const staleSuper=rules.authenticatedContext('stale-super',{role:'super_admin',email:'other@example.com',email_verified:true}).firestore();
-  const verifiedSuper=rules.authenticatedContext('matan',{role:'super_admin',email:'bmatan200@gmail.com',email_verified:true}).firestore();
+  const canonicalSuper=rules.authenticatedContext('matan',{role:'super_admin',email:'bmatan200@gmail.com',email_verified:false}).firestore();
   await assertFails(getDoc(doc(anon,'tenants/alex_beauty/appointments/a')));
   await assertFails(getDoc(doc(other,'tenants/alex_beauty/appointments/a')));
   await assertFails(getDoc(doc(staleSuper,'tenants/alex_beauty/appointments/a')));
-  await assertSucceeds(getDoc(doc(verifiedSuper,'tenants/alex_beauty/appointments/a')));
+  await assertSucceeds(getDoc(doc(canonicalSuper,'tenants/alex_beauty/appointments/a')));
   await assertSucceeds(getDoc(doc(owner,'tenants/alex_beauty/appointments/a')));
   await assertSucceeds(getDoc(doc(anon,'tenants/alex_beauty/settings/config')));
   await assertFails(getDoc(doc(anon,'tenants/alex_beauty/settings/sms_reminders')));
@@ -227,6 +229,9 @@ test('built production server boots with named database and serves API plus SPA'
     }
     assert.ok(ready,output);
     const html=await nativeFetch('http://127.0.0.1:43187/');assert.equal(html.status,200);assert.match(await html.text(),/<div id="root">/);
+    const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'26.0.0');
+    const registerRoute=await nativeFetch('http://127.0.0.1:43187/api/customer/register',{method:'POST',headers:{'Content-Type':'application/json','x-tenant-id':'alex_beauty'},body:JSON.stringify({full_name:'x',phone:'bad',acceptedTerms:false})});
+    assert.equal(registerRoute.status,400);assert.doesNotMatch(await registerRoute.text(),/API route not found/);
     const missing=await nativeFetch('http://127.0.0.1:43187/api/unknown');assert.equal(missing.status,404);assert.match(missing.headers.get('content-type')||'',/json/);
   } finally {child.kill('SIGTERM');await new Promise<void>(r=>child.once('exit',()=>r()));}
 });

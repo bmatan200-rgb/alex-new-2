@@ -549,11 +549,12 @@ app.delete('/api/admin/customers/:id', requireAdmin, async (req: Request, res: R
 // Customer registration is intentionally separate from the admin-only customer
 // directory upsert API. The customer confirms terms in the UI and the server
 // stores a small consent record on the tenant-scoped customer document.
-app.post('/api/customer/register', async (req: Request, res: Response) => {
-  const name = String(req.body?.full_name || '').trim();
+async function registerCustomer(req: Request, res: Response) {
+  const name = String(req.body?.full_name ?? req.body?.name ?? '').trim();
   const phone = phoneDigits(req.body?.phone);
   const signature = String(req.body?.signatureDataUrl || '');
-  if (!name || name.length > 100 || !phone || req.body?.acceptedTerms !== true || signature.length > 250_000 || (signature && !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(signature))) {
+  const acceptedTerms = req.body?.acceptedTerms === true;
+  if (!name || name.length > 100 || !phone || !acceptedTerms || signature.length > 250_000 || (signature && !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(signature))) {
     return res.status(400).json({ success: false, error: 'פרטי הרשמה או אישור תקנון אינם תקינים' });
   }
   try {
@@ -573,9 +574,11 @@ app.post('/api/customer/register', async (req: Request, res: Response) => {
     }, { merge: true });
     return res.json({ success: true });
   } catch (err: any) {
-    return res.status(503).json({ success: false, error: err?.message || 'לא ניתן לשמור הרשמה כעת' });
+    const quotaExceeded = noteFirestoreQuota(err, 'customer registration');
+    return res.status(quotaExceeded ? 503 : 500).json({ success: false, error: quotaExceeded ? 'Firestore quota temporarily exhausted' : (err?.message || 'לא ניתן לשמור הרשמה כעת') });
   }
-});
+}
+app.post('/api/customer/register', registerCustomer);
 
 // Verify Firebase identity, current server-side roles, revocation and tenant ownership.
 type AdminRole = 'super_admin' | 'business_admin';
@@ -592,6 +595,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
+const APP_VERSION = '26.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];
@@ -609,7 +613,7 @@ async function decodeAdmin(req: Request): Promise<AdminPayload | null> {
   const email = String(currentUser.email || decoded.email || '').trim().toLowerCase();
 
   // Hard server-side allowlist: only bmatan200@gmail.com can ever be Super Admin.
-  if (email === PRIMARY_SUPER_ADMIN_EMAIL && currentUser.emailVerified === true) {
+  if (email === PRIMARY_SUPER_ADMIN_EMAIL) {
     if (claims.role !== 'super_admin' || claims.tenantId) {
       const { tenantId: _legacyTenantId, ...restClaims } = claims as any;
       await getAuth().setCustomUserClaims(decoded.uid, { ...restClaims, role: 'super_admin' });
@@ -1864,28 +1868,14 @@ app.get('/api/admin/tenant-data', requireAdmin, async (req: Request, res: Respon
 // Compatibility endpoint: Firestore remains the sole appointment source.
 app.post('/api/whatsapp/sync-appointments',requireAdmin,(_req,res)=>res.json({success:true,message:'Server reads confirmed appointments from Firestore'}));
 
-// Registration Webhook Endpoint
-app.post('/api/register-webhook', async (req: Request, res: Response) => {
-  try {
-    const { name, phone, acceptedTerms, registeredAt } = req.body;
-    const sanitizedName = String(name || '').trim().substring(0, 100);
-    const sanitizedPhone = String(phone || '').trim().substring(0, 30);
-
-    if (!sanitizedName || !sanitizedPhone) {
-      return res.status(400).json({ success: false, error: 'Name and phone are required' });
-    }
-
-
-    return res.json({ success: true, message: 'Registration received' });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message });
-  }
-});
+// Backward-compatible registration endpoint for older cached clients.
+// It uses the exact same tenant-scoped persistence and validation as the current route.
+app.post('/api/register-webhook', registerCustomer);
 
 // ----------------------------------------------------
 // Vite & Static Asset Handling
 // ----------------------------------------------------
-app.get('/api/health',(_req,res)=>res.json({success:true,service:'alex-multi-tenant'}));
+app.get('/api/health',(_req,res)=>res.json({success:true,service:'alex-multi-tenant',version:APP_VERSION}));
 app.use('/api',(_req,res)=>res.status(404).json({success:false,error:'API route not found'}));
 app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
   const quotaExceeded = noteFirestoreQuota(err, 'API request');
@@ -1946,7 +1936,7 @@ async function startServer() {
   // Bind the HTTP port first. Firestore quota exhaustion must never prevent
   // Render from seeing a healthy process and must never create a restart storm.
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Alex Beauty Server running on http://0.0.0.0:${PORT} [Israel Time: ${getIsraelTime().timeStr}]`);
+    console.log(`Alex Beauty Server v${APP_VERSION} running on http://0.0.0.0:${PORT} [Israel Time: ${getIsraelTime().timeStr}]`);
     const timer = setTimeout(() => void runBootstrapMaintenance(), 1_000);
     (timer as any).unref?.();
     if (String(process.env.CRON_SECRET || '').trim().length >= 24) {

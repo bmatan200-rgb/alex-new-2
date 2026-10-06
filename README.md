@@ -1,6 +1,6 @@
-# Alex Multi-Tenant — v24.0.1
+# Alex Multi-Tenant — v26.0.0
 
-גרסה מלאה על בסיס v17 עם תיקון ממוקד ל־Firestore free-tier quota, יציבות Render וצריכת הקריאות.
+גרסה מלאה ומעודכנת עם תיקוני הרשאות Super Admin, רישום לקוחות, Firestore quota, יציבות Render ובידוד multi-tenant.
 ה־Auth, ה־multi-tenant והפרדת הנתונים של v17 נשמרו. פירוט השינויים החדשים: [AUDIT-v18.md](AUDIT-v18.md).
 דוח v17 המקורי נשמר כ־[AUDIT-v17.md](AUDIT-v17.md).
 
@@ -25,6 +25,7 @@ NODE_ENV=production npm start
 
 ב־Render: Build Command הוא `npm ci && npm run build`; Start Command הוא `npm start`;
 הגדירו `NODE_ENV=production`. השרת מכבד את `PORT` של Render. נקודת בריאות: `/api/health`.
+ב־v26 נקודת הבריאות חייבת להחזיר `"version":"26.0.0"`; אם לא, Render עדיין מריץ build ישן.
 אין צורך במפתח Gemini. מפתחות Telnyx וחשבון השירות נשארים בשרת בלבד.
 
 ## Firebase Admin ובסיס הנתונים
@@ -58,8 +59,8 @@ npx firebase deploy --only firestore --project gen-lang-client-0382531831
 ## התחברות והרשאות
 
 - מנהלים נכנסים עם Firebase Authentication, Email/Password.
-- `SUPER_ADMIN_EMAILS` הוא רשימת כתובות מופרדת בפסיקים. חשבון bootstrap חייב להיות בעל אימייל מאומת.
-  אפשר גם להקצות מראש custom claim של `role=super_admin` דרך Admin SDK בסביבה מורשית.
+- חשבון ה־Super Admin הקנוני הוא `bmatan200@gmail.com` בלבד. השרת מאמת את כתובת Firebase Auth בצד השרת ואינו דורש `emailVerified=true`.
+- custom claim ישן של `role=super_admin` בחשבון אחר **אינו** מעניק הרשאה גלובלית.
 - חשבונות בעלי עסקים נוצרים דרך Super Admin. השרת מקצה `role=business_admin`, `tenantId`
   ושיוך בעלים בעסק וב־`adminUsers`.
 - חשבון Firebase רגיל, מספר טלפון או localStorage אינם מקנים הרשאות ניהול.
@@ -130,15 +131,11 @@ npx firebase deploy --only firestore --project gen-lang-client-0382531831
 
 ## בדיקות
 
-עדכוני v24.0.1: כללי Firestore מאמתים זהות Super Admin מול החשבון הקנוני המאומת;
-כל מסכי ההזמנה מכבדים שעות שישי של העסק; שינוי הגדרות תזכורת מפעיל מחדש בדיקת חלון;
-`SMS_SENDING_ENABLED=false` חוסם את כל מסלולי השליחה; הרשמת לקוח שומרת הסכמה וחתימה
-במסמך העסק; קישורי עסק משתמשים בדומיין העסק; יציאה מנקה snapshot פרטי; PWA כולל אייקונים.
-כלי הפיתוח `firebase-tools` שודרג ל־15.32.1, שמסיר את ממצא ה־critical מהסריקה הקודמת.
-`npm audit --omit=dev` נקי; הסריקה המלאה עדיין מדווחת חולשות בכלי הפיתוח Firebase CLI,
-שאינו נכלל בשרת הריצה. מומלץ להפעיל את בדיקות האינטגרציה עם Java 21.
+ב־v26 נוספו בדיקות מקור ובדיקת bundle שמונעות פריסה של build שבו נתיב הרשמת הלקוח חסר.
+פקודת `npm run build` מריצה קודם `verify:source`, בונה את הלקוח והשרת, ואז מריצה `verify-dist` על `dist/server.cjs` ועל bundle הדפדפן.
 
 ```sh
+npm run verify:source
 npm run lint
 npm test
 npm run build
@@ -146,14 +143,18 @@ npm run test:integration
 npm audit --omit=dev
 ```
 
-`test:integration` מפעיל אמולטורי Auth ו־Firestore מקומיים. מזהה הפרויקט תואם לתצורה כדי לבדוק את
-בחירת בסיס הנתונים בפועל, אך הטסטים מחייבים כתובות אמולטור ומסרבים לפעול ללא שתיהן.
-קריאות Telnyx מוחלפות בספק מדומה. בדיקת השרת הבנוי דורשת פורט מקומי 43187 פנוי.
-לפני בדיקת האינטגרציה יש להריץ build.
+`test:integration` מפעיל אמולטורי Auth ו־Firestore מקומיים ואינו ניגש ל־Production. הוא כולל בין היתר:
+- Super Admin קנוני גם כאשר `emailVerified=false`; חשבון אחר עם claim ישן נחסם.
+- Business Admin אינו יכול לחצות `tenantId` דרך query/header/body.
+- כללי Firestore מונעים גישה לעסק אחר.
+- `/api/customer/register` והנתיב הישן `/api/register-webhook` שומרים רישום באותו tenant.
+- בדיקת השרת הבנוי מאשרת ש־`/api/customer/register` קיים לפני catch-all של `API route not found`.
 
-### הערה על קובץ ה־ZIP של v24.0.1
+לאחר פריסה ל־Render, בדקו קודם `GET /api/health`. רק אם מוחזר `version: 26.0.0` יש להמשיך לבדיקת הרשמת לקוח ו־Super Admin.
 
-ה־ZIP אינו כולל את `dist/` הישן של v17 כדי למנוע הרצה בטעות של bundle ישן. Render צריך להישאר עם Build Command `npm ci && npm run build`; התיקייה `dist/` תיווצר מחדש בכל deploy.
+### הערה על קובץ ה־ZIP של v26.0.0
+
+ה־ZIP אינו כולל `node_modules`. Render צריך להשתמש ב־Build Command `npm ci && npm run build`; התיקייה `dist/` נוצרת מחדש בכל deploy, וה־build עצמו מאמת שה־API וה־Frontend תואמים.
 
 ## Secure external Cron heartbeat (v18.0.3)
 

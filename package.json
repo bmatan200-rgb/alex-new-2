@@ -1,17 +1,18 @@
 {
   "name": "alex-multi-tenant",
   "private": true,
-  "version": "24.0.1",
+  "version": "26.0.0",
   "type": "module",
   "scripts": {
     "dev": "node --import tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "npm run verify:source && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs && node scripts/verify-dist.mjs",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test": "node --import tsx --test tests/core.test.ts",
-    "test:integration": "firebase emulators:exec --project gen-lang-client-0382531831 --only auth,firestore \"node --import tsx --test tests/integration.test.ts\""
+    "test:integration": "firebase emulators:exec --project gen-lang-client-0382531831 --only auth,firestore \"node --import tsx --test tests/integration.test.ts\"",
+    "verify:source": "node scripts/verify-v26.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

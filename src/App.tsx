@@ -62,6 +62,7 @@ import { SalonInfoSection } from './components/SalonInfoSection';
 import { AuthModal } from './components/AuthModal';
 import { TermsOfServiceModal } from './components/TermsOfServiceModal';
 import { ExistingBookingChoiceModal } from './components/ExistingBookingChoiceModal';
+import { AddToHomePrompt } from './components/AddToHomePrompt';
 
 // Explicit Tenant Admin Route View handling Local Development & Multi-Tenant param
 function AdminRouteView({
@@ -403,6 +404,7 @@ function MainApp() {
 
   return (
     <>
+      <AddToHomePrompt tenantId={tenantId} tenantName={tenant.name} primaryColor={primaryColor} />
       <Routes>
         {/* ==================================================================== */}
         {/* ROUTE 1: CLIENT MAIN SCREEN (/) - DYNAMIC MULTI-TENANT BOOKING       */}

@@ -2,6 +2,7 @@
   "short_name": "תורים",
   "name": "הזמנת תורים לעסק",
   "description": "אפליקציה להזמנת תורים לעסקים",
+  "id": "/?tenant=alex_beauty",
   "icons": [
     {
       "src": "/pwa-192x192.png",
@@ -16,7 +17,8 @@
       "purpose": "any maskable"
     }
   ],
-  "start_url": "/",
+  "start_url": "/?tenant=alex_beauty",
+  "scope": "/",
   "background_color": "#ffffff",
   "theme_color": "#7c3aed",
   "display": "standalone",

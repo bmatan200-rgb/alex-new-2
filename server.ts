@@ -210,6 +210,52 @@ async function resolveTenantDomain(req: Request, res: Response, next: NextFuncti
 }
 
 app.use('/api', (req,res,next)=>req.path==='/health'?next():resolveTenantDomain(req,res,next));
+app.get('/manifest.json', async (req, res) => {
+  let tenantId = typeof req.query.tenant === 'string' && validId(req.query.tenant)
+    ? req.query.tenant
+    : PRIMARY_TENANT_ID;
+  if (!req.query.tenant) {
+    const cachedDomain = domainTenantCache.get(req.hostname.toLowerCase());
+    if (cachedDomain && validId(cachedDomain.tenantId)) tenantId = cachedDomain.tenantId;
+    else {
+      try {
+        const mapped = await getDoc(doc(db, 'domains', req.hostname.toLowerCase()));
+        const domainTenantId = mapped.exists ? String(mapped.data()?.tenantId || '') : '';
+        if (validId(domainTenantId)) {
+          tenantId = domainTenantId;
+          domainTenantCache.set(req.hostname.toLowerCase(), { expiresAt: Date.now() + 10 * 60_000, tenantId });
+        }
+      } catch {}
+    }
+  }
+  let tenantName = 'הזמנת תורים לעסק';
+  try {
+    const tenant = await activeTenant(tenantId);
+    if (typeof tenant?.name === 'string' && tenant.name.trim()) tenantName = tenant.name.trim();
+  } catch {
+    // Keep the manifest available when tenant data is temporarily unavailable.
+  }
+  const startUrl = `/?tenant=${encodeURIComponent(tenantId)}`;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    name: `${tenantName} | קביעת תורים`,
+    short_name: tenantName.slice(0, 24),
+    description: 'קביעת תורים אונליין',
+    id: startUrl,
+    start_url: startUrl,
+    scope: '/',
+    display: 'standalone',
+    orientation: 'portrait',
+    background_color: '#ffffff',
+    theme_color: '#7c3aed',
+    lang: 'he',
+    dir: 'rtl',
+    icons: [
+      { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+      { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+    ],
+  });
+});
 app.param(['tenantId','id'], (req,res,next,value)=>{
   if(!validId(value)) return res.status(400).json({success:false,error:'Invalid document ID'});
   next();
@@ -607,7 +653,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '26.0.1';
+const APP_VERSION = '27.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];

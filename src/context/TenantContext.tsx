@@ -112,6 +112,12 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     root.style.setProperty('--tenant-primary-glow', `${color}33`);
   }, [tenant.primaryColor]);
 
+  useEffect(() => {
+    if (tenant.name) document.title = `${tenant.name} | קביעת תורים`;
+    const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    if (appleTitle && tenant.name) appleTitle.setAttribute('content', tenant.name.slice(0, 30));
+  }, [tenant.name]);
+
   const salonInfo: SalonInfo = {
     name: tenant.name,
     tagline: tenant.tagline || 'הזמנת תורים אונליין',

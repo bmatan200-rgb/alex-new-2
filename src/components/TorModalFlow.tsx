@@ -155,6 +155,8 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
   const durationMinutes = selectedService?.duration_minutes || scheduleSettings?.durationMinutes || 90;
   const businessOpen = scheduleSettings?.businessOpen || BUSINESS_OPEN;
   const businessClose = scheduleSettings?.businessClose || BUSINESS_CLOSE;
+  const fridayOpen = scheduleSettings?.fridayOpen || '09:20';
+  const fridayClose = scheduleSettings?.fridayClose || FRIDAY_CLOSE;
 
   // Calculate available slots for a given day
   const getSlotsForDay = (dateIso: string) => {
@@ -164,6 +166,8 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
       dateString: dateIso,
       businessOpen,
       businessClose,
+      fridayOpen,
+      fridayClose,
       slotInterval: durationMinutes,
     });
   };
@@ -243,9 +247,10 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
       durationMinutes,
       businessOpen,
       businessClose,
-      FRIDAY_CLOSE
+      fridayClose,
+      fridayOpen
     );
-  }, [selectedDate, appointments, durationMinutes, businessOpen, businessClose]);
+  }, [selectedDate, appointments, durationMinutes, businessOpen, businessClose, fridayOpen, fridayClose]);
 
   const effectiveAvailableSlotsCount = useMemo(() => {
     if (!selectedDate) return 0;

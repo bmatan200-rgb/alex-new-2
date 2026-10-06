@@ -39,7 +39,7 @@ async function api(path:string,body?:any,token?:string,tenant='alex_beauty',meth
 before(async()=>{
   await db.recursiveDelete(db.collection('tenants'));
   server=await new Promise<any>(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});base=`http://127.0.0.1:${server.address().port}`;
-  superToken=await account('super','super@example.com',{role:'super_admin'});
+  superToken=await account('super','bmatan200@gmail.com',{role:'super_admin'});
   ownerToken=await account('owner','owner@example.com',{role:'business_admin',tenantId:'alex_beauty'});
   userToken=await account('regular','regular@example.com');
   await db.doc('tenants/alex_beauty').set({status:'active',name:'Alex',phone:'0546307114',ownerAuthUid:'owner'});
@@ -56,16 +56,54 @@ before(async()=>{
   });
 });
 after(async()=>{globalThis.fetch=nativeFetch;await rules?.cleanup();await new Promise<void>(resolve=>server.close(()=>resolve()));await db.terminate();});
+test('public registration stores tenant-scoped consent and is not routed through admin-only upsert',async()=>{
+  const result=await api('/api/customer/register',{full_name:'New Customer',phone:'0546307114',acceptedTerms:true,signatureDataUrl:'data:image/png;base64,AA=='},undefined,'alex_beauty');
+  assert.equal(result.success,true);
+  const customer=(await db.doc('tenants/alex_beauty/customers/cust_972546307114').get()).data();
+  assert.equal(customer?.termsConsent?.accepted,true);assert.equal(customer?.termsConsent?.version,'2026-10-01');
+  assert.ok(customer?.signatureDataUrl?.startsWith('data:image/png;base64,'));
+  assert.equal((await api('/api/customer/register',{full_name:'x',phone:'bad',acceptedTerms:false})).success,false);
+});
+test('global SMS maintenance switch blocks scheduled and manual sends',async()=>{
+  const before=providerCalls;const prior=process.env.SMS_SENDING_ENABLED;process.env.SMS_SENDING_ENABLED='false';
+  try {
+    const result=await sendRemindersForDate(israelClock().tomorrowIso,'1day','alex_beauty',{enabled:true,autoSendEnabled:true});
+    assert.equal(result.skipped,true);assert.equal(result.reason,'sending_disabled');
+    assert.equal((await api('/api/sms/send-single',{phone:'0546307114',message:'test'},superToken)).status,503);
+    assert.equal((await api('/api/sms/send-batch',{type:'today'},superToken)).status,503);
+    assert.equal(providerCalls,before);
+  } finally {if(prior===undefined)delete process.env.SMS_SENDING_ENABLED;else process.env.SMS_SENDING_ENABLED=prior;}
+});
+test('tenant-configured Friday hours are used for public and admin slot calculations',async()=>{
+  const {calculateAvailableSlots,getDailySlotsOccupancy}=await import('../src/utils/dateUtils');
+  const options={durationMinutes:60,existingAppointments:[],dateString:'2030-06-07',businessOpen:'08:00',businessClose:'22:00',fridayOpen:'10:00',fridayClose:'13:00',slotInterval:60};
+  const publicSlots=calculateAvailableSlots(options);assert.deepEqual(publicSlots,['10:00','11:00','12:00']);
+  const adminSlots=getDailySlotsOccupancy(options.dateString,[],60,options.businessOpen,options.businessClose,options.fridayClose,options.fridayOpen);
+  assert.deepEqual(adminSlots.map(x=>x.time),['10:00','11:00','12:00']);
+});
 test('named database is explicitly selected',()=>{assert.equal(db.databaseId,'ai-studio-alex-0ace37ff-f441-4c64-bdb6-3ba856e2147c');});
 test('anonymous/ordinary Firebase users cannot administer or run scheduler',async()=>{assert.equal((await api('/api/tenants')).status,403);assert.equal((await api('/api/admin/customers',undefined,userToken)).status,403);assert.equal((await api('/api/sms/check-due')).status,403);});
 test('tenant role cannot cross tenant boundary via query/header/body',async()=>{assert.notEqual((await api('/api/admin/customers',undefined,ownerToken,'other')).status,200);assert.equal((await api('/api/admin/customers?tenant=other',undefined,ownerToken)).status,400);assert.equal((await api('/api/admin/settings/services',{tenantId:'other',services:[]},ownerToken)).status,400);assert.equal((await api('/api/admin/migrate-legacy-alex',{},ownerToken)).status,403);});
-test('only a verified allowlisted identity can bootstrap super admin',async()=>{const unverified=await account('unverified','unverified@example.com',{},false);assert.equal((await api('/api/tenants',undefined,unverified)).status,403);const verified=await account('verified','verified@example.com',{},true);assert.equal((await api('/api/auth/me',undefined,verified)).user.role,'super_admin');});
+test('only the verified canonical identity can bootstrap super admin',async()=>{
+  await getAuth().updateUser('super',{emailVerified:false});
+  assert.equal((await api('/api/auth/me',undefined,superToken)).status,403);
+  await getAuth().updateUser('super',{emailVerified:true});
+  const login=await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=fake`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'bmatan200@gmail.com',password:'Test12345!',returnSecureToken:true})});
+  const verified=(await login.json()).idToken;
+  assert.equal((await api('/api/auth/me',undefined,verified)).user.role,'super_admin');
+  const unrelated=await account('unrelated','unrelated@example.com',{role:'super_admin'},true);
+  assert.equal((await api('/api/tenants',undefined,unrelated)).status,403);
+});
 test('Firestore rules deny public PII, writes, lock edits and provider secrets',async()=>{
   const anon=rules.unauthenticatedContext().firestore();
   const owner=rules.authenticatedContext('owner',{role:'business_admin',tenantId:'alex_beauty'}).firestore();
   const other=rules.authenticatedContext('other-owner',{role:'business_admin',tenantId:'other'}).firestore();
+  const staleSuper=rules.authenticatedContext('stale-super',{role:'super_admin',email:'other@example.com',email_verified:true}).firestore();
+  const verifiedSuper=rules.authenticatedContext('matan',{role:'super_admin',email:'bmatan200@gmail.com',email_verified:true}).firestore();
   await assertFails(getDoc(doc(anon,'tenants/alex_beauty/appointments/a')));
   await assertFails(getDoc(doc(other,'tenants/alex_beauty/appointments/a')));
+  await assertFails(getDoc(doc(staleSuper,'tenants/alex_beauty/appointments/a')));
+  await assertSucceeds(getDoc(doc(verifiedSuper,'tenants/alex_beauty/appointments/a')));
   await assertSucceeds(getDoc(doc(owner,'tenants/alex_beauty/appointments/a')));
   await assertSucceeds(getDoc(doc(anon,'tenants/alex_beauty/settings/config')));
   await assertFails(getDoc(doc(anon,'tenants/alex_beauty/settings/sms_reminders')));
@@ -120,11 +158,14 @@ test('SMS uses per-tenant settings; overlapping batch runs and lost responses do
   assert.equal((await api('/api/sms/logs',undefined,ownerToken)).logs.some((l:any)=>l.tenantId==='other'),false);
 });
 test('tenant create/domain collision and durable delete cannot silently overwrite another business',async()=>{
+  const domainCreate=await api('/api/super-admin/tenants',{tenantId:'domain_links',name:'Domain Links',phone:'0501111112',customDomain:'links.example.com'},superToken,'domain_links');
+  assert.equal(domainCreate.testUrl,'https://links.example.com/');assert.equal(domainCreate.adminUrl,'https://links.example.com/admin');
   const t={tenantId:'new_tenant',name:'New',phone:'0501111111',customDomain:'new.example.com'};
   assert.equal((await api('/api/super-admin/tenants',t,superToken,'new_tenant')).success,true);
   assert.equal((await api('/api/super-admin/tenants',t,superToken,'new_tenant')).success,false);
   assert.equal((await api('/api/super-admin/tenants',{...t,tenantId:'collision'},superToken,'collision')).success,false);
   assert.equal((await db.doc('domains/new.example.com').get()).data()?.tenantId,'new_tenant');
+  assert.equal((await api('/api/super-admin/tenants/domain_links',undefined,superToken,'domain_links','DELETE')).success,true);
   assert.equal((await api('/api/super-admin/tenants/new_tenant',undefined,superToken,'new_tenant','DELETE')).success,true);
   assert.equal((await db.doc('tenants/new_tenant').get()).data()?.status,'deleted');
   assert.equal((await api('/api/tenant/current',undefined,undefined,'new_tenant')).success,false);
@@ -154,7 +195,7 @@ test('v16 migration marker prevents restoring absent previously imported appoint
   await ensurePrimaryTenant();assert.equal((await db.doc('tenants/alex_beauty/appointments/deleted_in_v16').get()).exists,false);
 });
 test('owner account cannot demote super admin or assign another tenant owner',async()=>{
-  assert.equal((await api('/api/super-admin/tenants/other/owner-account',{email:'super@example.com',password:'Test12345!'},superToken,'other')).status,409);
+  assert.equal((await api('/api/super-admin/tenants/other/owner-account',{email:'bmatan200@gmail.com',password:'Test12345!'},superToken,'other')).status,409);
   assert.equal((await api('/api/super-admin/tenants/other/owner-account',{email:'owner@example.com',password:'Test12345!'},superToken,'other')).status,409);
   assert.equal((await getAuth().getUser('super')).customClaims?.role,'super_admin');
 });

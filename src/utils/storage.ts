@@ -253,6 +253,10 @@ export function clearAdminSession(): void {
   try {
     localStorage.removeItem(STORAGE_KEY_ADMIN_SESSION);
     localStorage.removeItem('alex_admin_session_token');
+    const tenantId = getStorageTenantId();
+    localStorage.removeItem(`appointments_${tenantId}`);
+    localStorage.removeItem(`${STORAGE_KEY_APPOINTMENTS}__${tenantId}`);
+    localStorage.removeItem(`booking_access__${tenantId}`);
   } catch {
     // Ignore
   }

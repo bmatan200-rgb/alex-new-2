@@ -546,6 +546,37 @@ app.delete('/api/admin/customers/:id', requireAdmin, async (req: Request, res: R
 // Secure Admin Authentication & Password Hashing Subsystem (Server-Side)
 // ----------------------------------------------------------------------
 
+// Customer registration is intentionally separate from the admin-only customer
+// directory upsert API. The customer confirms terms in the UI and the server
+// stores a small consent record on the tenant-scoped customer document.
+app.post('/api/customer/register', async (req: Request, res: Response) => {
+  const name = String(req.body?.full_name || '').trim();
+  const phone = phoneDigits(req.body?.phone);
+  const signature = String(req.body?.signatureDataUrl || '');
+  if (!name || name.length > 100 || !phone || req.body?.acceptedTerms !== true || signature.length > 250_000 || (signature && !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(signature))) {
+    return res.status(400).json({ success: false, error: 'פרטי הרשמה או אישור תקנון אינם תקינים' });
+  }
+  try {
+    const tenantId = req.tenantId!;
+    await activeTenant(tenantId);
+    const ref = doc(db, 'tenants', tenantId, 'customers', `cust_${phone}`);
+    const now = new Date().toISOString();
+    const existing = await getDoc(ref);
+    const current = existing.data() || {};
+    await setDoc(ref, {
+      full_name: name,
+      phone: String(req.body.phone).trim(),
+      ...(current.created_at ? {} : { created_at: now }),
+      last_login_at: now,
+      termsConsent: { accepted: true, version: '2026-10-01', acceptedAt: now },
+      ...(signature ? { signatureDataUrl: signature } : {}),
+    }, { merge: true });
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(503).json({ success: false, error: err?.message || 'לא ניתן לשמור הרשמה כעת' });
+  }
+});
+
 // Verify Firebase identity, current server-side roles, revocation and tenant ownership.
 type AdminRole = 'super_admin' | 'business_admin';
 
@@ -578,7 +609,7 @@ async function decodeAdmin(req: Request): Promise<AdminPayload | null> {
   const email = String(currentUser.email || decoded.email || '').trim().toLowerCase();
 
   // Hard server-side allowlist: only bmatan200@gmail.com can ever be Super Admin.
-  if (email === PRIMARY_SUPER_ADMIN_EMAIL) {
+  if (email === PRIMARY_SUPER_ADMIN_EMAIL && currentUser.emailVerified === true) {
     if (claims.role !== 'super_admin' || claims.tenantId) {
       const { tenantId: _legacyTenantId, ...restClaims } = claims as any;
       await getAuth().setCustomUserClaims(decoded.uid, { ...restClaims, role: 'super_admin' });
@@ -781,6 +812,7 @@ function sharedSmsProviderAllowed(tenantId: string): boolean {
 // Provider credentials are server-only. Tenant overrides live under private_settings/sms_provider.
 
 async function sendSmsViaTelnyx(to: string, message: string, tenantId: string): Promise<{ success: boolean; data?: any; error?: string; uncertain?:boolean }> {
+  if (process.env.SMS_SENDING_ENABLED === 'false') return { success: false, error: 'שליחת SMS מושבתת זמנית לצורך תחזוקה' };
   const providerSnap = await getDoc(doc(db,'tenants',tenantId,'private_settings','sms_provider'));
   const provider = providerSnap.data() || {};
   const shared = sharedSmsProviderAllowed(tenantId);
@@ -945,6 +977,7 @@ function previousIsoDate(dateIso: string): string {
 }
 
 async function sendRemindersForDate(targetDate: string, reminderType: 'today' | '1day', tenantId = PRIMARY_TENANT_ID, tenantSettings?: any) {
+  if (process.env.SMS_SENDING_ENABLED === 'false') return { success: true, sentCount: 0, skipped: true, reason: 'sending_disabled' };
   const smsSettings = tenantSettings || await getTenantSmsSettings(tenantId);
   const brand = await getTenantBrand(tenantId);
   if (!['active','trial'].includes(brand?.status) || smsSettings.enabled===false || smsSettings.autoSendEnabled===false) return {success:true,sentCount:0,skipped:true};
@@ -1193,6 +1226,7 @@ app.all(['/api/sms/check-due', '/api/reminders/heartbeat'], requireSuperAdmin, a
 
 // Secure machine-to-machine heartbeat for cron-job.org. One Cron serves ALL tenants.
 app.all('/api/cron/heartbeat', requireCronSecret, async (_req: Request, res: Response) => {
+  if (process.env.SMS_SENDING_ENABLED === 'false') return res.status(503).json({success:false,cron:true,error:'SMS sending is disabled for maintenance'});
   try {
     const result = await checkAndDispatchDueReminders();
     return res.status(200).json({ success: result?.success !== false, cron: true, scheduler: result, checkedAt: new Date().toISOString() });
@@ -1242,12 +1276,14 @@ app.post(['/api/sms/settings', '/api/whatsapp/sync-settings'], requireAdmin, asy
     }
     await batch.commit();
     schedulerConfigCache = null;
+    for (const key of completedDispatches.keys()) if (key.startsWith(tenantId + ':')) completedDispatches.delete(key);
     res.json({success:true,settings});
   }catch(err){next(err);}
 });
 
 // 3. Batch Send Trigger (Today or Tomorrow)
 app.post(['/api/sms/send-batch', '/api/whatsapp/trigger-morning', '/api/whatsapp/test-today-morning'], requireAdmin, async (req: Request, res: Response) => {
+  if (process.env.SMS_SENDING_ENABLED === 'false') return res.status(503).json({success:false,error:'שליחת SMS מושבתת זמנית לצורך תחזוקה'});
   const reqType = req.body?.type || (req.path.includes('morning') || req.path.includes('today') ? 'today' : '1day');
   const { dateIso, tomorrowIso } = getIsraelTime();
   const targetDate = reqType === 'today' ? dateIso : tomorrowIso;
@@ -1257,12 +1293,14 @@ app.post(['/api/sms/send-batch', '/api/whatsapp/trigger-morning', '/api/whatsapp
 });
 
 app.post(['/api/whatsapp/trigger-evening', '/api/whatsapp/test-1day-evening'], requireAdmin, async (req: Request, res: Response) => {
+  if (process.env.SMS_SENDING_ENABLED === 'false') return res.status(503).json({success:false,error:'שליחת SMS מושבתת זמנית לצורך תחזוקה'});
   const { tomorrowIso } = getIsraelTime();
   try {return res.json(await sendRemindersForDate(tomorrowIso,'1day',req.tenantId!));}catch(err:any){return res.status(500).json({success:false,error:'Reminder dispatch failed'});}
 });
 
 // 4. Send Single SMS
 app.post(['/api/sms/send-single', '/api/whatsapp/send'], requireAdmin, async (req: Request, res: Response) => {
+  if (process.env.SMS_SENDING_ENABLED === 'false') return res.status(503).json({success:false,error:'שליחת SMS מושבתת זמנית לצורך תחזוקה'});
   try {
     const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
     if (isDispatchRateLimited(clientIp)) {
@@ -1320,6 +1358,7 @@ app.post(['/api/sms/send-single', '/api/whatsapp/send'], requireAdmin, async (re
 
 // 5. Test SMS to Admin
 app.post('/api/sms/test', requireAdmin, async (req: Request, res: Response) => {
+  if (process.env.SMS_SENDING_ENABLED === 'false') return res.status(503).json({success:false,error:'שליחת SMS מושבתת זמנית לצורך תחזוקה'});
   try {
     if(isDispatchRateLimited((req as any).adminPayload.uid)) return res.status(429).json({success:false,error:'Rate limit'});
     const { phone, message } = req.body;
@@ -1635,8 +1674,9 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
 
     await saveTenant(tenantId,tenantProfile,tenantConfig,true);
 
-    const testUrl = `/?tenant=${tenantId}`;
-    const adminUrl = `/admin?tenant=${tenantId}`;
+    const publicBase = tenantProfile.customDomain ? 'https://' + tenantProfile.customDomain : '';
+    const testUrl = publicBase ? publicBase + '/' : `/?tenant=${tenantId}`;
+    const adminUrl = publicBase ? publicBase + '/admin' : `/admin?tenant=${tenantId}`;
 
     return res.json({
       success: true,
@@ -1710,7 +1750,8 @@ app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
     await saveTenant(tenantId,tenantProfile,tenantConfig,false);
 
     return res.json({ success: true, tenantId, tenant: { id: tenantId, ...existing, ...tenantProfile }, config: tenantConfig,
-      testUrl: `/?tenant=${tenantId}`, adminUrl: `/admin?tenant=${tenantId}` });
+      testUrl: customDomain ? 'https://' + customDomain + '/' : `/?tenant=${tenantId}`,
+      adminUrl: customDomain ? 'https://' + customDomain + '/admin' : `/admin?tenant=${tenantId}` });
   } catch (err: any) {
     console.error('[Super Admin API] Error updating tenant:', err);
     return res.status(500).json({ success: false, error: err?.message });

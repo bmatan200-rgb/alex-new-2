@@ -143,6 +143,8 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   const durationMinutes = selectedService?.duration_minutes || scheduleSettings?.durationMinutes || 90;
   const businessOpen = scheduleSettings?.businessOpen || BUSINESS_OPEN;
   const businessClose = scheduleSettings?.businessClose || BUSINESS_CLOSE;
+  const fridayOpen = scheduleSettings?.fridayOpen || '09:20';
+  const fridayClose = scheduleSettings?.fridayClose || FRIDAY_CLOSE;
 
   // Calculate available slots helper for day list
   const getSlotsForDay = (dateIso: string) => {
@@ -152,6 +154,8 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
       dateString: dateIso,
       businessOpen,
       businessClose,
+      fridayOpen,
+      fridayClose,
       slotInterval: durationMinutes,
     });
   };
@@ -230,9 +234,10 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
       durationMinutes,
       businessOpen,
       businessClose,
-      FRIDAY_CLOSE
+      fridayClose,
+      fridayOpen
     );
-  }, [selectedDate, appointments, durationMinutes, businessOpen, businessClose]);
+  }, [selectedDate, appointments, durationMinutes, businessOpen, businessClose, fridayOpen, fridayClose]);
 
   const effectiveAvailableSlotsCount = useMemo(() => {
     if (!selectedDate) return 0;
@@ -399,7 +404,8 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
             durationMinutes,
             businessOpen,
             businessClose,
-            FRIDAY_CLOSE
+            fridayClose,
+            fridayOpen
           );
           const freeSlots = dailyOccupancy.filter((s) => s.isAvailable);
           for (const s of freeSlots) {

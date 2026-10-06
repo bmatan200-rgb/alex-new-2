@@ -51,8 +51,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
   currentUser,
   onBackToHome,
 }) => {
-  const { salonInfo: SALON_INFO } = useTenant();
-  const { tenantId } = useTenant();
+  const { salonInfo: SALON_INFO, tenantId, scheduleSettings } = useTenant();
   const days: DayInfo[] = useMemo(() => buildNextDays(60), []);
 
   // Step 1: Selected service (Default: לק ג'ל)
@@ -111,8 +110,13 @@ export const BookingForm: React.FC<BookingFormProps> = ({
       durationMinutes: currentService.duration_minutes,
       existingAppointments: existingForDate,
       dateString: selectedDate,
+      businessOpen: scheduleSettings.businessOpen,
+      businessClose: scheduleSettings.businessClose,
+      fridayOpen: scheduleSettings.fridayOpen,
+      fridayClose: scheduleSettings.fridayClose,
+      slotInterval: currentService.duration_minutes,
     });
-  }, [selectedDate, currentService, appointments]);
+  }, [selectedDate, currentService, appointments, scheduleSettings]);
 
   const handleSelectService = (serviceId: number) => {
     setSelectedServiceId(serviceId);

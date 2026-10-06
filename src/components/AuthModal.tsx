@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { UserSession } from '../types';
 
-import { upsertCustomerToFirestore } from '../lib/firebase';
+import { tenantApi } from '../lib/firebase';
 import { TermsOfServiceModal } from './TermsOfServiceModal';
 import { SignaturePad } from './SignaturePad';
 import { useTenant } from '../context/TenantContext';
@@ -81,36 +81,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       signatureDataUrl: signatureDataUrl || undefined,
     };
 
-    // Save or update customer record in Firestore customers directory
-    upsertCustomerToFirestore({
-      full_name: trimmedName,
-      phone: phone.trim(),
-    }, tenantId).catch((err) => {
-      console.warn('[Customer Directory] upsert notice:', err);
-    });
-
-    // Trigger Webhook for Twilio / Registration Integration
     try {
-      await fetch('/api/register-webhook', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: session.name,
-          phone: session.phone,
-          acceptedTerms: true,
-          acceptedTermsAt: session.acceptedTermsAt,
-          hasSignature: Boolean(signatureDataUrl),
-          registeredAt: session.loggedInAt,
-          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
-          platform: 'web_mobile',
-        }),
-      }).catch((err) => {
-        console.warn('Register webhook notification warning (ignorable):', err);
-      });
-    } catch {
-      // non-blocking
+      await tenantApi('/api/customer/register', {
+        full_name: trimmedName,
+        phone: phone.trim(),
+        acceptedTerms: true,
+        signatureDataUrl: signatureDataUrl || '',
+      }, tenantId);
+    } catch (err: any) {
+      setIsSubmitting(false);
+      setError(err?.message || 'לא ניתן לשמור את פרטי ההרשמה. נסו שוב.');
+      return;
     }
 
     setIsSubmitting(false);
@@ -139,10 +120,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <div className="relative w-13 h-13 sm:w-15 sm:h-15 rounded-2xl bg-black p-0.5 shadow-sm mx-auto flex items-center justify-center border border-slate-800">
               <div className="w-full h-full bg-black rounded-[14px] flex flex-col items-center justify-center relative overflow-hidden">
                 <span className="text-white font-black tracking-tight text-base sm:text-lg font-['Rubik',sans-serif] leading-none">
-                  Alex
+                  תורים
                 </span>
                 <span className="text-[7px] sm:text-[8px] text-slate-400 font-bold tracking-widest uppercase mt-0.5">
-                  BEAUTY
+                  ONLINE
                 </span>
               </div>
               <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-white border-2 border-black flex items-center justify-center shadow-sm">

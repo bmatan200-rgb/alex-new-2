@@ -283,7 +283,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     effectiveDuration,
     businessOpen,
     businessClose,
-    FRIDAY_CLOSE
+    scheduleSettings?.fridayClose || FRIDAY_CLOSE,
+    scheduleSettings?.fridayOpen || '09:20'
   );
 
   // Slots for the blocking modal date
@@ -293,7 +294,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     effectiveDuration,
     businessOpen,
     businessClose,
-    FRIDAY_CLOSE
+    scheduleSettings?.fridayClose || FRIDAY_CLOSE,
+    scheduleSettings?.fridayOpen || '09:20'
   );
 
   // Slots for manual client modal date
@@ -303,7 +305,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     effectiveDuration,
     businessOpen,
     businessClose,
-    FRIDAY_CLOSE
+    scheduleSettings?.fridayClose || FRIDAY_CLOSE,
+    scheduleSettings?.fridayOpen || '09:20'
   );
 
   // Client appointments on blockDate (to prevent accidental full-day blocking or override)

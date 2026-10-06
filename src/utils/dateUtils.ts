@@ -125,6 +125,8 @@ export function calculateAvailableSlots({
   businessOpen = BUSINESS_OPEN,
   businessClose = BUSINESS_CLOSE,
   slotInterval = SLOT_INTERVAL,
+  fridayOpen = FRIDAY_OPEN,
+  fridayClose = FRIDAY_CLOSE,
 }: {
   durationMinutes: number;
   existingAppointments: Appointment[];
@@ -132,17 +134,21 @@ export function calculateAvailableSlots({
   businessOpen?: string;
   businessClose?: string;
   slotInterval?: number;
+  fridayOpen?: string;
+  fridayClose?: string;
 }): string[] {
+  let effectiveOpen = businessOpen;
   let effectiveClose = businessClose;
   if (dateString) {
     const [y, m, d] = dateString.split('-').map(Number);
     const dayOfWeek = new Date(y, m - 1, d).getDay();
     if (dayOfWeek === 5) { // Friday
-      effectiveClose = FRIDAY_CLOSE;
+      effectiveOpen = fridayOpen;
+      effectiveClose = fridayClose;
     }
   }
 
-  const openMin = timeToMinutes(businessOpen);
+  const openMin = timeToMinutes(effectiveOpen);
   const closeMin = timeToMinutes(effectiveClose);
   const booked = existingAppointments
     .filter((a) => a.status === 'confirmed' && (!dateString || a.appointment_date === dateString))
@@ -175,7 +181,8 @@ export function getAllStandardSlots(
   durationMinutes: number = SLOT_INTERVAL,
   businessOpen: string = BUSINESS_OPEN,
   businessClose: string = BUSINESS_CLOSE,
-  fridayClose: string = FRIDAY_CLOSE
+  fridayClose: string = FRIDAY_CLOSE,
+  fridayOpen: string = FRIDAY_OPEN
 ): string[] {
   if (!dateString) return [];
   const [y, m, d] = dateString.split('-').map(Number);
@@ -183,7 +190,7 @@ export function getAllStandardSlots(
   if (dayOfWeek === 6) return []; // Saturday is closed
 
   const effectiveClose = dayOfWeek === 5 ? fridayClose : businessClose;
-  const openMin = timeToMinutes(businessOpen);
+  const openMin = timeToMinutes(dayOfWeek === 5 ? fridayOpen : businessOpen);
   const closeMin = timeToMinutes(effectiveClose);
 
   const slots: string[] = [];
@@ -207,9 +214,12 @@ export function getDailySlotsOccupancy(
   durationMinutes: number = SLOT_INTERVAL,
   businessOpen: string = BUSINESS_OPEN,
   businessClose: string = BUSINESS_CLOSE,
-  fridayClose: string = FRIDAY_CLOSE
+  fridayClose: string = FRIDAY_CLOSE,
+  fridayOpen: string = FRIDAY_OPEN
 ): SlotOccupancy[] {
-  const allSlots = getAllStandardSlots(dateString, durationMinutes, businessOpen, businessClose, fridayClose);
+  const [year, month, day] = dateString.split('-').map(Number);
+  const isFriday = new Date(year, month - 1, day).getDay() === 5;
+  const allSlots = getAllStandardSlots(dateString, durationMinutes, businessOpen, businessClose, fridayClose, fridayOpen);
   const dateAppointments = appointments.filter(
     (a) => a.appointment_date === dateString && a.status === 'confirmed'
   );
@@ -418,4 +428,3 @@ export function deduplicateAppointments(list: Appointment[]): Appointment[] {
     return (a.start_time || '').localeCompare(b.start_time || '');
   });
 }
-

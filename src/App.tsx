@@ -323,6 +323,7 @@ function MainApp() {
     }
     clearAdminSession();
     setAdminSession(null);
+    setAppointments([]);
     showToast('התנתקת בהצלחה מממשק המנהל');
     navigate(`/admin?tenant=${tenantId}`);
   };

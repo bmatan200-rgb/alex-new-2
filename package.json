@@ -1,7 +1,7 @@
 {
   "name": "alex-multi-tenant",
   "private": true,
-  "version": "24.0.0",
+  "version": "24.0.1",
   "type": "module",
   "scripts": {
     "dev": "node --import tsx server.ts",
@@ -35,7 +35,7 @@
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
-    "firebase-tools": "^14.27.0",
+    "firebase-tools": "^15.32.1",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",

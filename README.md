@@ -1,8 +1,10 @@
-# Alex Multi-Tenant — v26.0.0
+# Alex Multi-Tenant — V33.0.0
 
 גרסה מלאה ומעודכנת עם תיקוני הרשאות Super Admin, רישום לקוחות, Firestore quota, יציבות Render ובידוד multi-tenant.
 ה־Auth, ה־multi-tenant והפרדת הנתונים של v17 נשמרו. פירוט השינויים החדשים: [AUDIT-v18.md](AUDIT-v18.md).
 דוח v17 המקורי נשמר כ־[AUDIT-v17.md](AUDIT-v17.md).
+
+התקנות נפרדות ללקוחות, מנהל עסק וסופר אדמין: [הוראות V33](PWA-SEPARATE-INSTALLS-V33-HE.md).
 
 ## הרצה
 
@@ -25,7 +27,7 @@ NODE_ENV=production npm start
 
 ב־Render: Build Command הוא `npm ci && npm run build`; Start Command הוא `npm start`;
 הגדירו `NODE_ENV=production`. השרת מכבד את `PORT` של Render. נקודת בריאות: `/api/health`.
-ב־v26 נקודת הבריאות חייבת להחזיר `"version":"26.0.0"`; אם לא, Render עדיין מריץ build ישן.
+ב־V33 נקודת הבריאות חייבת להחזיר `"version":"33.0.0"`; אם לא, Render עדיין מריץ build ישן.
 אין צורך במפתח Gemini. מפתחות Telnyx וחשבון השירות נשארים בשרת בלבד.
 
 ## Firebase Admin ובסיס הנתונים

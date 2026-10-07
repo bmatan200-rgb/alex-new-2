@@ -56,6 +56,10 @@ export function AddToHomePrompt({ tenantId, tenantName, primaryColor }: AddToHom
   };
 
   useEffect(() => {
+    setDeferredPrompt(null);
+    // Let management pages use the browser's own install action. Their installs
+    // must never mark the customer app as installed or reuse a customer event.
+    if (!customerHome) return;
     const onBeforeInstall = (event: Event) => {
       event.preventDefault();
       setDeferredPrompt(event as BeforeInstallPromptEvent);
@@ -74,7 +78,7 @@ export function AddToHomePrompt({ tenantId, tenantName, primaryColor }: AddToHom
       window.removeEventListener('appinstalled', onInstalled);
       standalone.removeEventListener?.('change', onDisplayModeChange);
     };
-  }, [installedKey]);
+  }, [customerHome, installedKey]);
 
   const hidePermanently = () => {
     try { localStorage.setItem(optOutKey, '1'); } catch {}

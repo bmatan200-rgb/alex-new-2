@@ -14,7 +14,7 @@ const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
 const manifestRoute = server.slice(server.indexOf("app.get('/manifest.json'"), server.indexOf("app.param(['tenantId','id']"));
 const serviceWorker = readFileSync(new URL('../public/service-worker.js', import.meta.url), 'utf8');
 
-assert.equal(pkg.version, '32.0.0');
+assert.equal(pkg.version, '33.0.0');
 assert.match(server, /const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail\.com'/);
 assert.match(server, /if \(email === PRIMARY_SUPER_ADMIN_EMAIL\) \{/);
 assert.doesNotMatch(server, /email === PRIMARY_SUPER_ADMIN_EMAIL && currentUser\.emailVerified/);
@@ -41,7 +41,7 @@ assert.match(authModal, /tenantId, \{ auth: 'none' \}/);
 assert.doesNotMatch(torFlow, /upsertCustomerToFirestore/);
 assert.match(server, /getAll\(\.\.\.refs\)/);
 
-// V32 PWA and tenant-specific install prompt guards.
+// V33 PWA and tenant-specific install prompt guards.
 assert.match(installPrompt, /pwa-install-opt-out:\$\{tenantId\}/, 'install dismissal is not business-scoped');
 assert.match(installPrompt, /localStorage\.setItem\(optOutKey, '1'\)/, 'permanent dismissal is not persisted');
 assert.match(installPrompt, /pwa-install-complete:\$\{tenantId\}/, 'completed installation is not business-scoped');
@@ -51,8 +51,8 @@ assert.match(installPrompt, /beforeinstallprompt/);
 assert.match(installPrompt, /standalone\?: boolean/);
 assert.match(installPrompt, /Share.* באייפון|באייפון או באייפד/);
 assert.match(main, /serviceWorker\.register\('\/service-worker\.js'/);
-assert.match(manifestRoute, /start_url: startUrl/);
-assert.match(manifestRoute, /id: startUrl/);
+assert.match(manifestRoute, /buildPwaManifest\(role, tenantId, tenantName\)/);
+assert.match(manifestRoute, /role === 'super-admin'/);
 assert.match(serviceWorker, /skipWaiting/);
 assert.doesNotMatch(serviceWorker, /caches\.open|caches\.match/, 'PWA worker must not cache customer or booking data');
 
@@ -67,4 +67,4 @@ assert.match(superAdmin, /name="new-business-owner-email"[\s\S]*?autoComplete="o
 assert.match(superAdmin, /name="new-business-owner-password"[\s\S]*?autoComplete="new-password"/, 'new owner password may reuse signed-in credentials');
 assert.doesNotMatch(torFlow, /executeBookingSubmission\(cleanName, cleanPhone, isAdmin\)/, 'obsolete booking argument remains');
 
-console.log('V32 PWA source verification passed');
+console.log('V33 PWA source verification passed');

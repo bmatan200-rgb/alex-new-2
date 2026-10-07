@@ -1,4 +1,5 @@
 import { publicBusyAppointment } from './src/utils/calendarBlocks';
+import { buildPwaManifest, type PwaRole } from './src/utils/pwa';
 import 'dotenv/config';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { validId, validTime, validDate, phoneDigits, hash, reminderKey, overlaps, israelClock, parseFirebaseServiceAccount, authorizeTenant, publicSettings, claimOnce, copyOnce } from './server/core';
@@ -212,6 +213,15 @@ async function resolveTenantDomain(req: Request, res: Response, next: NextFuncti
 
 app.use('/api', (req,res,next)=>req.path==='/health'?next():resolveTenantDomain(req,res,next));
 app.get('/manifest.json', async (req, res) => {
+  const role: PwaRole = req.query.app === undefined ? 'customer'
+    : req.query.app === 'admin' ? 'admin' : 'super-admin';
+  if (req.query.app !== undefined && req.query.app !== 'admin' && req.query.app !== 'super-admin') {
+    return res.status(400).json({ error: 'Invalid application' });
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('application/manifest+json');
+  // Platform management has no tenant dependency or tenant-specific install identity.
+  if (role === 'super-admin') return res.json(buildPwaManifest(role, '', ''));
   let tenantId = typeof req.query.tenant === 'string' && validId(req.query.tenant)
     ? req.query.tenant
     : PRIMARY_TENANT_ID;
@@ -236,26 +246,7 @@ app.get('/manifest.json', async (req, res) => {
   } catch {
     // Keep the manifest available when tenant data is temporarily unavailable.
   }
-  const startUrl = `/?tenant=${encodeURIComponent(tenantId)}`;
-  res.setHeader('Cache-Control', 'no-store');
-  res.json({
-    name: `${tenantName} | קביעת תורים`,
-    short_name: tenantName.slice(0, 24),
-    description: 'קביעת תורים אונליין',
-    id: startUrl,
-    start_url: startUrl,
-    scope: '/',
-    display: 'standalone',
-    orientation: 'portrait',
-    background_color: '#ffffff',
-    theme_color: '#7c3aed',
-    lang: 'he',
-    dir: 'rtl',
-    icons: [
-      { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
-      { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
-    ],
-  });
+  res.json(buildPwaManifest(role, tenantId, tenantName));
 });
 app.param(['tenantId','id'], (req,res,next,value)=>{
   if(!validId(value)) return res.status(400).json({success:false,error:'Invalid document ID'});
@@ -654,7 +645,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '32.0.0';
+const APP_VERSION = '33.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];

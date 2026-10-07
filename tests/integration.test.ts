@@ -23,7 +23,7 @@ globalThis.fetch=async(input:any,init?:any)=>{
     return new Response(JSON.stringify({data:{id:'provider_'+providerCalls,to:[{status:'queued'}]}}),{status:200});
   }
   const u=String(input);
-  if(!u.startsWith('http://132.0.0.1:') && !u.startsWith('http://localhost:'))throw new Error('Unexpected external network in test: '+u);
+  if(!u.startsWith('http://127.0.0.1:') && !u.startsWith('http://localhost:'))throw new Error('Unexpected external network in test: '+u);
   return nativeFetch(input,init);
 };
 async function account(uid:string,email:string,claims:any={},verified=true){
@@ -38,7 +38,7 @@ async function api(path:string,body?:any,token?:string,tenant='alex_beauty',meth
 }
 before(async()=>{
   await db.recursiveDelete(db.collection('tenants'));
-  server=await new Promise<any>(resolve=>{const s=app.listen(0,'132.0.0.1',()=>resolve(s));});base=`http://132.0.0.1:${server.address().port}`;
+  server=await new Promise<any>(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});base=`http://127.0.0.1:${server.address().port}`;
   superToken=await account('super','bmatan200@gmail.com',{role:'super_admin'});
   ownerToken=await account('owner','owner@example.com',{role:'business_admin',tenantId:'alex_beauty'});
   userToken=await account('regular','regular@example.com');
@@ -224,14 +224,14 @@ test('built production server boots with named database and serves API plus SPA'
     let ready=false;
     for(let i=0;i<100;i++){
       if(child.exitCode!==null) throw new Error(output);
-      try {const r=await nativeFetch('http://132.0.0.1:43187/api/health');if(r.ok){ready=true;break;}}catch{}
+      try {const r=await nativeFetch('http://127.0.0.1:43187/api/health');if(r.ok){ready=true;break;}}catch{}
       await new Promise(r=>setTimeout(r,100));
     }
     assert.ok(ready,output);
-    const html=await nativeFetch('http://132.0.0.1:43187/');assert.equal(html.status,200);assert.match(await html.text(),/<div id="root">/);
-  const health=await nativeFetch('http://132.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'32.0.0');
-    const registerRoute=await nativeFetch('http://132.0.0.1:43187/api/customer/register',{method:'POST',headers:{'Content-Type':'application/json','x-tenant-id':'alex_beauty'},body:JSON.stringify({full_name:'x',phone:'bad',acceptedTerms:false})});
+    const html=await nativeFetch('http://127.0.0.1:43187/');assert.equal(html.status,200);assert.match(await html.text(),/<div id="root">/);
+  const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'33.0.0');
+    const registerRoute=await nativeFetch('http://127.0.0.1:43187/api/customer/register',{method:'POST',headers:{'Content-Type':'application/json','x-tenant-id':'alex_beauty'},body:JSON.stringify({full_name:'x',phone:'bad',acceptedTerms:false})});
     assert.equal(registerRoute.status,400);assert.doesNotMatch(await registerRoute.text(),/API route not found/);
-    const missing=await nativeFetch('http://132.0.0.1:43187/api/unknown');assert.equal(missing.status,404);assert.match(missing.headers.get('content-type')||'',/json/);
+    const missing=await nativeFetch('http://127.0.0.1:43187/api/unknown');assert.equal(missing.status,404);assert.match(missing.headers.get('content-type')||'',/json/);
   } finally {child.kill('SIGTERM');await new Promise<void>(r=>child.once('exit',()=>r()));}
 });

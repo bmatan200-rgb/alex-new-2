@@ -1,4 +1,5 @@
 import { TenantLoading } from '../components/TenantLoading';
+import { pwaMetadata, pwaRoleForPath } from '../utils/pwa';
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { doc, getDoc } from 'firebase/firestore';
@@ -114,10 +115,16 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   }, [tenant.primaryColor]);
 
   useEffect(() => {
-    if (tenant.name) document.title = `${tenant.name} | קביעת תורים`;
+    const role = pwaRoleForPath(location.pathname);
+    const metadata = pwaMetadata(role, activeQuery || tenant.id, tenant.name);
+    document.title = role === 'customer' ? `${tenant.name} | קביעת תורים` : metadata.name;
     const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
-    if (appleTitle && tenant.name) appleTitle.setAttribute('content', tenant.name.slice(0, 30));
-  }, [tenant.name]);
+    if (appleTitle) appleTitle.setAttribute('content', metadata.name.slice(0, 30));
+    const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+    if (manifest && manifest.getAttribute('href') !== metadata.manifestHref) manifest.setAttribute('href', metadata.manifestHref);
+    const icon = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+    if (icon) icon.setAttribute('href', metadata.icon);
+  }, [location.pathname, activeQuery, tenant.id, tenant.name]);
 
   const salonInfo: SalonInfo = {
     name: tenant.name,

@@ -18,7 +18,23 @@
     <script>
       const pwaTenant = new URLSearchParams(window.location.search).get('tenant');
       const pwaManifest = document.querySelector('link[rel="manifest"]');
-      if (pwaManifest && pwaTenant) pwaManifest.href = `/manifest.json?tenant=${encodeURIComponent(pwaTenant)}`;
+      const pwaPath = window.location.pathname;
+      const pwaSuperAdmin = pwaPath === '/super-admin' || pwaPath.startsWith('/super-admin/');
+      const pwaAdmin = pwaPath === '/admin' || pwaPath.startsWith('/admin/');
+      const pwaParams = new URLSearchParams();
+      if (pwaSuperAdmin) pwaParams.set('app', 'super-admin');
+      else {
+        if (pwaAdmin) pwaParams.set('app', 'admin');
+        if (pwaTenant) pwaParams.set('tenant', pwaTenant);
+      }
+      if (pwaManifest) pwaManifest.href = `/manifest.json${pwaParams.size ? '?' + pwaParams.toString() : ''}`;
+      if (pwaSuperAdmin || pwaAdmin) {
+        const pwaTitle = pwaSuperAdmin ? 'סופר אדמין' : 'ניהול העסק';
+        document.title = pwaTitle;
+        document.querySelector('meta[name="apple-mobile-web-app-title"]').setAttribute('content', pwaTitle);
+        document.querySelector('link[rel="apple-touch-icon"]').href = pwaSuperAdmin
+          ? '/pwa-super-admin-192x192.png' : '/pwa-admin-192x192.png';
+      }
     </script>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">

@@ -329,15 +329,17 @@ function MainApp() {
     setConfirmedAppointment(newAppointment);
   };
 
-  const handleCancelAppointment = async (id:number|string) => {
+  const handleCancelAppointment = async (id:number|string, authMode:'none'|'required') => {
     const a=appointments.find(a=>String(a.id)===String(id));
     try {
-      await cancelAppointmentInFirestore(id,a?.customer_phone,a?.appointment_date,a?.start_time,tenantId);
+      await cancelAppointmentInFirestore(id,a?.customer_phone,a?.appointment_date,a?.start_time,tenantId,authMode);
       deleteAppointmentPermanently(id);
       setAppointments(prev=>prev.filter(a=>String(a.id)!==String(id)));
       showToast('התור בוטל והשעה שוחררה ביומן');
     } catch(err:any){showToast(err.message || 'ביטול התור נכשל','error');throw err;}
   };
+  const handleCustomerCancelAppointment = (id:number|string) => handleCancelAppointment(id,'none');
+  const handleAdminCancelAppointment = (id:number|string) => handleCancelAppointment(id,'required');
   const handleDeleteAppointment = async(id:number|string)=>{
     try {
       await deleteAppointmentInFirestore(id,undefined,undefined,tenantId);
@@ -669,7 +671,7 @@ function MainApp() {
                 onBookSuccess={handleBookSuccess}
                 currentUser={currentUser}
                 scheduleSettings={scheduleSettings}
-                onCancelAppointment={handleCancelAppointment}
+                onCancelAppointment={handleCustomerCancelAppointment}
               />
 
               <MyBookingModal
@@ -677,7 +679,7 @@ function MainApp() {
                 onClose={() => setIsMyBookingOpen(false)}
                 appointments={appointments}
                 currentUser={currentUser}
-                onCancelAppointment={handleCancelAppointment}
+                onCancelAppointment={handleCustomerCancelAppointment}
               />
 
               <ExistingBookingChoiceModal
@@ -700,7 +702,7 @@ function MainApp() {
                 onClose={() => setCustomerApptToCancel(null)}
                 onConfirm={async () => {
                   if (customerApptToCancel) {
-                    await handleCancelAppointment(customerApptToCancel.id);
+                    await handleCustomerCancelAppointment(customerApptToCancel.id);
                     setCustomerApptToCancel(null);
                   }
                 }}
@@ -745,7 +747,7 @@ function MainApp() {
               onAdminLoginSuccess={handleAdminLoginSuccess}
               onAdminLogout={handleAdminLogout}
               onAddAppointment={handleAddManualAppointment}
-              onCancelAppointment={handleCancelAppointment}
+              onCancelAppointment={handleAdminCancelAppointment}
               onDeleteAppointment={handleDeleteAppointment}
               onUpdateServices={handleUpdateServices}
               onUpdateScheduleSettings={handleUpdateScheduleSettings}
@@ -768,7 +770,7 @@ function MainApp() {
               onAdminLoginSuccess={handleAdminLoginSuccess}
               onAdminLogout={handleAdminLogout}
               onAddAppointment={handleAddManualAppointment}
-              onCancelAppointment={handleCancelAppointment}
+              onCancelAppointment={handleAdminCancelAppointment}
               onDeleteAppointment={handleDeleteAppointment}
               onUpdateServices={handleUpdateServices}
               onUpdateScheduleSettings={handleUpdateScheduleSettings}

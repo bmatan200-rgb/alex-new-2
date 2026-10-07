@@ -145,8 +145,8 @@ export async function addAppointmentToFirestore(
     return data.id;
   }catch(err:any){if(err.message.includes('השעה הזו כבר נתפסה')) throw new SlotTakenError();throw err;}
 }
-export async function cancelAppointmentInFirestore(appointmentId:string|number,_phone?:string,_date?:string,_time?:string,tenantId=getCurrentTenantId()):Promise<void> {
-  await tenantApi('/api/appointments/cancel',{appointmentId:String(appointmentId),accessToken:capabilities(tenantId)[String(appointmentId)]},tenantId);
+export async function cancelAppointmentInFirestore(appointmentId:string|number,_phone?:string,_date?:string,_time?:string,tenantId=getCurrentTenantId(),authMode:TenantApiAuthMode='auto'):Promise<void> {
+  await tenantApi('/api/appointments/cancel',{appointmentId:String(appointmentId),accessToken:capabilities(tenantId)[String(appointmentId)]},tenantId,{auth:authMode});
 }
 export async function deleteAppointmentInFirestore(appointmentId:string|number,_date?:string,_time?:string,tenantId=getCurrentTenantId()):Promise<void> {
   await tenantApi('/api/admin/appointments/delete',{appointmentId:String(appointmentId)},tenantId);

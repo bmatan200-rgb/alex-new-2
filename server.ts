@@ -258,7 +258,14 @@ app.param(['tenantId','id'], (req,res,next,value)=>{
 // ----------------------------------------------------
 // Secure Admin Data Endpoints
 // ----------------------------------------------------
-async function optionalAdmin(req: Request) { return req.headers.authorization ? await decodeAdmin(req) : null; }
+// Shared appointment endpoints are customer operations unless admin intent is
+// explicit. The header selects a flow; decodeAdmin/authorizeTenant grant access.
+async function optionalAdmin(req: Request) {
+  if (req.headers['x-operation-context'] !== 'admin') return null;
+  const admin = await decodeAdmin(req);
+  if (!admin) throw new Error('נדרשת הרשאת מנהל');
+  return admin;
+}
 async function activeTenant(tenantId: string) {
   const cached = tenantProfileCache.get(tenantId);
   if (cached && cached.expiresAt > Date.now()) {
@@ -283,7 +290,7 @@ async function cancelBooking(req: Request, res: Response) {
     const tenantId = req.tenantId!;
     const {appointmentId, accessToken} = req.body;
     if (!validId(appointmentId)) return res.status(400).json({success:false,error:'Invalid appointment ID'});
-    const admin = await optionalAdmin(req);
+    const admin = (req as any).adminPayload || await optionalAdmin(req);
     const allowed = admin && authorizeTenant(admin,[tenantId],tenantId) === tenantId;
     await activeTenant(tenantId);
     await db.runTransaction(async tx => {
@@ -645,7 +652,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '33.0.0';
+const APP_VERSION = '34.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];
@@ -680,7 +687,7 @@ async function decodeAdmin(req: Request): Promise<AdminPayload | null> {
     ? String(bindingData.tenantId)
     : (validId(claims.tenantId) ? String(claims.tenantId) : '');
 
-  if (bindingData?.disabled === true || !tenantId) return null;
+  if (bindingData?.disabled === true || !tenantId || (bindingData.role && bindingData.role !== 'business_admin')) return null;
 
   const tenant = await getDoc(getTenantDoc(tenantId));
   if (!tenant.exists || !['active', 'trial'].includes(tenant.data()?.status) || tenant.data()?.ownerAuthUid !== decoded.uid) return null;

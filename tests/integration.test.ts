@@ -32,8 +32,8 @@ async function account(uid:string,email:string,claims:any={},verified=true){
   const r=await fetch(`http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=fake`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:'Test12345!',returnSecureToken:true})});
   const json=await r.json();if(!json.idToken)throw new Error(JSON.stringify(json));return json.idToken;
 }
-async function api(path:string,body?:any,token?:string,tenant='alex_beauty',method?:string){
-  const r=await fetch(base+path,{method:method || (body===undefined?'GET':'POST'),headers:{'Content-Type':'application/json','x-tenant-id':tenant,...(token?{Authorization:`Bearer ${token}`}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
+async function api(path:string,body?:any,token?:string,tenant='alex_beauty',method?:string,context='admin'){
+  const r=await fetch(base+path,{method:method || (body===undefined?'GET':'POST'),headers:{'Content-Type':'application/json','x-tenant-id':tenant,'x-operation-context':token?context:'customer',...(token?{Authorization:`Bearer ${token}`}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
   return {status:r.status,...await r.json()};
 }
 before(async()=>{
@@ -113,6 +113,16 @@ test('Firestore rules deny public PII, writes, lock edits and provider secrets',
   await assertFails(setDoc(doc(owner,'tenants/alex_beauty/reminder_locks/a'),{status:'sent'}));
   await assertFails(setDoc(doc(anon,'tenants/alex_beauty/appointments/new'),{status:'confirmed'}));
 });
+test('Firestore binding conflicts and disabled owners reject stale claims without limiting Super Admin',async()=>{
+  const owner=rules.authenticatedContext('owner',{role:'business_admin',tenantId:'alex_beauty'}).firestore();
+  const superDb=rules.authenticatedContext('matan',{role:'super_admin',email:'bmatan200@gmail.com'}).firestore();
+  for(const binding of [{disabled:true},{disabled:false,tenantId:'other'},{disabled:false,role:'customer'}]) {
+    await rules.withSecurityRulesDisabled(async(c:any)=>{await setDoc(doc(c.firestore(),'adminUsers/owner'),binding);});
+    await assertFails(getDoc(doc(owner,'tenants/alex_beauty/appointments/a')));
+    await assertSucceeds(getDoc(doc(superDb,'tenants/alex_beauty/appointments/a')));
+  }
+  await rules.withSecurityRulesDisabled(async(c:any)=>{await setDoc(doc(c.firestore(),'adminUsers/owner'),{disabled:false});});
+});
 test('atomic booking rejects overlap, redacts public data, and cancels with capability only',async()=>{
   let day=new Date();day.setUTCDate(day.getUTCDate()+7);while(day.getUTCDay()===6)day.setUTCDate(day.getUTCDate()+1);
   const appointment={customer_name:'Private Name',customer_phone:'0546307114',service_id:1,appointment_date:day.toISOString().slice(0,10),start_time:'10:00',end_time:'11:00',status:'confirmed'};
@@ -124,6 +134,25 @@ test('atomic booking rejects overlap, redacts public data, and cancels with capa
   assert.equal((await api('/api/appointments/cancel',{appointmentId:saved.id,accessToken:'wrong'})).status,403);
   assert.equal((await api('/api/appointments/cancel',{appointmentId:saved.id,accessToken:saved.accessToken})).success,true);
   assert.equal((await db.doc(`tenants/alex_beauty/appointments/${saved.id}`).get()).data()?.status,'cancelled');
+});
+test('customer operations ignore same-business, other-business and stale admin sessions',async()=>{
+  const config={services:[{id:1,name:'service',price:150,duration_minutes:60}],scheduleSettings:{businessOpen:'08:00',businessClose:'22:00',fridayOpen:'08:00',fridayClose:'22:00',durationMinutes:60}};
+  await db.doc('tenants/other/settings/config').set(config);
+  for(const tenant of ['alex_beauty','other']) {
+    const appointment={customer_name:'Customer only',customer_phone:'0541111111',service_id:1,appointment_date:'2030-06-02',start_time:'12:00',end_time:'13:00'};
+    const booked=await api('/api/appointments/book',{appointment},ownerToken,tenant,undefined,'customer');
+    assert.equal(booked.success,true);
+    for(const token of [ownerToken,'stale-invalid-token']) {
+      const list=await api('/api/appointments/list',{},token,tenant,undefined,'customer');
+      assert.equal(list.status,200);
+      assert.equal(list.appointments.find((a:any)=>a.id===booked.id).customer_phone,'');
+    }
+    assert.equal((await api('/api/appointments/cancel',{appointmentId:booked.id},ownerToken,tenant,undefined,'customer')).status,403);
+    assert.equal((await api('/api/appointments/cancel',{appointmentId:booked.id,accessToken:booked.accessToken},'stale-invalid-token',tenant,undefined,'customer')).success,true);
+  }
+  assert.equal((await api('/api/appointments/list',{},ownerToken,'other')).status,403);
+  assert.equal((await api('/api/appointments/list',{},superToken,'other')).status,200);
+  assert.equal((await api('/api/admin/settings/services',{services:config.services},superToken,'other')).success,true);
 });
 test('concurrent lock claims allow exactly one winner; crash/unknown states never expire into resends',async()=>{
   const ref=db.doc('tenants/alex_beauty/reminder_locks/concurrency');
@@ -229,7 +258,7 @@ test('built production server boots with named database and serves API plus SPA'
     }
     assert.ok(ready,output);
     const html=await nativeFetch('http://127.0.0.1:43187/');assert.equal(html.status,200);assert.match(await html.text(),/<div id="root">/);
-  const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'33.0.0');
+  const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'34.0.0');
     const registerRoute=await nativeFetch('http://127.0.0.1:43187/api/customer/register',{method:'POST',headers:{'Content-Type':'application/json','x-tenant-id':'alex_beauty'},body:JSON.stringify({full_name:'x',phone:'bad',acceptedTerms:false})});
     assert.equal(registerRoute.status,400);assert.doesNotMatch(await registerRoute.text(),/API route not found/);
     const missing=await nativeFetch('http://127.0.0.1:43187/api/unknown');assert.equal(missing.status,404);assert.match(missing.headers.get('content-type')||'',/json/);

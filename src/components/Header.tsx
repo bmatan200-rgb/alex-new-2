@@ -7,7 +7,6 @@ import {
   Clock,
   User,
   LogOut,
-  ShieldCheck,
 } from 'lucide-react';
 import { useTenant } from '../context/TenantContext';
 import { UserSession } from '../types';
@@ -19,8 +18,6 @@ interface HeaderProps {
   currentUser: UserSession | null;
   onOpenAuthModal?: (role?: 'admin' | 'customer') => void;
   onLogout: () => void;
-  adminSession?: UserSession | null;
-  onGoToAdmin?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -29,8 +26,6 @@ export const Header: React.FC<HeaderProps> = ({
   currentUser,
   onOpenAuthModal,
   onLogout,
-  adminSession,
-  onGoToAdmin,
 }) => {
   const { tenant, salonInfo, scheduleSettings, primaryColor } = useTenant();
 
@@ -114,17 +109,6 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2">
-            {adminSession?.isAdmin && onGoToAdmin && (
-              <button
-                type="button"
-                onClick={onGoToAdmin}
-                className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-black text-white bg-slate-950 hover:bg-slate-800 rounded-2xl transition cursor-pointer border border-slate-800 shadow-xs flex items-center gap-2 active:scale-95"
-                title="חזרה ללוח ניהול העסק"
-              >
-                <ShieldCheck className="w-4 h-4 text-purple-300" />
-                <span>חזרה לניהול</span>
-              </button>
-            )}
             <button
               id="my-booking-search-btn"
               onClick={onOpenMyBooking}

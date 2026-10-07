@@ -77,14 +77,14 @@ export async function tenantApi(
   tenantId = getCurrentTenantId(),
   options: { auth?: TenantApiAuthMode } = {}
 ) {
-  const authMode = options.auth ?? 'auto';
+  const authMode = options.auth === 'none' ? 'none' : (options.auth === 'required' || !path.startsWith('/api/appointments/') ? 'required' : 'none');
   let token = '';
   if (authMode !== 'none') {
     await auth.authStateReady();
     token = auth.currentUser ? await auth.currentUser.getIdToken() : '';
     if (authMode === 'required' && !token) throw new Error('נדרשת התחברות מנהל');
   }
-  const res=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','x-tenant-id':tenantId,...(token?{Authorization:`Bearer ${token}`}:{})},...(body===undefined?{}:{body:JSON.stringify({...body,tenantId})})});
+  const res=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','x-tenant-id':tenantId,'x-operation-context':authMode === 'required' ? 'admin' : 'customer',...(token?{Authorization:`Bearer ${token}`}:{})},...(body===undefined?{}:{body:JSON.stringify({...body,tenantId})})});
   const data=await res.json();
   if(!res.ok || !data.success) throw new Error(data.error || 'הפעולה נכשלה');
   return data;
@@ -92,12 +92,12 @@ export async function tenantApi(
 function capabilities(tenantId:string):Record<string,string> {
   try {return JSON.parse(localStorage.getItem('booking_access__'+tenantId)||'{}');}catch{return {};}
 }
-export function subscribeAppointments(onUpdate:(appointments:Appointment[])=>void,onError?:(error:Error)=>void,tenantId=getCurrentTenantId()):()=>void {
+export function subscribeAppointments(onUpdate:(appointments:Appointment[])=>void,onError?:(error:Error)=>void,tenantId=getCurrentTenantId(),authMode:TenantApiAuthMode="none"):()=>void {
   let active=true, running=false;
   const poll=async()=>{
     if(running || (typeof document!=='undefined' && document.visibilityState==='hidden')) return;
     running=true;
-    try {const data=await tenantApi('/api/appointments/list',{capabilities:capabilities(tenantId)},tenantId);if(active) onUpdate(data.appointments);}
+    try {const data=await tenantApi('/api/appointments/list',{capabilities:capabilities(tenantId)},tenantId,{auth:authMode});if(active) onUpdate(data.appointments);}
     catch(err){if(active){onError?.(err as Error);}} finally {running=false;}
   };
   void poll();
@@ -145,7 +145,7 @@ export async function addAppointmentToFirestore(
     return data.id;
   }catch(err:any){if(err.message.includes('השעה הזו כבר נתפסה')) throw new SlotTakenError();throw err;}
 }
-export async function cancelAppointmentInFirestore(appointmentId:string|number,_phone?:string,_date?:string,_time?:string,tenantId=getCurrentTenantId(),authMode:TenantApiAuthMode='auto'):Promise<void> {
+export async function cancelAppointmentInFirestore(appointmentId:string|number,_phone?:string,_date?:string,_time?:string,tenantId=getCurrentTenantId(),authMode:TenantApiAuthMode='none'):Promise<void> {
   await tenantApi('/api/appointments/cancel',{appointmentId:String(appointmentId),accessToken:capabilities(tenantId)[String(appointmentId)]},tenantId,{auth:authMode});
 }
 export async function deleteAppointmentInFirestore(appointmentId:string|number,_date?:string,_time?:string,tenantId=getCurrentTenantId()):Promise<void> {

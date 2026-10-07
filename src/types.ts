@@ -79,7 +79,7 @@ export interface UserSession {
   email?: string;
   username?: string;
   isAdmin: boolean;
-  role?: 'super_admin' | 'business_admin';
+  role?: 'customer' | 'super_admin' | 'business_admin';
   tenantId?: string;
   uid?: string;
   loggedInAt: string;

@@ -13,7 +13,11 @@ service cloud.firestore {
       return signedIn() && request.auth.token.role == 'business_admin'
         && request.auth.token.tenantId == tenantId && active(tenantId)
         && get(/databases/$(database)/documents/tenants/$(tenantId)).data.ownerAuthUid == request.auth.uid
-        && get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.disabled == false;
+        && get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.disabled == false
+        && (!('role' in get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data)
+          || get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.role == 'business_admin')
+        && (!('tenantId' in get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data)
+          || get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.tenantId == tenantId);
     }
     function canManage(tenantId) { return isSuper() || isBusinessAdmin(tenantId); }
     function isValidId(id) { return id is string && id.size() <= 256; }

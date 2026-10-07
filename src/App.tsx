@@ -1,6 +1,6 @@
 import { AdminAccountSettings } from './components/AdminAccountSettings';
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, Navigate, useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate, Link, useLocation, useSearchParams } from 'react-router-dom';
 import {
   Sparkles,
   Calendar,
@@ -21,14 +21,12 @@ import { Appointment, ScheduleSettings, Service, UserSession } from './types';
 import {
   SALON_INFO,
   SERVICES,
-  getStoredAppointments,
   saveAppointment,
   cancelAppointment,
   deleteAppointmentPermanently,
   getStoredUserSession,
   saveUserSession,
   clearUserSession,
-  getStoredAdminSession,
   saveAdminSession,
   clearAdminSession,
   getStoredServices,
@@ -100,7 +98,7 @@ function AdminRouteView({
   const requestedTenant = urlTenant || tenantId || tenant.id || 'alex_beauty';
   const tenantParam = adminSession?.role === 'business_admin' && adminSession.tenantId ? adminSession.tenantId : requestedTenant;
 
-  const canAccess = Boolean(adminSession?.isAdmin && (adminSession.role === 'super_admin' || (adminSession.role === 'business_admin' && adminSession.tenantId === requestedTenant)));
+  const canAccess = Boolean(adminAuthReady && adminSession?.isAdmin && (adminSession.role === 'super_admin' || (adminSession.role === 'business_admin' && adminSession.tenantId === requestedTenant)));
 
   if (!canAccess) {
     if (!adminAuthReady) {
@@ -190,6 +188,8 @@ function AdminRouteView({
 
 function MainApp() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isAdminView = location.pathname === "/admin" || location.pathname === "/admin/dashboard";
   const {
     tenantId,
     tenant,
@@ -202,7 +202,7 @@ function MainApp() {
   } = useTenant();
 
   const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getStoredUserSession());
-  const [adminSession, setAdminSession] = useState<UserSession | null>(() => getStoredAdminSession());
+  const [adminSession, setAdminSession] = useState<UserSession | null>(null);
   // V24: hydrate the existing admin identity immediately so Super Admin -> tenant admin
   // navigation never flashes the login screen while Firebase restores the same session.
   const [adminAuthReady, setAdminAuthReady] = useState(false);
@@ -212,7 +212,7 @@ function MainApp() {
   const [isTorModalOpen, setIsTorModalOpen] = useState(false);
   const [isChoiceModalOpen, setIsChoiceModalOpen] = useState(false);
   const [confirmedAppointment, setConfirmedAppointment] = useState<Appointment | null>(null);
-  const [appointments, setAppointments] = useState<Appointment[]>(() => getStoredAppointments());
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [isMyBookingOpen, setIsMyBookingOpen] = useState(false);
   const [customerApptToCancel, setCustomerApptToCancel] = useState<Appointment | null>(null);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -232,14 +232,12 @@ function MainApp() {
   useEffect(() => {
     // Keep the last tenant-scoped snapshot visible during a temporary Firestore
     // quota/network outage; the server remains authoritative for every mutation.
-    setAppointments(getStoredAppointments());
+    setAppointments([]);
     const unsubscribeAppointments = subscribeAppointments((remoteAppointments) => {
       const deduped = deduplicateAppointments(remoteAppointments);
       setAppointments(deduped);
-      try {
-        localStorage.setItem(`appointments_${tenantId}`, JSON.stringify(deduped));
-      } catch {}
-    }, undefined, tenantId);
+
+    }, undefined, tenantId, isAdminView ? "required" : "none");
 
     const unsubscribeServices = subscribeServices((remoteServices) => {
       if (Array.isArray(remoteServices)) {
@@ -260,23 +258,25 @@ function MainApp() {
       unsubscribeServices();
       unsubscribeSchedule();
     };
-  }, [tenantId]);
+  }, [tenantId, isAdminView]);
 
   // Synchronize Firebase Auth state for Admin session
   useEffect(() => {
-    let active=true;
+    let active=true, generation=0;
     const unsubscribe=auth.onAuthStateChanged(async user=>{
+      const current=++generation;
+      setAdminAuthReady(false);
       try {
         if(!user) throw new Error('Signed out');
         const result=await tenantApi('/api/auth/me');
-        if(!active) return;
+        if(!active || current !== generation) return;
         const profile=result.user;
         const session:UserSession={name:user.displayName || user.email || '',phone:'',email:user.email || '',isAdmin:true,role:profile.role,tenantId:profile.tenantId,uid:profile.uid,loggedInAt:new Date().toISOString()};
         // Firebase admin identity and the public customer profile are separate.
         // Never erase a tenant-scoped customer session during admin auth hydration.
         saveAdminSession(session);setAdminSession(session);
-      }catch {if(active){clearAdminSession();setAdminSession(null);}}
-      finally { if (active) setAdminAuthReady(true); }
+      }catch {if(active && current === generation){clearAdminSession();setAdminSession(null);}}
+      finally { if (active && current === generation) setAdminAuthReady(true); }
     });
     return ()=>{active=false;unsubscribe();};
   },[tenantId]);
@@ -285,6 +285,7 @@ function MainApp() {
   const handleCustomerLogin = (session: UserSession) => {
     const cleanSession: UserSession = {
       ...session,
+      role: 'customer',
       isAdmin: false,
     };
     saveUserSession(cleanSession);
@@ -415,14 +416,7 @@ function MainApp() {
                 currentUser={currentUser}
                 onOpenAuthModal={() => setIsAuthModalOpen(true)}
                 onLogout={handleCustomerLogout}
-                adminSession={
-                  adminSession?.isAdmin &&
-                  (adminSession.role === 'super_admin' ||
-                    (adminSession.role === 'business_admin' && adminSession.tenantId === tenantId))
-                    ? adminSession
-                    : null
-                }
-                onGoToAdmin={() => navigate(`/admin?tenant=${encodeURIComponent(tenantId)}`)}
+
               />
 
               {/* Main Content Container */}
@@ -805,10 +799,17 @@ function MainApp() {
   );
 }
 
+function ScopedMainApp() {
+  const {tenantId} = useTenant();
+  const {pathname} = useLocation();
+  const mode = pathname === "/admin" || pathname === "/admin/dashboard" ? "admin" : "customer";
+  return <MainApp key={`${tenantId}:${mode}`} />;
+}
+
 export default function App() {
   return (
     <TenantProvider>
-      <MainApp />
+      <ScopedMainApp />
     </TenantProvider>
   );
 }

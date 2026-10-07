@@ -37,6 +37,7 @@ export function authorizeTenant(admin: {role:string;tenantId?:string}, selectors
     if(!validId(admin.tenantId) || supplied.some(v=>v!==admin.tenantId)) throw new Error('אין הרשאה לעסק אחר');
     return admin.tenantId;
   }
+  if(admin.role !== 'super_admin') throw new Error('אין הרשאת ניהול');
   return String(supplied[0] || fallback);
 }
 export const publicSettings = (data: any) => Object.fromEntries(Object.entries(data || {}).filter(([k])=>!/(key|token|secret|password|webhook|instanceId)/i.test(k)));

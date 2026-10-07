@@ -196,6 +196,7 @@ export function getStoredUserSession(): UserSession | null {
       return {
         ...parsed,
         isAdmin: false,
+        role: 'customer',
       };
     }
     return null;
@@ -208,6 +209,7 @@ export function saveUserSession(session: UserSession): void {
   try {
     const sessionToSave: UserSession = {
       ...session,
+      role: 'customer',
       isAdmin: false, // Customer sessions are always non-admin
       name: (session.name || '').trim(),
       phone: (session.phone || '').trim(),

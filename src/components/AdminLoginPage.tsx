@@ -1,5 +1,7 @@
+import { requestAdminPasswordReset } from '../lib/adminAccount';
+import { accountError } from '../utils/accountSecurity';
 import { useTenant } from '../context/TenantContext';
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Lock,
   Mail,
@@ -24,6 +26,8 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
   const { salonInfo: SALON_INFO } = useTenant();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
+  const [resetMode, setResetMode] = useState(false);
+  const resetLock = useRef(false);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -35,6 +39,16 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
     setError(null);
     setSuccess(null);
 
+    if (resetMode) {
+      if (resetLock.current) return;
+      resetLock.current = true; setIsSubmitting(true);
+      try {
+        await requestAdminPasswordReset(email);
+        setSuccess('אם קיים חשבון עם האימייל הזה, יישלח אליו קישור לאיפוס סיסמה. בדקו גם בתיקיית הספאם.');
+      } catch (error) { setError(accountError(error)); }
+      finally { resetLock.current = false; setIsSubmitting(false); }
+      return;
+    }
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedPassword = password;
 
@@ -130,20 +144,6 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
       <div className="absolute top-1/4 -right-20 w-96 h-96 bg-purple-900/20 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-1/4 -left-20 w-96 h-96 bg-pink-900/15 rounded-full blur-3xl pointer-events-none" />
 
-      {/* Top Back Link to Client Site */}
-      <div className="w-full max-w-md mb-4 flex items-center justify-between">
-        <Link
-          to="/"
-          className="inline-flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-purple-300 transition-colors p-2 rounded-xl hover:bg-slate-900/60"
-        >
-          <ArrowRight className="w-4 h-4" />
-          <span>חזרה לאתר הראשי (לקוחות)</span>
-        </Link>
-        <span className="text-[11px] text-purple-400/80 font-medium px-2.5 py-1 rounded-full bg-purple-950/70 border border-purple-800/40">
-          ממשק ניהול מאובטח
-        </span>
-      </div>
-
       {/* Login Card */}
       <div className="w-full max-w-md bg-slate-900/90 backdrop-blur-xl border border-purple-900/40 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 relative">
         {/* Header */}
@@ -155,11 +155,11 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
           <div>
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-950/90 border border-purple-700/50 text-[11px] font-bold text-purple-300 mb-2">
               <Sparkles className="w-3 h-3 text-purple-400" />
-              <span>Alex טיפוח ויופי</span>
+              <span>{SALON_INFO.name}</span>
             </div>
-            <h1 className="text-2xl font-black text-white tracking-tight">כניסת מנהל</h1>
+            <h1 className="text-2xl font-black text-white tracking-tight">{resetMode ? 'איפוס סיסמה' : 'כניסת מנהל'}</h1>
             <p className="text-xs text-slate-400 mt-1">
-              התחברות מאובטחת באמצעות Firebase Auth ללוח הניהול
+              {resetMode ? 'הזינו את האימייל של חשבון הניהול לקבלת קישור לאיפוס' : 'התחברות לניהול העסק שלכם'}
             </p>
           </div>
         </div>
@@ -192,7 +192,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
                 type="email"
                 required
                 autoComplete="email"
-                placeholder="alexbiton200@gmail.com"
+                placeholder="name@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 dir="ltr"
@@ -203,7 +203,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
           </div>
 
           {/* Password */}
-          <div className="space-y-1.5 text-right">
+          {!resetMode && <div className="space-y-1.5 text-right">
             <label className="text-xs font-bold text-slate-300 block">
               סיסמת מנהל <span className="text-purple-400">*</span>
             </label>
@@ -228,7 +228,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
                 {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
-          </div>
+          </div>}
 
           {/* Submit Button */}
           <button
@@ -239,14 +239,17 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
             {isSubmitting ? (
               <span className="flex items-center gap-2">
                 <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                <span>מאמת מול Firebase...</span>
+                <span>{resetMode ? 'שולח קישור...' : 'מתחבר...'}</span>
               </span>
             ) : (
               <span className="flex items-center gap-2">
                 <Lock className="w-4 h-4 text-purple-200" />
-                <span>התחברות לממשק ניהול</span>
+                <span>{resetMode ? 'שליחת קישור לאיפוס' : 'התחברות לממשק ניהול'}</span>
               </span>
             )}
+          </button>
+          <button type="button" disabled={isSubmitting} onClick={() => { setResetMode(!resetMode); setPassword(''); setError(null); setSuccess(null); }} className="w-full text-sm text-purple-300 underline py-2 disabled:opacity-50">
+            {resetMode ? 'חזרה להתחברות' : 'שכחתי סיסמה'}
           </button>
         </form>
 
@@ -254,7 +257,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
         <div className="pt-2 border-t border-slate-800/80 text-center">
           <p className="text-[11px] text-slate-500 flex items-center justify-center gap-1.5">
             <Lock className="w-3 h-3 text-purple-400" />
-            <span>אימות מוגן ומאובטח ברמת Firebase Cloud & Rules</span>
+            <span>כניסה מאובטחת לחשבון הניהול</span>
           </p>
         </div>
       </div>

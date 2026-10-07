@@ -1,3 +1,4 @@
+import { isCalendarBlock } from './calendarBlocks';
 import { Appointment, DayInfo } from '../types';
 
 export const BUSINESS_OPEN = '09:20';
@@ -245,13 +246,7 @@ export function getDailySlotsOccupancy(
       };
     }
 
-    const isBlocked =
-      matchingAppt.price === 0 ||
-      matchingAppt.customer_name.includes('חופש') ||
-      matchingAppt.customer_name.includes('חסימה') ||
-      matchingAppt.customer_name.includes('🔒') ||
-      matchingAppt.customer_phone === 'שריון יזום' ||
-      matchingAppt.customer_phone === 'חסימת יומן';
+    const isBlocked = isCalendarBlock(matchingAppt);
 
     return {
       time: slotTime,

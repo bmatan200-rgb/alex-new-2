@@ -1,3 +1,4 @@
+import { CALENDAR_BLOCK_LABEL, blocksForDay, releaseDayBlocks } from '../utils/calendarBlocks';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   X,
@@ -65,9 +66,7 @@ interface AdminBookingModalProps {
 type Step = 'treatment' | 'day' | 'slot' | 'details';
 
 const BLOCK_PRESETS = [
-  { id: -101, name: 'תפיסת שעה (ללא לקוח)', icon: Lock, reason: 'תור תפוס', desc: 'תפיסת תור פנוי סתם ללא סיבה / סגירה ללקוחות' },
-  { id: -102, name: 'חופש / יום חופשי', icon: Palmtree, reason: 'חופש', desc: 'סגירת שעה או יום שלם עבור חופש ומנוחה' },
-  { id: -103, name: 'הפסקה / עניין אישי', icon: Coffee, reason: 'הפסקה', desc: 'חסימת שעה עבור הפסקה או סידורים' },
+  { id: -102, name: CALENDAR_BLOCK_LABEL, icon: Palmtree, reason: CALENDAR_BLOCK_LABEL, desc: 'חסימת שעה, יום שלם או טווח ימים ושחרור חסימות' },
 ];
 
 export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
@@ -89,7 +88,9 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   const { tenantId } = useTenant();
   const [step, setStep] = useState<Step>('treatment');
   const [isBlockAction, setIsBlockAction] = useState<boolean>(initialMode === 'block');
-  const [blockReason, setBlockReason] = useState<string>('חופש');
+  const blockReason = CALENDAR_BLOCK_LABEL;
+  const [confirmReleaseDay, setConfirmReleaseDay] = useState(false);
+  const releasingRef = useRef(false);
   const [blockWholeDay, setBlockWholeDay] = useState<boolean>(false);
   const [blockModeType, setBlockModeType] = useState<'single' | 'range'>('single');
   const [rangeStartDate, setRangeStartDate] = useState<string>('');
@@ -277,7 +278,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
     if (isOpen) {
       const modeIsBlock = initialMode === 'block';
       setIsBlockAction(modeIsBlock);
-      setBlockReason(modeIsBlock ? 'חופש' : '');
+      setConfirmReleaseDay(false);
       setBlockWholeDay(false);
       setBlockModeType('single');
       setRangeStartDate(initialDate || (days[0]?.iso || ''));
@@ -319,7 +320,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
   const handleSelectBlockPreset = (preset: typeof BLOCK_PRESETS[0]) => {
     setIsBlockAction(true);
-    setBlockReason(preset.reason);
+
     setSelectedService({
       id: preset.id,
       name: preset.name,
@@ -332,6 +333,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
   const handleSelectDay = (day: DayInfo) => {
     if (day.isClosed) return;
+    setConfirmReleaseDay(false);
     setSelectedDate(day.iso);
     setSelectedSlot('');
     setStep('slot');
@@ -339,6 +341,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
   const handleSelectDirectDate = (dateIso: string) => {
     if (!dateIso) return;
+    setConfirmReleaseDay(false);
     setSelectedDate(dateIso);
     setSelectedSlot('');
     setStep('slot');
@@ -363,6 +366,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
   const handleSubmitBooking = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || releasingRef.current) return;
     setErrorMessage('');
 
     if (isBlockAction && blockModeType === 'range') {
@@ -582,6 +586,26 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
     }
   };
 
+  const dayBlocks = blocksForDay(appointments, selectedDate);
+  const handleReleaseDay = async () => {
+    if (!onReleaseBlockedAppointment || releasingRef.current || isSubmitting) return;
+    releasingRef.current = true;
+    setIsSubmitting(true);
+    setErrorMessage('');
+    try {
+      const result = await releaseDayBlocks(appointments, selectedDate, onReleaseBlockedAppointment);
+      if (result.failed) {
+        setErrorMessage(`שוחררו ${result.released} חסימות. ${result.failed} חסימות לא שוחררו; אפשר לנסות שוב.`);
+      } else {
+        onShowToast(`שוחררו ${result.released} חסימות. תורי הלקוחות נשמרו.`, 'success');
+      }
+      setConfirmReleaseDay(false);
+    } finally {
+      releasingRef.current = false;
+      setIsSubmitting(false);
+    }
+  };
+
   const selectedDayInfo = days.find((d) => d.iso === selectedDate);
 
   return (
@@ -593,6 +617,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
           <div className="flex items-center gap-2">
             {step !== 'treatment' ? (
               <button
+                    disabled={isSubmitting}
                 type="button"
                 onClick={handleBack}
                 className="w-8 h-8 rounded-full bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 flex items-center justify-center transition cursor-pointer active:scale-95 shadow-2xs"
@@ -609,7 +634,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-lg sm:text-xl font-black text-slate-950 font-['Rubik',sans-serif]">
-                  {step === 'treatment' && 'בחירת טיפול או חופש'}
+                  {step === 'treatment' && 'בחירת טיפול או חופש / הפסקה'}
                   {step === 'day' && 'בחירת יום ביומן'}
                   {step === 'slot' && 'בחירת שעה'}
                   {step === 'details' && (isBlockAction ? 'אישור תפיסת שעה / חופש' : 'פרטי הלקוח/ה ואישור')}
@@ -622,6 +647,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
           </div>
 
           <button
+                    disabled={isSubmitting}
             type="button"
             onClick={onClose}
             className="w-8 h-8 rounded-full bg-white border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition cursor-pointer active:scale-95 shadow-2xs"
@@ -647,7 +673,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
               <div className="space-y-2">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
                   <Lock className="w-3.5 h-3.5 text-purple-600" />
-                  <span>תפיסת תור פנוי / חופש (ללא לקוח):</span>
+                  <span>חופש / הפסקה (ללא לקוח):</span>
                 </div>
 
                 <div className="grid grid-cols-1 gap-2.5">
@@ -655,6 +681,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                     const Icon = preset.icon;
                     return (
                       <button
+                    disabled={isSubmitting}
                         key={preset.id}
                         type="button"
                         onClick={() => handleSelectBlockPreset(preset)}
@@ -695,6 +722,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                     const duration = service.duration_minutes || 90;
                     return (
                       <button
+                    disabled={isSubmitting}
                         key={service.id}
                         type="button"
                         onClick={() => handleSelectService(service)}
@@ -740,6 +768,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
               {isBlockAction && (
                 <div className="p-1 bg-slate-100 rounded-2xl flex items-center gap-1 border border-slate-200">
                   <button
+                    disabled={isSubmitting}
                     type="button"
                     onClick={() => setBlockModeType('single')}
                     className={`flex-1 py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer ${
@@ -753,6 +782,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                   </button>
 
                   <button
+                    disabled={isSubmitting}
                     type="button"
                     onClick={() => setBlockModeType('range')}
                     className={`flex-1 py-2 px-3 rounded-xl text-xs font-black transition flex items-center justify-center gap-1.5 cursor-pointer ${
@@ -806,26 +836,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                     </div>
                   </div>
 
-                  <div className="space-y-1.5 pt-1">
-                    <label className="text-[11px] font-bold text-slate-700 block">סיבת החופשה:</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {['חופש', 'חופשה שנתית', 'סידורים אישיים', 'שיפוץ / סגירה'].map((r) => (
-                        <button
-                          key={r}
-                          type="button"
-                          onClick={() => setBlockReason(r)}
-                          className={`py-1.5 px-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
-                            blockReason === r
-                              ? 'bg-purple-600 text-white shadow-xs'
-                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                          }`}
-                        >
-                          <Palmtree className="w-3 h-3" />
-                          <span>{r}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  <p className="text-xs font-bold text-purple-800">ללקוחות יוצג: חופש / הפסקה</p>
 
                   <div className="space-y-1">
                     <label className="block text-slate-700 font-bold">הערה פנימית (אופציונלי):</label>
@@ -860,6 +871,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                   {/* Month Navigation Bar */}
                   <div className="bg-slate-900 text-white p-3 rounded-2xl flex items-center justify-between shadow-sm">
                     <button
+                    disabled={isSubmitting}
                       type="button"
                       onClick={handleNextMonth}
                       className="p-2 hover:bg-slate-800 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-bold text-purple-300 active:scale-95"
@@ -965,6 +977,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                 </div>
                 
                 <button
+                    disabled={isSubmitting}
                   type="button"
                   onClick={() => setStep('day')}
                   className="px-2.5 py-1 bg-white hover:bg-purple-100 text-purple-800 border border-purple-300 rounded-xl font-black text-[11px] transition cursor-pointer active:scale-95 shadow-2xs"
@@ -982,6 +995,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                     <span>רוצה לחסום את <strong>כל היום</strong> לחופש?</span>
                   </div>
                   <button
+                    disabled={isSubmitting}
                     type="button"
                     onClick={() => {
                       setBlockWholeDay(true);
@@ -995,11 +1009,36 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                 </div>
               )}
 
+              {isBlockAction && onReleaseBlockedAppointment && (
+                <div className="p-3 rounded-2xl border border-emerald-200 bg-emerald-50 space-y-2 text-xs">
+                  <button type="button" disabled={isSubmitting || dayBlocks.length === 0}
+                    onClick={() => setConfirmReleaseDay(true)}
+                    className="w-full py-2 rounded-xl bg-white border border-emerald-300 text-emerald-800 font-bold disabled:opacity-50">
+                    🔓 שחרור חסימות היום ({dayBlocks.length})
+                  </button>
+                  <p className="text-emerald-900">מסיר את חסימות החופש / הפסקה ביום הנבחר. תורי לקוחות נשארים ביומן.</p>
+                  {confirmReleaseDay && dayBlocks.length > 0 && (
+                    <div className="space-y-2">
+                      <p>לשחרר את כל החסימות ב־{toIsraeliDateString(selectedDate)}?</p>
+                      <div className="flex gap-2">
+                        <button type="button" disabled={isSubmitting} onClick={handleReleaseDay}
+                          className="px-3 py-2 rounded-xl bg-emerald-700 text-white font-bold disabled:opacity-50">
+                          {isSubmitting ? 'משחרר...' : 'כן, שחרור חסימות היום'}
+                        </button>
+                        <button type="button" disabled={isSubmitting} onClick={() => setConfirmReleaseDay(false)} className="px-3 py-2">ביטול</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {errorMessage && <p role="alert" className="text-xs text-red-700 font-bold">{errorMessage}</p>}
+
               {currentSlotsOccupancy.length === 0 ? (
                 <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-200 text-slate-600 text-sm space-y-3">
                   <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
                   <p className="font-bold">אין שעות פעילות ביום זה</p>
                   <button
+                    disabled={isSubmitting}
                     type="button"
                     onClick={() => setStep('day')}
                     className="px-4 py-2 bg-purple-600 text-white rounded-xl font-bold text-xs cursor-pointer shadow-xs"
@@ -1016,6 +1055,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                         <span>כל התורים ביום זה כבר תפוסים</span>
                       </div>
                       <button
+                    disabled={isSubmitting}
                         type="button"
                         onClick={() => setStep('day')}
                         className="underline text-purple-700 font-black cursor-pointer hover:text-purple-900"
@@ -1050,6 +1090,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                             if (isClickable) {
                               return (
                                 <button
+                    disabled={isSubmitting}
                                   key={slot.time}
                                   type="button"
                                   onClick={() => handleSelectSlot(slot.time)}
@@ -1087,7 +1128,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                     </span>
                                     <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
                                       <Lock className="w-2.5 h-2.5 text-red-600" />
-                                      <span>תפוס</span>
+                                      <span>{slot.status === 'blocked' ? CALENDAR_BLOCK_LABEL : 'תפוס'}</span>
                                     </span>
                                   </div>
                                   <div className="text-[10px] font-semibold text-slate-400 relative z-10">
@@ -1095,6 +1136,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                   </div>
                                   {slot.status === 'blocked' && slot.appointment && onReleaseBlockedAppointment && (
                                     <button
+                    disabled={isSubmitting}
                                       type="button"
                                       onClick={async (e) => {
                                         e.stopPropagation();
@@ -1164,6 +1206,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                             if (isClickable) {
                               return (
                                 <button
+                    disabled={isSubmitting}
                                   key={slot.time}
                                   type="button"
                                   onClick={() => handleSelectSlot(slot.time)}
@@ -1201,7 +1244,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                     </span>
                                     <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
                                       <Lock className="w-2.5 h-2.5 text-red-600" />
-                                      <span>תפוס</span>
+                                      <span>{slot.status === 'blocked' ? CALENDAR_BLOCK_LABEL : 'תפוס'}</span>
                                     </span>
                                   </div>
                                   <div className="text-[10px] font-semibold text-slate-400 relative z-10">
@@ -1209,6 +1252,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                   </div>
                                   {slot.status === 'blocked' && slot.appointment && onReleaseBlockedAppointment && (
                                     <button
+                    disabled={isSubmitting}
                                       type="button"
                                       onClick={async (e) => {
                                         e.stopPropagation();
@@ -1276,6 +1320,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                             if (isClickable) {
                               return (
                                 <button
+                    disabled={isSubmitting}
                                   key={slot.time}
                                   type="button"
                                   onClick={() => handleSelectSlot(slot.time)}
@@ -1313,7 +1358,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                     </span>
                                     <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
                                       <Lock className="w-2.5 h-2.5 text-red-600" />
-                                      <span>תפוס</span>
+                                      <span>{slot.status === 'blocked' ? CALENDAR_BLOCK_LABEL : 'תפוס'}</span>
                                     </span>
                                   </div>
                                   <div className="text-[10px] font-semibold text-slate-400 relative z-10">
@@ -1321,6 +1366,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                                   </div>
                                   {slot.status === 'blocked' && slot.appointment && onReleaseBlockedAppointment && (
                                     <button
+                    disabled={isSubmitting}
                                       type="button"
                                       onClick={async (e) => {
                                         e.stopPropagation();
@@ -1413,31 +1459,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                     <span>הגדרת תפיסת התור ביומן:</span>
                   </div>
 
-                  <div className="space-y-1.5">
-                    <label className="text-[11px] font-bold text-slate-600 block">
-                      סיבת התפיסה (מוצג ביומן בלבד):
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {['תור תפוס', 'חופש', 'הפסקה', 'עניין אישי'].map((r) => (
-                        <button
-                          key={r}
-                          type="button"
-                          onClick={() => setBlockReason(r)}
-                          className={`py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
-                            blockReason === r
-                              ? 'bg-purple-600 text-white shadow-xs'
-                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                          }`}
-                        >
-                          {r === 'חופש' && <Palmtree className="w-3 h-3" />}
-                          {r === 'תור תפוס' && <Lock className="w-3 h-3" />}
-                          {r === 'הפסקה' && <Coffee className="w-3 h-3" />}
-                          {r === 'עניין אישי' && <Tag className="w-3 h-3" />}
-                          <span>{r}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  <p className="text-xs font-bold text-purple-800">ללקוחות יוצג: חופש / הפסקה</p>
 
                   <div className="space-y-1 text-xs pt-1">
                     <label htmlFor="admin-block-notes" className="block text-slate-700 font-bold">
@@ -1455,7 +1477,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
                   <div className="p-2.5 bg-purple-50 rounded-xl border border-purple-200 text-[11px] text-purple-900 flex items-center gap-2">
                     <Sparkles className="w-3.5 h-3.5 text-purple-600 shrink-0" />
-                    <span>אין צורך להזין פרטי לקוח/ה. השעה תינעל מיידית ותסומן כ"תפוס" בלוח הלקוחות.</span>
+                    <span>אין צורך להזין פרטי לקוח/ה. השעה תינעל מיידית ותסומן כ"חופש / הפסקה" בלוח הלקוחות.</span>
                   </div>
                 </div>
               ) : (
@@ -1482,6 +1504,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
                         <div className="p-1 bg-white rounded-xl border border-purple-200 shadow-md space-y-1 animate-in fade-in">
                           {customerSuggestions.map((c) => (
                             <button
+                    disabled={isSubmitting}
                               key={c.phone}
                               type="button"
                               onClick={() => {

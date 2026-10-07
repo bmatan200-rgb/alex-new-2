@@ -1,3 +1,4 @@
+import { publicBusyAppointment } from './src/utils/calendarBlocks';
 import 'dotenv/config';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { validId, validTime, validDate, phoneDigits, hash, reminderKey, overlaps, israelClock, parseFirebaseServiceAccount, authorizeTenant, publicSettings, claimOnce, copyOnce } from './server/core';
@@ -324,7 +325,7 @@ app.post('/api/appointments/list',async(req,res)=>{
     const appointments=rows.filter((row:any)=>row.status!=='cancelled').map((row:any)=>{
       const {id,accessTokenHash,...data}=row;
       if(canRead || (accessTokenHash && typeof capabilities[id]==='string' && hash(capabilities[id])===accessTokenHash)) return {...data,id};
-      return {id,appointment_date:data.appointment_date,start_time:data.start_time,end_time:data.end_time,status:'confirmed',customer_name:'תפוס',customer_phone:'',service_id:0,service_name:'',price:0,notes:''};
+      return publicBusyAppointment(id, data);
     });
     res.json({success:true,appointments});
   }catch(err:any){
@@ -653,7 +654,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '27.0.0';
+const APP_VERSION = '31.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];

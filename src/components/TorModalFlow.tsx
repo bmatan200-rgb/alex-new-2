@@ -1,3 +1,4 @@
+import { CALENDAR_BLOCK_LABEL } from '../utils/calendarBlocks';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   X,
@@ -199,7 +200,12 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
       const availSlots = !isPast && !isClosed ? getEffectiveAvailableSlots(iso) : [];
       const isAvailable = !isPast && !isClosed && availSlots.length > 0;
 
+      const occupancy = !isPast && !isClosed
+        ? getDailySlotsOccupancy(iso, appointments, durationMinutes, businessOpen, businessClose, fridayClose, fridayOpen)
+        : [];
+      const isBreakDay = occupancy.length > 0 && occupancy.every(slot => slot.status === 'blocked');
       result.push({
+        isBreakDay,
         iso,
         dayNumber: d,
         weekday: HEBREW_WEEKDAYS[dayOfWeek],
@@ -212,7 +218,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
       });
     }
     return result;
-  }, [viewedYear, viewedMonth, appointments, durationMinutes, businessOpen, businessClose, todayIso]);
+  }, [viewedYear, viewedMonth, appointments, durationMinutes, businessOpen, businessClose, fridayOpen, fridayClose, todayIso]);
 
   const currentNow = new Date();
   const canGoPrevMonth =
@@ -581,7 +587,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                         </span>
                       ) : (
                         <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold">
-                          מלא
+                          {day.isBreakDay ? CALENDAR_BLOCK_LABEL : 'מלא'}
                         </span>
                       )}
                     </button>
@@ -637,7 +643,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                     <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-xs text-red-700 font-bold flex items-center justify-between shadow-2xs">
                       <div className="flex items-center gap-1.5">
                         <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-                        <span>כל התורים ביום זה כבר תפוסים</span>
+                        <span>{currentSlotsOccupancy.every(slot => slot.status === 'blocked') ? 'חופש / הפסקה — אין תורים זמינים ביום זה' : 'אין שעות פנויות ביום זה'}</span>
                       </div>
                       <button
                         type="button"
@@ -699,7 +705,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                 <div
                                   key={slot.time}
                                   className="relative p-3 rounded-2xl bg-slate-50/90 border-2 border-red-200/70 text-slate-400 select-none overflow-hidden cursor-not-allowed group shadow-2xs"
-                                  title="תור זה כבר תפוס"
+                                  title={slot.status === 'blocked' ? CALENDAR_BLOCK_LABEL : 'תור זה כבר תפוס'}
                                 >
                                   {/* Red horizontal strike line across the slot box */}
                                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
@@ -712,7 +718,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                     </span>
                                     <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
                                       <Lock className="w-2.5 h-2.5 text-red-600" />
-                                      <span>תפוס</span>
+                                      <span>{slot.status === 'blocked' ? CALENDAR_BLOCK_LABEL : 'תפוס'}</span>
                                     </span>
                                   </div>
                                   <div className="text-[10px] font-semibold text-slate-400 relative z-10">
@@ -795,7 +801,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                 <div
                                   key={slot.time}
                                   className="relative p-3 rounded-2xl bg-slate-50/90 border-2 border-red-200/70 text-slate-400 select-none overflow-hidden cursor-not-allowed group shadow-2xs"
-                                  title="תור זה כבר תפוס"
+                                  title={slot.status === 'blocked' ? CALENDAR_BLOCK_LABEL : 'תור זה כבר תפוס'}
                                 >
                                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
                                     <div className="w-full h-[2px] bg-red-400/80 shadow-xs" />
@@ -807,7 +813,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                     </span>
                                     <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
                                       <Lock className="w-2.5 h-2.5 text-red-600" />
-                                      <span>תפוס</span>
+                                      <span>{slot.status === 'blocked' ? CALENDAR_BLOCK_LABEL : 'תפוס'}</span>
                                     </span>
                                   </div>
                                   <div className="text-[10px] font-semibold text-slate-400 relative z-10">
@@ -888,7 +894,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                 <div
                                   key={slot.time}
                                   className="relative p-3 rounded-2xl bg-slate-50/90 border-2 border-red-200/70 text-slate-400 select-none overflow-hidden cursor-not-allowed group shadow-2xs"
-                                  title="תור זה כבר תפוס"
+                                  title={slot.status === 'blocked' ? CALENDAR_BLOCK_LABEL : 'תור זה כבר תפוס'}
                                 >
                                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
                                     <div className="w-full h-[2px] bg-red-400/80 shadow-xs" />
@@ -900,7 +906,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
                                     </span>
                                     <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-0.5 shadow-2xs">
                                       <Lock className="w-2.5 h-2.5 text-red-600" />
-                                      <span>תפוס</span>
+                                      <span>{slot.status === 'blocked' ? CALENDAR_BLOCK_LABEL : 'תפוס'}</span>
                                     </span>
                                   </div>
                                   <div className="text-[10px] font-semibold text-slate-400 relative z-10">
@@ -1101,7 +1107,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
           setConfirmedAdditionalBooking(true);
           const cleanName = customerName.trim();
           const cleanPhone = customerPhone.replace(/\D/g, '');
-          executeBookingSubmission(cleanName, cleanPhone, isAdmin);
+          executeBookingSubmission(cleanName, cleanPhone);
         }}
         onCancelExisting={(appt) => {
           setShowExistingChoiceModal(false);

@@ -1,3 +1,4 @@
+import { isCalendarBlock, CALENDAR_BLOCK_LABEL } from '../utils/calendarBlocks';
 import React, { useState, useEffect } from 'react';
 import {
   Calendar,
@@ -80,7 +81,6 @@ interface AdminDashboardProps {
   onAddAppointment: (appointment: Omit<Appointment, 'id'>) => void;
   onCancelAppointment: (id: number | string) => void;
   onDeleteAppointment: (id: number | string) => void;
-  onSwitchToClientView?: () => void;
   onLogout?: () => void;
   onUpdateServices?: (services: Service[]) => void;
   scheduleSettings?: ScheduleSettings;
@@ -104,7 +104,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onAddAppointment,
   onCancelAppointment,
   onDeleteAppointment,
-  onSwitchToClientView,
   onLogout,
   onUpdateServices,
   scheduleSettings,
@@ -258,7 +257,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Block form state
   const [blockType, setBlockType] = useState<'single_slot' | 'full_day' | 'custom_hours'>('single_slot');
-  const [blockReason, setBlockReason] = useState('חופש / סידורים אישיים');
+  const [blockReason, setBlockReason] = useState('');
   const [blockDate, setBlockDate] = useState(todayIso);
   const [blockStartTime, setBlockStartTime] = useState('09:20');
   const [blockEndTime, setBlockEndTime] = useState('11:10');
@@ -318,17 +317,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   );
 
   // Helper: Check if an appointment is a block/break
-  function isBlockedAppointment(appt: Appointment): boolean {
-    return (
-      appt.price === 0 ||
-      appt.customer_name.includes('🔒') ||
-      appt.customer_name.includes('חופש') ||
-      appt.customer_name.includes('חסימה') ||
-      appt.customer_name.includes('הפסקה') ||
-      appt.customer_phone === 'שריון יזום' ||
-      appt.customer_phone === 'חסימת יומן'
-    );
-  }
+  function isBlockedAppointment(appt: Appointment): boolean { return isCalendarBlock(appt); }
 
   // Handle Blocking a Slot or Full Day
   const handleBlockSubmit = (e: React.FormEvent) => {
@@ -361,10 +350,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
 
     const newBlock: Omit<Appointment, 'id'> = {
-      customer_name: `🔒 חסום: ${blockReason || 'חופש'}`,
+      customer_name: `🔒 ${CALENDAR_BLOCK_LABEL}`,
       customer_phone: 'חסימת יומן',
       service_id: 1,
-      service_name: blockType === 'full_day' ? 'יום חופש מלא' : 'חסימת מועד / הפסקה',
+      service_name: CALENDAR_BLOCK_LABEL,
       price: 0,
       appointment_date: blockDate,
       start_time: start,
@@ -599,18 +588,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {onSwitchToClientView && (
-            <button
-              type="button"
-              onClick={onSwitchToClientView}
-              className="px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs"
-              title="מעבר לתצוגת לקוח / לקוחה (איך האתר נראה למזמיני תורים)"
-            >
-              <User className="w-4 h-4 text-purple-600" />
-              <span>תצוגת לקוח/ה</span>
-            </button>
-          )}
-
           {onLogout && (
             <button
               type="button"
@@ -655,7 +632,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             title="תפיסת שעות פנויות או יום חופש מלא"
           >
             <Lock className="w-4 h-4 text-purple-400" />
-            <span>תפיסת תור / חופש 🔒</span>
+            <span>חופש / הפסקה 🌴</span>
           </button>
 
           <button
@@ -794,7 +771,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4">
             <button type="button" onClick={() => openAdminBooking({ date: selectedDate, mode: 'client' })} className="w-full h-12 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-black text-sm flex items-center justify-center gap-2"><PlusCircle className="w-4 h-4" />תור חדש</button>
             <div className="grid grid-cols-2 gap-2 mt-2">
-              <button type="button" onClick={() => openAdminBooking({ date: selectedDate, mode: 'block' })} className="h-20 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold flex flex-col items-center justify-center gap-2"><Lock className="w-4 h-4 text-purple-600" />חסימת זמן</button>
+              <button type="button" onClick={() => openAdminBooking({ date: selectedDate, mode: 'block' })} className="h-20 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold flex flex-col items-center justify-center gap-2"><Lock className="w-4 h-4 text-purple-600" />חופש / הפסקה</button>
               <button type="button" onClick={() => setIsDurationModalOpen(true)} className="h-20 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold flex flex-col items-center justify-center gap-2"><Clock className="w-4 h-4 text-purple-600" />שירותים ומחיר</button>
               <button type="button" onClick={() => { setWhatsAppModalTab('templates'); setIsWhatsAppModalOpen(true); }} className="h-20 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold flex flex-col items-center justify-center gap-2"><Smartphone className="w-4 h-4 text-purple-600" />SMS</button>
               <button type="button" onClick={() => setAdminTab('customers')} className="h-20 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-bold flex flex-col items-center justify-center gap-2"><Users className="w-4 h-4 text-purple-600" />לקוחות</button>
@@ -812,7 +789,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-2">
-            {onSwitchToClientView && <button type="button" onClick={onSwitchToClientView} className="w-full h-10 rounded-xl border border-slate-200 text-xs font-bold">תצוגת לקוח/ה</button>}
             {onLogout && <button type="button" onClick={onLogout} className="w-full h-10 rounded-xl border border-red-100 bg-red-50 text-red-600 text-xs font-bold">התנתקות</button>}
           </div>
         </aside>
@@ -1135,10 +1111,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-slate-700 font-bold mb-1">סיבת החסימה (למעקב שלך)</label>
+                  <label className="block text-slate-700 font-bold mb-1">הערה פנימית (אופציונלי)</label>
                   <input
                     type="text"
-                    placeholder="לדוגמה: יום חופש, מנוחה, סידורים"
+                    placeholder="הערה פרטית ליומן"
                     value={blockReason}
                     onChange={(e) => setBlockReason(e.target.value)}
                     className="w-full px-3 py-2 bg-slate-50 text-slate-900 rounded-xl border border-slate-200 outline-none focus:border-purple-600"
@@ -1295,20 +1271,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               )}
 
-              {/* Quick Preset Reasons */}
-              <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
-                <span className="text-slate-500 font-medium ml-1">סיבות נפוצות:</span>
-                {['יום חופש', 'הפסקה / מנוחה', 'סידורים אישיים', 'אירוע משפחתי', 'תפוס'].map((reason) => (
-                  <button
-                    key={reason}
-                    type="button"
-                    onClick={() => setBlockReason(reason)}
-                    className="px-2.5 py-1 bg-slate-100 hover:bg-purple-100 hover:text-purple-900 rounded-lg text-slate-700 text-[11px] font-medium transition cursor-pointer"
-                  >
-                    {reason}
-                  </button>
-                ))}
-              </div>
+              <p className="text-xs text-purple-800">ללקוחות יוצג: חופש / הפסקה</p>
 
               <button
                 type="submit"

@@ -528,6 +528,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
 
       {/* Step 3: Slots */}
       <SlotSelector
+        appointments={appointments}
         availableSlots={availableSlots}
         selectedSlot={selectedSlot}
         onSelectSlot={(slot) => setSelectedSlot(slot)}

@@ -523,7 +523,7 @@ export const SuperAdminPage: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setActiveTab('onboarding')}
+              onClick={() => { resetTenantForm(); setActiveTab('onboarding'); }}
               className={`px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm flex items-center gap-2 transition cursor-pointer ${
                 activeTab === 'onboarding'
                   ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
@@ -659,7 +659,7 @@ export const SuperAdminPage: React.FC = () => {
                 </p>
               </div>
 
-              <form onSubmit={handleSubmit} className="space-y-8">
+              <form onSubmit={handleSubmit} autoComplete="off" className="space-y-8">
                 
                 {/* SECTION 1: GENERAL INFO & TENANT ID */}
                 <div className="space-y-4">
@@ -736,6 +736,8 @@ export const SuperAdminPage: React.FC = () => {
                       <label className="block text-slate-300 font-bold mb-1.5">אימייל מנהלת</label>
                       <input
                         type="email"
+                        name="new-business-owner-email"
+                        autoComplete="off"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="salon@beauty.co.il"
@@ -747,6 +749,8 @@ export const SuperAdminPage: React.FC = () => {
                       <label className="block text-slate-300 font-bold mb-1.5">סיסמה זמנית לבעל העסק</label>
                       <input
                         type="password"
+                        name="new-business-owner-password"
+                        autoComplete="new-password"
                         value={ownerPassword}
                         onChange={(e) => setOwnerPassword(e.target.value)}
                         placeholder={editingTenantId ? "השאר ריק כדי לא לשנות סיסמה" : "לפחות 6 תווים"}

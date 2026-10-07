@@ -1,3 +1,4 @@
+import { TenantLoading } from '../components/TenantLoading';
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { doc, getDoc } from 'firebase/firestore';
@@ -53,7 +54,7 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       if (t) return t.trim();
     }
     return '';
-  }, [location]);
+  }, [location.search]);
 
   const activeQuery = getActiveQueryTenant();
 
@@ -144,7 +145,7 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   };
 
   const effectiveTenantId = tenant.id;
-  if(loading) return <div dir="rtl" className="p-12 text-center">טוען את העסק…</div>;
+  if(loading) return <TenantLoading />;
   if(loadError) return <div dir="rtl" className="p-12 text-center"><p>{loadError}</p><button onClick={fetchTenantData}>ניסיון נוסף</button></div>;
 
   return (

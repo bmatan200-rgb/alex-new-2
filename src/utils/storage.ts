@@ -268,6 +268,11 @@ export function clearUserSession(): void {
     // Customer logout must never clear an active admin session.
     // Admin and customer identities are intentionally isolated.
     localStorage.removeItem(tenantStorageKey(STORAGE_KEY_USER_SESSION));
+    // alex_beauty historically used an unscoped customer-session key. If it is
+    // left behind, getTenantOrLegacyRaw() can restore that stale customer after
+    // an explicit logout on the next refresh. Remove only this legacy customer
+    // key; admin authentication remains completely separate.
+    localStorage.removeItem(STORAGE_KEY_USER_SESSION);
     [
       'alex_beauty_user_session_v1',
       'alex_beauty_user_session_v2',

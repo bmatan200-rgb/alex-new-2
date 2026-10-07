@@ -1,3 +1,6 @@
+import type { Appointment } from '../types';
+import { getDailySlotsOccupancy } from '../utils/dateUtils';
+import { CALENDAR_BLOCK_LABEL } from '../utils/calendarBlocks';
 import React, { useMemo } from 'react';
 import { Clock, AlertCircle, Sun, Sunset, Moon, Check, Lock, Sparkles } from 'lucide-react';
 import {
@@ -9,6 +12,7 @@ import {
 } from '../utils/dateUtils';
 
 interface SlotSelectorProps {
+  appointments?: Appointment[];
   slots?: string[]; // Kept for backwards compatibility
   availableSlots?: string[];
   selectedSlot: string | null;
@@ -19,6 +23,7 @@ interface SlotSelectorProps {
 
 export const SlotSelector: React.FC<SlotSelectorProps> = ({
   slots,
+  appointments = [],
   availableSlots: propAvailableSlots,
   selectedSlot,
   onSelectSlot,
@@ -48,7 +53,11 @@ export const SlotSelector: React.FC<SlotSelectorProps> = ({
     return hour >= 16;
   });
 
+  const occupancy = useMemo(() => getDailySlotsOccupancy(selectedDate, appointments, durationMinutes),
+    [selectedDate, appointments, durationMinutes]);
+
   const renderSlotButton = (slot: string) => {
+    const isBreak = occupancy.find(item => item.time === slot)?.status === 'blocked';
     const isSelected = slot === selectedSlot;
     const inPast = isSlotInPast(selectedDate, slot);
     const isAvailable = effectiveAvailable.includes(slot) && !inPast;
@@ -100,7 +109,7 @@ export const SlotSelector: React.FC<SlotSelectorProps> = ({
           {isBooked && (
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200 flex items-center gap-1 shadow-2xs">
               <Lock className="w-2.5 h-2.5 text-red-600" />
-              <span>תפוס</span>
+              <span>{isBreak ? CALENDAR_BLOCK_LABEL : 'תפוס'}</span>
             </span>
           )}
 

@@ -1,3 +1,4 @@
+import { AdminAccountSettings } from './components/AdminAccountSettings';
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import {
@@ -157,15 +158,6 @@ function AdminRouteView({
               </Link>
             )}
 
-            <Link
-              to={`/?tenant=${tenantParam}`}
-              className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-purple-200 hover:text-white border border-slate-800 text-xs font-bold transition flex items-center gap-1.5"
-              title="צפייה באתר הלקוחות"
-            >
-              <ArrowRight className="w-3.5 h-3.5 text-purple-400" />
-              <span>לאתר הלקוחות</span>
-            </Link>
-
             <button
               type="button"
               onClick={onAdminLogout}
@@ -179,13 +171,13 @@ function AdminRouteView({
       </header>
 
       <main className="max-w-7xl mx-auto px-3 sm:px-6 py-6 sm:py-8">
+        <AdminAccountSettings key={adminSession?.uid} tenantId={tenantParam} />
         <AdminDashboard
           appointments={appointments}
           services={services}
           onAddAppointment={onAddAppointment}
           onCancelAppointment={onCancelAppointment}
           onDeleteAppointment={onDeleteAppointment}
-          onSwitchToClientView={() => navigate(`/?tenant=${tenantParam}`)}
           onLogout={onAdminLogout}
           onUpdateServices={onUpdateServices}
           scheduleSettings={scheduleSettings}

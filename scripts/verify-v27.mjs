@@ -14,7 +14,7 @@ const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
 const manifestRoute = server.slice(server.indexOf("app.get('/manifest.json'"), server.indexOf("app.param(['tenantId','id']"));
 const serviceWorker = readFileSync(new URL('../public/service-worker.js', import.meta.url), 'utf8');
 
-assert.equal(pkg.version, '27.0.0');
+assert.equal(pkg.version, '31.0.0');
 assert.match(server, /const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail\.com'/);
 assert.match(server, /if \(email === PRIMARY_SUPER_ADMIN_EMAIL\) \{/);
 assert.doesNotMatch(server, /email === PRIMARY_SUPER_ADMIN_EMAIL && currentUser\.emailVerified/);
@@ -41,7 +41,7 @@ assert.match(authModal, /tenantId, \{ auth: 'none' \}/);
 assert.doesNotMatch(torFlow, /upsertCustomerToFirestore/);
 assert.match(server, /getAll\(\.\.\.refs\)/);
 
-// V27 PWA and tenant-specific install prompt guards.
+// V31 PWA and tenant-specific install prompt guards.
 assert.match(installPrompt, /pwa-install-opt-out:\$\{tenantId\}/, 'install dismissal is not business-scoped');
 assert.match(installPrompt, /localStorage\.setItem\(optOutKey, '1'\)/, 'permanent dismissal is not persisted');
 assert.match(installPrompt, /pwa-install-complete:\$\{tenantId\}/, 'completed installation is not business-scoped');
@@ -56,4 +56,15 @@ assert.match(manifestRoute, /id: startUrl/);
 assert.match(serviceWorker, /skipWaiting/);
 assert.doesNotMatch(serviceWorker, /caches\.open|caches\.match/, 'PWA worker must not cache customer or booking data');
 
-console.log('V27 PWA source verification passed');
+
+// V29.0.1 regression guards: explicit customer logout must stay logged out,
+// and opening the new-business wizard must never reuse Super Admin credentials.
+assert.match(storage, /localStorage\.removeItem\(STORAGE_KEY_USER_SESSION\)/, 'legacy Alex customer session is not cleared on logout');
+const superAdmin = readFileSync(new URL('../src/pages/SuperAdmin.tsx', import.meta.url), 'utf8');
+assert.match(superAdmin, /resetTenantForm\(\); setActiveTab\('onboarding'\)/, 'new-business wizard does not reset to blank values');
+assert.match(superAdmin, /<form onSubmit=\{handleSubmit\} autoComplete="off"/, 'onboarding form may be browser-autofilled');
+assert.match(superAdmin, /name="new-business-owner-email"[\s\S]*?autoComplete="off"/, 'new owner email may reuse signed-in credentials');
+assert.match(superAdmin, /name="new-business-owner-password"[\s\S]*?autoComplete="new-password"/, 'new owner password may reuse signed-in credentials');
+assert.doesNotMatch(torFlow, /executeBookingSubmission\(cleanName, cleanPhone, isAdmin\)/, 'obsolete booking argument remains');
+
+console.log('V31 PWA source verification passed');

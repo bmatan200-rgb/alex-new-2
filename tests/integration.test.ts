@@ -5,7 +5,7 @@ import {readFileSync} from 'node:fs';
 import {getAuth} from 'firebase-admin/auth';
 import {initializeTestEnvironment,assertFails,assertSucceeds} from '@firebase/rules-unit-testing';
 import {doc,getDoc,setDoc} from 'firebase/firestore';
-import {claimOnce,copyOnce,israelClock,reminderKey} from '../server/core';
+import {claimOnce,copyOnce,israelClock,reminderKey,hash} from '../server/core';
 if(!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_AUTH_EMULATOR_HOST) throw new Error('Emulators required: tests never access production');
 process.env.NODE_ENV='test';
 process.env.SUPER_ADMIN_EMAILS='verified@example.com,unverified@example.com';
@@ -16,11 +16,23 @@ const {app,db,ensurePrimaryTenant,sendRemindersForDate}=await import('../server'
 const nativeFetch=globalThis.fetch;
 let server:any, base:string, rules:any, superToken:string, ownerToken:string, userToken:string;
 let providerCalls=0, providerFailure=false;
+let providerDelay=0, providerActive=0, providerPeak=0;
+const providerStarts:number[]=[];
+const lookupMessages=new Map<string,any>();
+let lookupCalls=0;let lookupHttpStatus=200;
 globalThis.fetch=async(input:any,init?:any)=>{
+  if(String(input).startsWith('https://api.telnyx.com/') && init?.method==='GET'){
+    lookupCalls++;const id=String(input).split('/').pop()!;
+    return new Response(JSON.stringify({data:lookupMessages.get(id)}),{status:lookupHttpStatus});
+  }
   if(String(input).startsWith('https://api.telnyx.com/')){
     providerCalls++;
+    const callId=providerCalls;
+    providerStarts.push(Date.now());providerActive++;providerPeak=Math.max(providerPeak,providerActive);
+    if(providerDelay)await new Promise(resolve=>setTimeout(resolve,providerDelay));
+    providerActive--;
     if(providerFailure) throw new Error('Simulated response lost after acceptance');
-    return new Response(JSON.stringify({data:{id:'provider_'+providerCalls,to:[{status:'queued'}]}}),{status:200});
+    return new Response(JSON.stringify({data:{id:'provider_'+callId,to:[{status:'queued'}]}}),{status:200});
   }
   const u=String(input);
   if(!u.startsWith('http://127.0.0.1:') && !u.startsWith('http://localhost:'))throw new Error('Unexpected external network in test: '+u);
@@ -295,7 +307,7 @@ test('built production server boots with named database and serves API plus SPA'
     }
     assert.ok(ready,output);
     const html=await nativeFetch('http://127.0.0.1:43187/');assert.equal(html.status,200);assert.match(await html.text(),/<div id="root">/);
-  const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'39.0.0');
+  const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'41.0.0');
     const registerRoute=await nativeFetch('http://127.0.0.1:43187/api/customer/register',{method:'POST',headers:{'Content-Type':'application/json','x-tenant-id':'alex_beauty'},body:JSON.stringify({full_name:'x',phone:'bad',acceptedTerms:false})});
     assert.equal(registerRoute.status,400);assert.doesNotMatch(await registerRoute.text(),/API route not found/);
     const missing=await nativeFetch('http://127.0.0.1:43187/api/unknown');assert.equal(missing.status,404);assert.match(missing.headers.get('content-type')||'',/json/);
@@ -336,4 +348,44 @@ test('scheduled dispatch rechecks cancelled records and retains accepted locks a
   await sendRemindersForDate(tomorrowIso,'1day',tenant,config,{scheduled:true,deadline:Date.now()+30000});assert.equal(providerCalls-before,1);
   const lock=(await db.doc(`tenants/${tenant}/reminder_locks/${reminderKey('1day','0521112222',tomorrowIso)}`).get()).data();
   assert.equal(lock?.schedulerVersion,39);assert.equal(lock?.status,'sent');assert.equal(lock?.attempts,1);
+});
+
+test('scheduled parallel delivery sends each of 40 customers once across overlapping runs',async()=>{
+ const tenant='parallel_sms';const date=israelClock().tomorrowIso;
+ const settings={enabled:true,autoSendEnabled:true,notifyCustomer1DayBefore:true,eveningReminderTime:'20:00'};
+ await db.doc(`tenants/${tenant}`).set({status:'active',name:'Parallel'});
+ await db.doc(`tenants/${tenant}/private_settings/sms_provider`).set({telnyxApiKey:'test',telnyxFrom:'TEST',telnyxProfileId:'test'});
+ await Promise.all(Array.from({length:40},(_,i)=>db.doc(`tenants/${tenant}/appointments/a${i}`).set({status:'confirmed',customer_name:'Test',customer_phone:'050'+String(1000000+i),appointment_date:date,start_time:'12:00',created_at:'2020-01-01T00:00:00Z'})));
+ const before=providerCalls;const start=providerStarts.length;providerDelay=200;providerPeak=0;
+ try {
+  await Promise.all([0,1].map(()=>sendRemindersForDate(date,'1day',tenant,settings,{scheduled:true,deadline:Date.now()+30000})));
+  await sendRemindersForDate(date,'1day',tenant,settings,{scheduled:true,deadline:Date.now()+30000});
+  assert.equal(providerCalls-before,40);assert.ok(providerPeak>1);
+  const times=providerStarts.slice(start);for(let i=1;i<times.length;i++)assert.ok(times[i]-times[i-1]>=49);
+  const locks=await db.collection(`tenants/${tenant}/reminder_locks`).get();
+  assert.equal(locks.size,40);assert.ok(locks.docs.every(d=>d.data().status==='sent'));
+ } finally {providerDelay=0;}
+});
+
+test('delivery lookup scopes logs to tenant, recovers legacy ID, preserves lock and never sends',async()=>{
+ const tenant='delivery_checks';const phone='0543111409';const sentAt='2026-10-08T13:45:10Z';const messageText='בדיקה';
+ await db.doc(`tenants/${tenant}`).set({status:'active',name:'Delivery'});
+ await db.doc(`tenants/${tenant}/private_settings/sms_provider`).set({telnyxApiKey:'test',telnyxFrom:'TEST',telnyxProfileId:'profile'});
+ const logRef=db.doc(`tenants/${tenant}/sms_logs/legacy_test`);
+ await logRef.set({id:'legacy_test',recipientPhone:phone,messageText,reminderType:'test',status:'queued',sentAt});
+ const lockRef=db.doc(`tenants/${tenant}/reminder_locks/manual_${hash(JSON.stringify(['972543111409',messageText,'2026-10-08']))}`);
+ await lockRef.set({status:'sent',providerMessageId:'legacy_id'});
+ lookupMessages.set('legacy_id',{id:'legacy_id',direction:'outbound',to:[{phone_number:'+972543111409',status:'delivery_failed'}],errors:[{code:'40002',detail:'Carrier rejected'}]});
+ const sends=providerCalls;const reads=lookupCalls;
+ assert.notEqual((await api('/api/sms/logs/legacy_test/check-delivery',{},ownerToken,tenant)).status,200);
+ assert.equal(lookupCalls,reads);
+ const result=await api('/api/sms/logs/legacy_test/check-delivery',{},superToken,tenant);
+ assert.equal(result.success,true);assert.equal(result.log.status,'failed');assert.equal(result.log.providerMessageId,'legacy_id');
+ assert.match(result.log.errorMessage,/40002/);assert.equal(providerCalls,sends);assert.equal((await lockRef.get()).data()?.status,'sent');
+ assert.equal(JSON.stringify(result).includes('telnyxApiKey'),false);
+ const cached=await api('/api/sms/logs/legacy_test/check-delivery',{},superToken,tenant);assert.equal(cached.cached,true);assert.equal(lookupCalls,reads+1);
+ await logRef.update({deliveryCheckedAt:null});lookupHttpStatus=500;
+ try {assert.equal((await api('/api/sms/logs/legacy_test/check-delivery',{},superToken,tenant)).success,false);
+ assert.equal((await logRef.get()).data()?.status,'failed');} finally {lookupHttpStatus=200;}
+ assert.equal(providerCalls,sends);
 });

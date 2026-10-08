@@ -695,14 +695,17 @@ export async function dispatchAutomatedWhatsAppApi({
       return { success: false, message: `השרת החזיר תשובה לא חוקית (${res.status}).` };
     }
 
+    if (res.ok && data?.success && data.data?.status === 'failed') {
+      return {success:false,message:`הספק דיווח על כישלון במסירה: ${data.data?.errorMessage || 'בדוק ביומן SMS'}`};
+    }
     if (res.ok && data?.success) {
-      console.log('[Admin Dashboard / Telnyx SMS] הודעת SMS נשלחה בהצלחה דרך Telnyx:', {
+      console.log('[Admin Dashboard / Telnyx SMS] בקשת SMS התקבלה אצל הספק:', {
         to: formattedPhone,
         data: data.data,
       });
       return {
         success: true,
-        message: `תזכורת SMS נשלחה בהצלחה דרך Telnyx ל-${recipientType === 'customer' ? appointment.customer_name : 'אלכס'}! ⚡`,
+        message: `בקשת תזכורת SMS התקבלה אצל הספק עבור ${recipientType === 'customer' ? appointment.customer_name : 'אלכס'}! ⚡`,
       };
     }
 

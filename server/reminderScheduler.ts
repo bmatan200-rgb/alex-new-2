@@ -223,12 +223,28 @@ export async function beginScheduledSend(db: any, ref: any, token: string, now =
 export class SmsPacer {
   private tail: Promise<void> = Promise.resolve(); private nextAt = 0;
   constructor(private intervalMs: number, private clock = () => Date.now(), private sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))) {}
-  async wait() {
+  async wait() { await this.launch(async () => {}); }
+  private pausedUntil = 0;
+  pause(ms: number) { this.pausedUntil = Math.max(this.pausedUntil, this.clock() + ms); }
+  get cooldownUntil() { return this.pausedUntil; }
+  async launch<T>(start: () => Promise<T>): Promise<T> {
     const slot = this.tail.then(async () => {
-      const delay = Math.max(0, this.nextAt - this.clock());
-      if (delay) await this.sleep(delay);
-      this.nextAt = this.clock() + this.intervalMs;
+      while (this.clock() < this.nextAt) await this.sleep(this.nextAt - this.clock());
+      try { return await start(); }
+      finally { this.nextAt = this.clock() + this.intervalMs; }
     });
-    this.tail = slot.catch(() => {}); await slot;
+    this.tail = slot.then(() => {}, () => {}); return slot;
   }
+}
+
+// Bound in-flight work and drain started operations before propagating an error.
+export async function runBounded<T>(items: T[], concurrency: number, operation: (item: T) => Promise<void>) {
+  let cursor = 0; let failed = false; let failure: unknown;
+  await Promise.all(Array.from({length: Math.min(items.length, Math.max(1, Math.floor(concurrency)))}, async () => {
+    while (!failed && cursor < items.length) {
+      const item = items[cursor++];
+      try { await operation(item); } catch (error) { failed = true; failure ??= error; }
+    }
+  }));
+  if (failed) throw failure;
 }

@@ -1,10 +1,11 @@
 // A provider request can be retried automatically only when it was explicitly
 // rejected for rate limiting without returning an accepted message ID.
-export function classifySmsFailure(status:number,data:any,retryAfter:string|null){
+export function classifySmsFailure(status:number,data:any,retryAfter:string|null,now=Date.now()){
   const acceptedId=Boolean(data?.data?.id);
   const seconds=Number(retryAfter);
+  const delay=Number.isFinite(seconds)?seconds*1000:Date.parse(retryAfter || "")-now;
   return {uncertain:status>=500 || acceptedId,retryable:status===429 && !acceptedId,
-    retryAfterMs:Number.isFinite(seconds)?Math.min(3_600_000,Math.max(60_000,seconds*1000)):60_000};
+    retryAfterMs:Number.isFinite(delay)?Math.min(3_600_000,Math.max(60_000,delay)):60_000};
 }
 export function scheduledRetryAt(result:{uncertain?:boolean;retryable?:boolean;retryAfterMs?:number},attempts:number,maxAttempts:number,now:number){
   return !result.uncertain && result.retryable && attempts>0 && attempts<maxAttempts

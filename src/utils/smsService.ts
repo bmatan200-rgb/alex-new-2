@@ -21,7 +21,11 @@ export interface SmsLogEntry {
   recipientPhone: string;
   messageText: string;
   channel: 'sms';
-  status: 'sent' | 'failed' | 'queued';
+  status: 'sent' | 'failed' | 'queued' | 'sending' | 'delivered' | 'unconfirmed' | 'unknown';
+  provider?: string;
+  providerMessageId?: string;
+  providerStatus?: string;
+  deliveryCheckedAt?: string;
   reminderType: 'morning_today' | 'evening_1day' | 'manual_single' | 'test';
   appointmentDate?: string;
   startTime?: string;
@@ -305,4 +309,12 @@ export async function fetchSmsLogs(): Promise<SmsLogEntry[]> {
     console.warn('[SmsService] Fetch logs error:', err);
   }
   return [];
+}
+
+export async function checkSmsDelivery(logId: string): Promise<{success:boolean;log?:SmsLogEntry;error?:string}> {
+  try {
+    const headers=await getAdminApiHeaders();
+    const response=await fetch(`/api/sms/logs/${encodeURIComponent(logId)}/check-delivery`,{method:'POST',headers});
+    return await response.json();
+  } catch { return {success:false,error:'לא ניתן לבדוק כרגע את המסירה. נסה שוב'}; }
 }

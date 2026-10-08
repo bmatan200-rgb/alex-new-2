@@ -237,7 +237,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       if (result.success) {
         markReminderSent(appt.id, target, reminderType);
         setSentLog(getSentRemindersLog());
-        showToast(result.message || `תזכורת SMS נשלחה בהצלחה ל-${target === 'customer' ? appt.customer_name : 'אלכס'}! ⚡`, 'success');
+        showToast(result.message || `בקשת תזכורת SMS התקבלה אצל הספק עבור ${target === 'customer' ? appt.customer_name : 'אלכס'}! ⚡`, 'success');
       } else {
         console.error('[Admin Dashboard] שליחת SMS בלחיצת כפתור נכשלה:', {
           appointmentId: appt.id,

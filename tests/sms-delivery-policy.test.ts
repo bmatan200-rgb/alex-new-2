@@ -17,3 +17,8 @@ test('retry delay honors provider limits and stops after three attempts',()=>{
   assert.equal(classifySmsFailure(429,{},'NaN').retryAfterMs,60000);
   assert.equal(classifySmsFailure(429,{},'999999999').retryAfterMs,3600000);
 });
+
+test('Retry-After HTTP date is honored',()=>{
+ const now=Date.parse('2026-10-08T08:00:00Z');
+ assert.equal(classifySmsFailure(429,{},'Thu, 08 Oct 2026 08:02:00 GMT',now).retryAfterMs,120000);
+});

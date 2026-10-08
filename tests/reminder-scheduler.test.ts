@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {MemoryFirestore} from './helpers/memoryFirestore';
-import {DurableReminderScheduler,localReminderTime,schedulePatch,scheduleId,scheduledClaimDecision,claimScheduledMessage,beginScheduledSend,SmsPacer,MAX_RUN_ATTEMPTS} from '../server/reminderScheduler';
+import {DurableReminderScheduler,localReminderTime,schedulePatch,scheduleId,scheduledClaimDecision,claimScheduledMessage,beginScheduledSend,SmsPacer,runBounded,MAX_RUN_ATTEMPTS} from '../server/reminderScheduler';
 const settings={enabled:true,autoSendEnabled:true,notifyCustomerToday:true,notifyCustomer1DayBefore:true,morningReminderTime:'08:00',eveningReminderTime:'20:00'};
 const date='2026-10-08';
 function harness(initial=localReminderTime(date,'07:00'),dispatch:any=async()=>({success:true,sentCount:1})){
@@ -137,4 +137,36 @@ test('manual-review attention remains visible after a later successful day',asyn
   let fail=true;const h=harness(localReminderTime(date,'08:00'),async()=>fail?{success:false,attention:true,error:'unknown provider response'}:{success:true});await h.seed();const w=h.worker();await w.run();
   fail=false;h.set(localReminderTime('2026-10-09','08:00'));await w.run();
   const s=h.db.values.get('sms_schedules/business_a_today');assert.equal(s.attention,true);assert.equal(s.lastAttention.runDate,date);assert.equal(s.lastAttention.error,'unknown provider response');
+});
+
+test('20/s gateway spaces actual starts after variable preparation; HTTP responses overlap',async()=>{
+  let now=0,active=0,peak=0;const starts:number[]=[];
+  const pacer=new SmsPacer(50,()=>now,async ms=>{now+=ms;});
+  await runBounded(Array.from({length:600},(_,i)=>i),20,async i=>{
+    const pending=await pacer.launch(async()=>{
+      now+=i%3; // variable preflight/transaction latency
+      starts.push(now);active++;peak=Math.max(peak,active);
+      return {response:new Promise<void>(resolve=>setImmediate(()=>{active--;resolve();}))};
+    });
+    await pending.response;
+  });
+  assert.equal(starts.length,600);assert.ok(peak>1 && peak<=20);
+  for(let i=1;i<starts.length;i++)assert.ok(starts[i]-starts[i-1]>=50);
+  assert.ok(starts[599]>=29950 && starts[599]<32000);
+});
+test('worker failure drains in-flight work before returning and stops taking new work',async()=>{
+  const finished:number[]=[];
+  await assert.rejects(runBounded([0,1,2,3,4,5],3,async i=>{
+    if(i===0)throw new Error('write failed');
+    await new Promise<void>(resolve=>setImmediate(resolve));finished.push(i);
+  }),/write failed/);
+  assert.deepEqual(finished,[1,2]);
+});
+test('429 cooldown defers queued starts and failed preflight cannot poison gateway',async()=>{
+  let now=0;const p=new SmsPacer(50,()=>now,async ms=>{now+=ms;});
+  await assert.rejects(p.launch(async()=>{throw new Error('preflight');}),/preflight/);
+  p.pause(60000);let calls=0;
+  await Promise.all(Array.from({length:20},()=>p.launch(async()=>{if(now<p.cooldownUntil)return;calls++;})));
+  assert.equal(calls,0);now=60000;
+  await p.launch(async()=>{if(now>=p.cooldownUntil)calls++;});assert.equal(calls,1);
 });

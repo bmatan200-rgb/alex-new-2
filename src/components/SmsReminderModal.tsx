@@ -1,3 +1,4 @@
+import { smsDeliveryView } from '../utils/smsDeliveryView';
 import { useTenant } from '../context/TenantContext';
 import React, { useState, useEffect } from 'react';
 import {
@@ -28,6 +29,7 @@ import {
   triggerBatchSms,
   sendTestSms,
   fetchSmsLogs,
+  checkSmsDelivery,
   DEFAULT_SMS_SETTINGS,
 } from '../utils/smsService';
 
@@ -62,6 +64,8 @@ export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
 
   // Logs state
   const [logs, setLogs] = useState<SmsLogEntry[]>([]);
+  const [checkingLog, setCheckingLog] = useState<string | null>(null);
+  const [deliveryErrors, setDeliveryErrors] = useState<Record<string,string>>({});
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
 
   useEffect(() => {
@@ -81,6 +85,16 @@ export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
     const fetchedLogs = await fetchSmsLogs();
     setLogs(fetchedLogs);
     setIsLoadingLogs(false);
+  };
+
+  const handleCheckDelivery = async (id: string) => {
+    setCheckingLog(id);
+    setDeliveryErrors(old => ({...old,[id]:''}));
+    try {
+      const result=await checkSmsDelivery(id);
+      if (result.success && result.log) setLogs(old=>old.map(log=>log.id===id?result.log!:log));
+      else setDeliveryErrors(old=>({...old,[id]:result.error || 'בדיקת המסירה נכשלה'}));
+    } finally { setCheckingLog(null); }
   };
 
   if (!isOpen) return null;
@@ -111,7 +125,7 @@ export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
       const sampleMessage = `היי בדיקה 🌸\nהודעת SMS לבדיקת מערכת התזכורות של ${SALON_INFO.name} ✨\nשירות לקוחות: ${SALON_INFO.phone}`;
       const res = await sendTestSms(testPhone, sampleMessage);
       if (res.success) {
-        setTestResult({ status: 'success', message: `✅ הודעת SMS בדיקה נשלחה בהצלחה אל ${testPhone}` });
+        setTestResult({ status: res.data?.status === 'failed' ? 'error' : 'success', message: res.data?.status === 'failed' ? `הספק דיווח על כישלון: ${res.data?.errorMessage || 'בדוק ביומן SMS'}` : `ההודעה התקבלה אצל ספק ה־SMS עבור ${testPhone}. בדוק את המסירה ביומן SMS` });
         loadLogs();
       } else {
         setTestResult({ status: 'error', message: res.error || 'שגיאה בשליחת SMS' });
@@ -132,7 +146,7 @@ export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
       if (res.success) {
         setBatchResult({
           status: 'success',
-          message: res.message || `✅ נשלחו תזכורות SMS בהצלחה לכל ${label}`,
+          message: res.message || `התזכורות עבור ${label} התקבלו אצל ספק ה־SMS; טרם אומתה מסירה`,
         });
         loadLogs();
       } else {
@@ -584,8 +598,8 @@ export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
                       key={log.id}
                       className="p-3 bg-slate-50 border border-slate-200 rounded-2xl flex items-start justify-between gap-3 text-xs"
                     >
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="font-bold text-slate-900">{log.recipientName}</span>
                           <span className="text-slate-500 font-mono" dir="ltr">
                             {log.recipientPhone}
@@ -603,18 +617,21 @@ export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
                           {new Date(log.sentAt).toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' })}
                         </span>
                       </div>
-                      <div className="shrink-0">
-                        {log.status === 'sent' ? (
-                          <span className="px-2 py-1 bg-emerald-100 text-emerald-800 rounded-lg font-bold flex items-center gap-1 text-[11px]">
-                            <Check className="w-3 h-3" />
-                            נשלח
-                          </span>
-                        ) : (
-                          <span className="px-2 py-1 bg-rose-100 text-rose-800 rounded-lg font-bold flex items-center gap-1 text-[11px]">
-                            <AlertCircle className="w-3 h-3" />
-                            נכשל
-                          </span>
-                        )}
+                      <div className="shrink-0 max-w-[48%] space-y-2 text-right">
+                        <span className={`px-2 py-1 rounded-lg font-bold block text-[11px] ${
+                          smsDeliveryView(log.status,Boolean(log.deliveryCheckedAt || log.providerStatus)).tone === 'success' ? 'bg-emerald-100 text-emerald-800' :
+                          smsDeliveryView(log.status).tone === 'error' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-900'
+                        }`}>
+                          {smsDeliveryView(log.status,Boolean(log.deliveryCheckedAt || log.providerStatus)).label}
+                        </span>
+                        {log.errorMessage && <p className="text-rose-700 break-words" dir="auto">{log.errorMessage}</p>}
+                        <button type="button" disabled={checkingLog !== null} onClick={()=>handleCheckDelivery(log.id)}
+                          className="text-indigo-700 underline font-bold disabled:opacity-50">
+                          {checkingLog===log.id?'בודק אצל הספק…':'בדוק מסירה'}
+                        </button>
+                        {log.providerMessageId && <p className="text-[10px] text-slate-500 break-all" dir="ltr">{log.provider}: {log.providerMessageId}</p>}
+                        {log.deliveryCheckedAt && <p className="text-[10px] text-slate-500">נבדק: {new Date(log.deliveryCheckedAt).toLocaleString('he-IL',{timeZone:'Asia/Jerusalem'})}</p>}
+                        {deliveryErrors[log.id] && <p role="alert" className="text-rose-700">{deliveryErrors[log.id]}</p>}
                       </div>
                     </div>
                   ))}

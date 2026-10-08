@@ -116,15 +116,16 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   useEffect(() => {
     const role = pwaRoleForPath(location.pathname);
-    const metadata = pwaMetadata(role, activeQuery || tenant.id, tenant.name);
+    const metadata = pwaMetadata(role, activeQuery || tenant.id, tenant.name, tenant.adminIcon);
     document.title = role === 'customer' ? `${tenant.name} | קביעת תורים` : metadata.name;
     const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
     if (appleTitle) appleTitle.setAttribute('content', metadata.name.slice(0, 30));
     const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
     if (manifest && manifest.getAttribute('href') !== metadata.manifestHref) manifest.setAttribute('href', metadata.manifestHref);
     const icon = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
-    if (icon) icon.setAttribute('href', metadata.icon);
-  }, [location.pathname, activeQuery, tenant.id, tenant.name]);
+    if (metadata.icon.endsWith('.svg')) icon?.remove();
+    else if (icon && metadata.icon) icon.setAttribute('href', metadata.icon);
+  }, [location.pathname, activeQuery, tenant.id, tenant.name, tenant.adminIcon]);
 
   const salonInfo: SalonInfo = {
     name: tenant.name,

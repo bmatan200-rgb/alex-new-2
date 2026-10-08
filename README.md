@@ -1,6 +1,8 @@
-# Alex Multi-Tenant — V34.0.0
+# Alex Multi-Tenant — V37.0.0
 
-תיקון הפרדת לקוח, מנהל עסק וסופר אדמין: [דוח V34](ROLE-ISOLATION-FIX-HE.md).
+תיקון הפרדת לקוח, מנהל עסק וסופר אדמין: [דוח V35](ROLE-ISOLATION-FIX-HE.md).
+
+לכל עסק: בחירת סמל וקטורי וצבע, עם 24 אפשרויות בכל אחד מארבעת תחומי השירות. הסמל ושם העסק מופיעים באתר הלקוחות, בממשק הניהול ובאייקוני ההתקנה; שילוב שכבר הוקצה נחסם גם בשרת. פרטים: [מיתוג עסק V37](BUSINESS-BRANDING-V37-HE.md).
 
 גרסה מלאה ומעודכנת עם תיקוני הרשאות Super Admin, רישום לקוחות, Firestore quota, יציבות Render ובידוד multi-tenant.
 ה־Auth, ה־multi-tenant והפרדת הנתונים של v17 נשמרו. פירוט השינויים החדשים: [AUDIT-v18.md](AUDIT-v18.md).
@@ -29,7 +31,7 @@ NODE_ENV=production npm start
 
 ב־Render: Build Command הוא `npm ci && npm run build`; Start Command הוא `npm start`;
 הגדירו `NODE_ENV=production`. השרת מכבד את `PORT` של Render. נקודת בריאות: `/api/health`.
-ב־V34 נקודת הבריאות חייבת להחזיר `"version":"34.0.0"`; אם לא, Render עדיין מריץ build ישן.
+ב־V37 נקודת הבריאות חייבת להחזיר `"version":"37.0.0"`; אם לא, Render עדיין מריץ build ישן.
 אין צורך במפתח Gemini. מפתחות Telnyx וחשבון השירות נשארים בשרת בלבד.
 
 ## Firebase Admin ובסיס הנתונים

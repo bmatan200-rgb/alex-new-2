@@ -14,7 +14,7 @@ const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
 const manifestRoute = server.slice(server.indexOf("app.get('/manifest.json'"), server.indexOf("app.param(['tenantId','id']"));
 const serviceWorker = readFileSync(new URL('../public/service-worker.js', import.meta.url), 'utf8');
 
-assert.equal(pkg.version, '34.0.0');
+assert.equal(pkg.version, '37.0.0');
 assert.match(server, /const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail\.com'/);
 assert.match(server, /if \(email === PRIMARY_SUPER_ADMIN_EMAIL\) \{/);
 assert.doesNotMatch(server, /email === PRIMARY_SUPER_ADMIN_EMAIL && currentUser\.emailVerified/);
@@ -41,7 +41,7 @@ assert.match(authModal, /tenantId, \{ auth: 'none' \}/);
 assert.doesNotMatch(torFlow, /upsertCustomerToFirestore/);
 assert.match(server, /getAll\(\.\.\.refs\)/);
 
-// V34 PWA and tenant-specific install prompt guards.
+// V37 professional icon branding and tenant-specific install prompt guards.
 assert.match(installPrompt, /pwa-install-opt-out:\$\{tenantId\}/, 'install dismissal is not business-scoped');
 assert.match(installPrompt, /localStorage\.setItem\(optOutKey, '1'\)/, 'permanent dismissal is not persisted');
 assert.match(installPrompt, /pwa-install-complete:\$\{tenantId\}/, 'completed installation is not business-scoped');
@@ -51,8 +51,15 @@ assert.match(installPrompt, /beforeinstallprompt/);
 assert.match(installPrompt, /standalone\?: boolean/);
 assert.match(installPrompt, /Share.* באייפון|באייפון או באייפד/);
 assert.match(main, /serviceWorker\.register\('\/service-worker\.js'/);
-assert.match(manifestRoute, /buildPwaManifest\(role, tenantId, tenantName\)/);
+assert.match(manifestRoute, /buildPwaManifest\(role, tenantId, tenantName, adminIcon\)/);
 assert.match(manifestRoute, /role === 'super-admin'/);
+assert.match(manifestRoute, /adminIcon = await ensureTenantAdminIcon\(tenantId\)/, 'customer and admin manifests must share the tenant icon');
+assert.match(server, /tenant-admin-icons\/:iconId\.svg/);
+assert.match(readFileSync(new URL('../src/utils/businessAdminIcons.ts', import.meta.url), 'utf8'), /Twenty-four/);
+assert.match(readFileSync(new URL('../src/pages/SuperAdmin.tsx', import.meta.url), 'utf8'), /BUSINESS_ICON_CATEGORIES/);
+assert.match(server, /BUSINESS_ADMIN_ICON_TAKEN/);
+assert.match(server, /tenantAdminIcons/);
+assert.match(readFileSync(new URL('../src/pages/SuperAdmin.tsx', import.meta.url), 'utf8'), /בחרו סמל/);
 assert.match(serviceWorker, /skipWaiting/);
 assert.doesNotMatch(serviceWorker, /caches\.open|caches\.match/, 'PWA worker must not cache customer or booking data');
 
@@ -67,4 +74,6 @@ assert.match(superAdmin, /name="new-business-owner-email"[\s\S]*?autoComplete="o
 assert.match(superAdmin, /name="new-business-owner-password"[\s\S]*?autoComplete="new-password"/, 'new owner password may reuse signed-in credentials');
 assert.doesNotMatch(torFlow, /executeBookingSubmission\(cleanName, cleanPhone, isAdmin\)/, 'obsolete booking argument remains');
 
-console.log('V34 PWA source verification passed');
+assert.match(readFileSync(new URL('../src/components/Header.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
+assert.match(readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
+console.log('V37 icon source verification passed');

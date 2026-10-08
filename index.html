@@ -32,8 +32,8 @@
         const pwaTitle = pwaSuperAdmin ? 'סופר אדמין' : 'ניהול העסק';
         document.title = pwaTitle;
         document.querySelector('meta[name="apple-mobile-web-app-title"]').setAttribute('content', pwaTitle);
-        document.querySelector('link[rel="apple-touch-icon"]').href = pwaSuperAdmin
-          ? '/pwa-super-admin-192x192.png' : '/pwa-admin-192x192.png';
+        if (pwaSuperAdmin) document.querySelector('link[rel="apple-touch-icon"]').href = '/pwa-super-admin-192x192.png';
+        else document.querySelector('link[rel="apple-touch-icon"]')?.remove();
       }
     </script>
 

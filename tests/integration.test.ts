@@ -110,6 +110,7 @@ test('Firestore rules deny public PII, writes, lock edits and provider secrets',
   await assertSucceeds(getDoc(doc(anon,'tenants/alex_beauty/settings/config')));
   await assertFails(getDoc(doc(anon,'tenants/alex_beauty/settings/sms_reminders')));
   await assertFails(getDoc(doc(owner,'tenants/alex_beauty/private_settings/sms_provider')));
+  await assertFails(getDoc(doc(canonicalSuper,'tenantAdminIcons/flower_purple')));
   await assertFails(setDoc(doc(owner,'tenants/alex_beauty/reminder_locks/a'),{status:'sent'}));
   await assertFails(setDoc(doc(anon,'tenants/alex_beauty/appointments/new'),{status:'confirmed'}));
 });
@@ -202,6 +203,42 @@ test('tenant create/domain collision and durable delete cannot silently overwrit
   assert.equal((await api('/api/tenant/current',undefined,undefined,'new_tenant')).success,false);
   assert.equal((await db.doc('domains/new.example.com').get()).exists,false);
 });
+
+test('business admin icon assignments are unique, transactional, visible in PWA manifests and reusable after deletion',async()=>{
+  const first={tenantId:'icon_business_a',name:'Icon A',phone:'0501111113',adminIcon:'flower_purple'};
+  const second={tenantId:'icon_business_b',name:'Icon B',phone:'0501111114',adminIcon:'diamond_teal'};
+  assert.equal((await api('/api/super-admin/tenants',first,superToken,'icon_business_a')).success,true);
+  assert.equal((await api('/api/super-admin/tenants',second,superToken,'icon_business_b')).success,true);
+  const collision=await api('/api/super-admin/tenants',{tenantId:'icon_collision',name:'Collision',phone:'0501111115',adminIcon:'flower_purple'},superToken,'icon_collision');
+  assert.equal(collision.status,409);
+  const updateCollision=await api('/api/super-admin/tenants/icon_business_b',{...second,adminIcon:'flower_purple'},superToken,'icon_business_b','PUT');
+  assert.equal(updateCollision.status,409);
+  assert.equal((await db.doc('tenants/icon_business_b').get()).data()?.adminIcon,'diamond_teal');
+  assert.equal((await db.doc('tenantAdminIcons/flower_purple').get()).data()?.tenantId,'icon_business_a');
+  assert.equal((await api('/api/super-admin/tenants/icon_business_a',{...first,adminIcon:'heart_gold'},superToken,'icon_business_a','PUT')).success,true);
+  assert.equal((await db.doc('tenantAdminIcons/flower_purple').get()).exists,false);
+  assert.equal((await api('/api/super-admin/tenants/icon_business_b',{...second,adminIcon:'flower_purple'},superToken,'icon_business_b','PUT')).success,true);
+  const manifest=await nativeFetch(`${base}/manifest.json?app=admin&tenant=icon_business_b`);
+  const manifestJson=await manifest.json();
+  assert.equal(manifestJson.icons[0].src,'/tenant-admin-icons/flower_purple.svg?name=Icon%20B');
+  assert.equal(manifestJson.id,'/admin?tenant=icon_business_b');
+  const customerManifest=await nativeFetch(`${base}/manifest.json?tenant=icon_business_b`);
+  const customerManifestJson=await customerManifest.json();
+  assert.equal(customerManifestJson.icons[0].src,manifestJson.icons[0].src);
+  assert.equal(customerManifestJson.id,'/?tenant=icon_business_b');
+  const icon=await nativeFetch(`${base}/tenant-admin-icons/flower_purple.svg?name=Icon%20B`);
+  assert.equal(icon.status,200);assert.match(icon.headers.get('content-type')||'',/image\/svg\+xml/);const iconSvg=await icon.text();assert.match(iconSvg,/<path/);assert.match(iconSvg,/Icon B/);
+  assert.equal((await nativeFetch(`${base}/tenant-admin-icons/unknown.svg`)).status,404);
+  const raced=await Promise.all(['race_icon_a','race_icon_b'].map((tenantId,index)=>api('/api/super-admin/tenants',{tenantId,name:`Race ${index}`,phone:`050111112${index}`,adminIcon:'star_fuchsia'},superToken,tenantId)));
+  assert.equal(raced.filter((result:any)=>result.success).length,1);
+  assert.equal(raced.filter((result:any)=>result.status===409).length,1);
+  const raceOwner=(await db.doc('tenantAdminIcons/star_fuchsia').get()).data()?.tenantId;
+  assert.ok(['race_icon_a','race_icon_b'].includes(raceOwner));
+  await api(`/api/super-admin/tenants/${raceOwner}`,undefined,superToken,raceOwner,'DELETE');
+  await api('/api/super-admin/tenants/icon_business_b',undefined,superToken,'icon_business_b','DELETE');
+  assert.equal((await db.doc('tenantAdminIcons/flower_purple').get()).exists,false);
+  assert.equal((await api('/api/super-admin/tenants',{tenantId:'icon_business_c',name:'Icon C',phone:'0501111116',adminIcon:'flower_purple'},superToken,'icon_business_c')).success,true);
+});
 test('disabled owner rejected with previously issued token',async()=>{await getAuth().updateUser('owner',{disabled:true});assert.equal((await api('/api/admin/customers',undefined,ownerToken)).status,401);});
 test('disabled reminder switches and suspended tenants prevent dispatch',async()=>{
   const date=israelClock().tomorrowIso;
@@ -258,7 +295,7 @@ test('built production server boots with named database and serves API plus SPA'
     }
     assert.ok(ready,output);
     const html=await nativeFetch('http://127.0.0.1:43187/');assert.equal(html.status,200);assert.match(await html.text(),/<div id="root">/);
-  const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'34.0.0');
+  const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'35.0.0');
     const registerRoute=await nativeFetch('http://127.0.0.1:43187/api/customer/register',{method:'POST',headers:{'Content-Type':'application/json','x-tenant-id':'alex_beauty'},body:JSON.stringify({full_name:'x',phone:'bad',acceptedTerms:false})});
     assert.equal(registerRoute.status,400);assert.doesNotMatch(await registerRoute.text(),/API route not found/);
     const missing=await nativeFetch('http://127.0.0.1:43187/api/unknown');assert.equal(missing.status,404);assert.match(missing.headers.get('content-type')||'',/json/);

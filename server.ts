@@ -1,5 +1,6 @@
 import { publicBusyAppointment } from './src/utils/calendarBlocks';
 import { buildPwaManifest, type PwaRole } from './src/utils/pwa';
+import { BUSINESS_ADMIN_ICON_IDS, businessAdminIconSvg, isBusinessAdminIconId } from './src/utils/businessAdminIcons';
 import 'dotenv/config';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { validId, validTime, validDate, phoneDigits, hash, reminderKey, overlaps, israelClock, parseFirebaseServiceAccount, authorizeTenant, publicSettings, claimOnce, copyOnce } from './server/core';
@@ -112,11 +113,13 @@ const appointmentListCache = new Map<string, CachedAppointments>();
 const tenantProfileCache = new Map<string, { expiresAt: number; data: any }>();
 const domainTenantCache = new Map<string, { expiresAt: number; tenantId: string }>();
 let superAdminTenantsCache: { expiresAt: number; tenants: any[] } | null = null;
+const tenantAdminIconCache = new Map<string, { iconId: string; expiresAt: number }>();
 
 function invalidateTenantCaches(tenantId: string) {
   appointmentListCache.delete(`${tenantId}:admin`);
   appointmentListCache.delete(`${tenantId}:public`);
   tenantProfileCache.delete(tenantId);
+  tenantAdminIconCache.delete(tenantId);
   superAdminTenantsCache = null;
 }
 function invalidateAppointmentsCache(tenantId: string) {
@@ -240,13 +243,22 @@ app.get('/manifest.json', async (req, res) => {
     }
   }
   let tenantName = 'הזמנת תורים לעסק';
+  let adminIcon = '';
   try {
     const tenant = await activeTenant(tenantId);
     if (typeof tenant?.name === 'string' && tenant.name.trim()) tenantName = tenant.name.trim();
+    adminIcon = await ensureTenantAdminIcon(tenantId);
   } catch {
     // Keep the manifest available when tenant data is temporarily unavailable.
   }
-  res.json(buildPwaManifest(role, tenantId, tenantName));
+  res.json(buildPwaManifest(role, tenantId, tenantName, adminIcon));
+});
+app.get('/tenant-admin-icons/:iconId.svg', (req, res) => {
+  const businessName = typeof req.query.name === 'string' ? req.query.name : '';
+  const svg = businessAdminIconSvg(req.params.iconId, businessName);
+  if (!svg) return res.status(404).type('text/plain').send('Icon not found');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.type('image/svg+xml').send(svg);
 });
 app.param(['tenantId','id'], (req,res,next,value)=>{
   if(!validId(value)) return res.status(400).json({success:false,error:'Invalid document ID'});
@@ -652,7 +664,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '34.0.0';
+const APP_VERSION = '37.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];
@@ -1596,6 +1608,8 @@ app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) 
     const baseTenants = snap.docs
       .map((d) => ({ id: d.id, ...d.data() } as any))
       .filter((t: any) => t.status !== 'deleted');
+    const assignedIcons = await Promise.all(baseTenants.map((tenant: any) => ensureTenantAdminIcon(tenant.id)));
+    baseTenants.forEach((tenant: any, index: number) => { tenant.adminIcon = assignedIcons[index]; });
 
     // Aggregation count avoids downloading every appointment/customer document.
     // Firestore bills aggregation by index work (minimum one read) instead of one
@@ -1636,8 +1650,9 @@ app.get('/api/tenant/current', async(req,res,next)=>{
     const tenantId=req.tenantId!;
     const profile=await activeTenant(tenantId);
     const config=await getDoc(getTenantSettingsDoc(tenantId));
+    const adminIcon=await ensureTenantAdminIcon(tenantId);
     const {ownerAuthUid,ownerAuthEmail,...tenant}=profile || {};
-    res.json({success:true,tenantId,tenant:{...tenant,id:tenantId},config:{services:config.data()?.services || [],scheduleSettings:config.data()?.scheduleSettings || {businessOpen:'',businessClose:'',fridayOpen:'',fridayClose:'',durationMinutes:60}}});
+    res.json({success:true,tenantId,tenant:{...tenant,id:tenantId,adminIcon},config:{services:config.data()?.services || [],scheduleSettings:config.data()?.scheduleSettings || {businessOpen:'',businessClose:'',fridayOpen:'',fridayClose:'',durationMinutes:60}}});
   }catch(err){next(err);}
 });
 
@@ -1654,11 +1669,36 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
     if(create && existing.exists) throw new Error('Tenant ID already exists');
     if(!create && !existing.exists) throw new Error('Tenant not found');
     if(existing.data()?.status==='deleted') throw new Error('Deleted tenant ID cannot be reused');
+    const previousAdminIcon = existing.data()?.adminIcon;
+    const requestedAdminIcon = isBusinessAdminIconId(profile.adminIcon) ? profile.adminIcon
+      : (!create && isBusinessAdminIconId(previousAdminIcon) ? previousAdminIcon : '');
+    const allocationStart = parseInt(hash(tenantId).slice(0, 8), 16) % BUSINESS_ADMIN_ICON_IDS.length;
+    const candidates = requestedAdminIcon
+      ? [requestedAdminIcon]
+      : [...BUSINESS_ADMIN_ICON_IDS.slice(allocationStart), ...BUSINESS_ADMIN_ICON_IDS.slice(0, allocationStart)];
+    let selectedAdminIcon = '';
+    for (const iconId of candidates) {
+      const assignment = await tx.get(doc(db, 'tenantAdminIcons', iconId));
+      if (assignment.exists && assignment.data()?.tenantId !== tenantId) {
+        if (requestedAdminIcon) throw new Error('BUSINESS_ADMIN_ICON_TAKEN');
+        continue;
+      }
+      selectedAdminIcon = iconId;
+      break;
+    }
+    if (!selectedAdminIcon) throw new Error('BUSINESS_ADMIN_ICONS_EXHAUSTED');
+    profile.adminIcon=selectedAdminIcon;
+    const selectedIconRef = doc(db, 'tenantAdminIcons', selectedAdminIcon);
+    const previousIconRef = isBusinessAdminIconId(previousAdminIcon) && previousAdminIcon !== selectedAdminIcon
+      ? doc(db, 'tenantAdminIcons', previousAdminIcon) : null;
+    const previousAssignment = previousIconRef ? await tx.get(previousIconRef) : null;
     const oldDomain=existing.data()?.customDomain;
     const mapping=domain?await tx.get(doc(db,'domains',domain)):null;
     const oldMapping=oldDomain && oldDomain!==domain?await tx.get(doc(db,'domains',oldDomain)):null;
     if(mapping?.exists && mapping.data()?.tenantId!==tenantId) throw new Error('Domain belongs to another tenant');
-    tx.set(ref,{...profile,customDomain:domain},{merge:!create});
+    tx.set(ref,{...profile,adminIcon:selectedAdminIcon,customDomain:domain},{merge:!create});
+    tx.set(selectedIconRef,{tenantId,updatedAt:new Date().toISOString()},{merge:true});
+    if(previousIconRef && previousAssignment?.data()?.tenantId===tenantId) tx.delete(previousIconRef);
     tx.set(getTenantSettingsDoc(tenantId),config,{merge:!create});
     if(domain) tx.set(doc(db,'domains',domain),{tenantId,hostname:domain});
     if(oldMapping?.data()?.tenantId===tenantId) tx.delete(oldMapping.ref);
@@ -1666,6 +1706,38 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
   invalidateTenantCaches(tenantId);
   domainTenantCache.clear();
   schedulerConfigCache = null;
+}
+
+async function ensureTenantAdminIcon(tenantId:string):Promise<string> {
+  const cached=tenantAdminIconCache.get(tenantId);
+  if(cached && cached.expiresAt>Date.now()) return cached.iconId;
+  const start = parseInt(hash(tenantId).slice(0, 8), 16) % BUSINESS_ADMIN_ICON_IDS.length;
+  const iconId=await db.runTransaction(async tx => {
+    const tenantRef = getTenantDoc(tenantId);
+    const tenantSnap = await tx.get(tenantRef);
+    if (!tenantSnap.exists || tenantSnap.data()?.status === 'deleted') throw new Error('Tenant not found');
+    const currentIcon = tenantSnap.data()?.adminIcon;
+    if (isBusinessAdminIconId(currentIcon)) {
+      const currentRef = doc(db, 'tenantAdminIcons', currentIcon);
+      const currentAssignment = await tx.get(currentRef);
+      if (!currentAssignment.exists || currentAssignment.data()?.tenantId === tenantId) {
+        if (!currentAssignment.exists) tx.set(currentRef,{tenantId,updatedAt:new Date().toISOString()});
+        return currentIcon;
+      }
+    }
+    for (let offset = 0; offset < BUSINESS_ADMIN_ICON_IDS.length; offset++) {
+      const iconId = BUSINESS_ADMIN_ICON_IDS[(start + offset) % BUSINESS_ADMIN_ICON_IDS.length];
+      const assignmentRef = doc(db, 'tenantAdminIcons', iconId);
+      const assignment = await tx.get(assignmentRef);
+      if (assignment.exists && assignment.data()?.tenantId !== tenantId) continue;
+      tx.set(tenantRef,{adminIcon:iconId,updatedAt:new Date().toISOString()},{merge:true});
+      tx.set(assignmentRef,{tenantId,updatedAt:new Date().toISOString()},{merge:true});
+      return iconId;
+    }
+    throw new Error('BUSINESS_ADMIN_ICONS_EXHAUSTED');
+  });
+  tenantAdminIconCache.set(tenantId,{iconId,expiresAt:Date.now()+5*60_000});
+  return iconId;
 }
 
 // 9. Super Admin Tenant Onboarding & Domain Mapping Endpoint
@@ -1681,6 +1753,7 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
       address,
       primaryColor,
       secondaryColor,
+      adminIcon: requestedAdminIcon,
       customDomain,
       coverImage,
       services,
@@ -1712,6 +1785,7 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
       address: String(address || '').trim(),
       primaryColor: primaryColor || '#7c3aed',
       secondaryColor: secondaryColor || '#c4b5fd',
+      adminIcon: isBusinessAdminIconId(requestedAdminIcon) ? requestedAdminIcon : '',
       customDomain: customDomain ? String(customDomain).trim().toLowerCase() : '',
       coverImage: String(coverImage || '').trim(),
       plan: plan || 'pro',
@@ -1750,7 +1824,7 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
     });
   } catch (err: any) {
     console.error('[Super Admin API] Error creating tenant:', err);
-    return res.status(500).json({ success: false, error: err?.message });
+    return res.status(err?.message === 'BUSINESS_ADMIN_ICON_TAKEN' ? 409 : 500).json({ success: false, error: err?.message === 'BUSINESS_ADMIN_ICON_TAKEN' ? 'האייקון כבר הוקצה לעסק אחר. יש לבחור אייקון אחר.' : err?.message === 'BUSINESS_ADMIN_ICONS_EXHAUSTED' ? 'כל שילובי האייקונים בשימוש. יש להוסיף אפשרויות נוספות.' : err?.message });
   }
 });
 
@@ -1764,9 +1838,10 @@ app.get('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
       getDoc(getTenantSettingsDoc(tenantId, 'config')),
     ]);
     if (!tenantSnap.exists) return res.status(404).json({ success: false, error: 'Tenant not found' });
+    const adminIcon = await ensureTenantAdminIcon(tenantId);
     return res.json({
       success: true,
-      tenant: { id: tenantSnap.id, ...tenantSnap.data() },
+      tenant: { id: tenantSnap.id, ...tenantSnap.data(), adminIcon },
       config: configSnap.exists ? configSnap.data() : { services: [], scheduleSettings: {} },
     });
   } catch (err: any) {
@@ -1797,6 +1872,7 @@ app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
       address: String(req.body?.address || '').trim(),
       primaryColor: req.body?.primaryColor || existing.primaryColor || '#7c3aed',
       secondaryColor: req.body?.secondaryColor || existing.secondaryColor || '#c4b5fd',
+      adminIcon: isBusinessAdminIconId(req.body?.adminIcon) ? req.body.adminIcon : '',
       customDomain,
       coverImage: String(req.body?.coverImage || '').trim(),
       plan: req.body?.plan || existing.plan || 'pro',
@@ -1815,7 +1891,7 @@ app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
       adminUrl: customDomain ? 'https://' + customDomain + '/admin' : `/admin?tenant=${tenantId}` });
   } catch (err: any) {
     console.error('[Super Admin API] Error updating tenant:', err);
-    return res.status(500).json({ success: false, error: err?.message });
+    return res.status(err?.message === 'BUSINESS_ADMIN_ICON_TAKEN' ? 409 : 500).json({ success: false, error: err?.message === 'BUSINESS_ADMIN_ICON_TAKEN' ? 'האייקון כבר הוקצה לעסק אחר. יש לבחור אייקון אחר.' : err?.message === 'BUSINESS_ADMIN_ICONS_EXHAUSTED' ? 'כל שילובי האייקונים בשימוש. יש להוסיף אפשרויות נוספות.' : err?.message });
   }
 });
 
@@ -1883,7 +1959,15 @@ app.delete('/api/super-admin/tenants/:tenantId',requireSuperAdmin,async(req,res,
     const tenant=await getDoc(getTenantDoc(tenantId));
     if(!tenant.exists) return res.status(404).json({success:false,error:'Tenant not found'});
     // Persistent tombstone immediately denies access on every server and stops reminders.
-    await getTenantDoc(tenantId).update({status:'deleted',deletedAt:new Date().toISOString()});
+    const iconId=tenant.data()?.adminIcon;
+    await db.runTransaction(async tx=>{
+      const tenantRef=getTenantDoc(tenantId);
+      const current=await tx.get(tenantRef);
+      const iconRef=isBusinessAdminIconId(iconId)?doc(db,'tenantAdminIcons',iconId):null;
+      const assignment=iconRef?await tx.get(iconRef):null;
+      tx.update(tenantRef,{status:'deleted',deletedAt:new Date().toISOString()});
+      if(iconRef && assignment?.data()?.tenantId===tenantId) tx.delete(iconRef);
+    });
     if(tenant.data()?.ownerAuthUid) {
       await getAuth().updateUser(tenant.data()!.ownerAuthUid,{disabled:true});
       await getAuth().revokeRefreshTokens(tenant.data()!.ownerAuthUid);

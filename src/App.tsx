@@ -50,6 +50,7 @@ import {
 import { formatILS, deduplicateAppointments, isAppointmentInPast } from './utils/dateUtils';
 import { TenantProvider, useTenant } from './context/TenantContext';
 import { Header } from './components/Header';
+import { businessAdminIconAssetUrl, getBusinessAdminIconDetails } from './utils/businessAdminIcons';
 import { TorModalFlow } from './components/TorModalFlow';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { CancelAppointmentConfirmModal } from './components/CancelAppointmentConfirmModal';
@@ -112,6 +113,7 @@ function AdminRouteView({
   }
 
   const salonTitle = tenant.name || (tenantParam === 'alex_beauty' ? SALON_INFO.name : `סלון ${tenantParam}`);
+  const businessIcon = getBusinessAdminIconDetails(tenant.adminIcon || '');
 
   return (
     <div className="min-h-screen bg-[#f8f9fa] text-slate-800 font-['Heebo',sans-serif]" dir="rtl">
@@ -121,9 +123,9 @@ function AdminRouteView({
           <div className="flex items-center gap-3">
             <div
               className="relative w-8 h-8 rounded-xl flex items-center justify-center font-bold text-white text-xs shadow-xs"
-              style={{ backgroundColor: tenant.primaryColor || '#9333ea' }}
+              style={{ backgroundColor: businessIcon?.color.value || tenant.primaryColor || '#9333ea' }}
             >
-              {salonTitle.charAt(0)}
+              {businessIcon ? <img className="h-full w-full rounded-xl object-cover" src={businessAdminIconAssetUrl(tenant.adminIcon || '', salonTitle) || undefined} alt={`סמל ${salonTitle}`} /> : salonTitle.charAt(0)}
               <span className="w-2 h-2 rounded-full bg-emerald-400 absolute -top-0.5 -right-0.5 border border-slate-950 animate-pulse" />
             </div>
             <div>

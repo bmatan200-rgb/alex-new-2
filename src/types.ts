@@ -130,6 +130,7 @@ export interface TenantInfo {
   city?: string;
   primaryColor?: string;
   secondaryColor?: string;
+  adminIcon?: string;
   coverImage?: string; // tenant-specific hero/cover image (URL or compressed data URL)
   status: 'active' | 'trial' | 'suspended';
   plan: 'starter' | 'pro' | 'enterprise';
@@ -140,5 +141,4 @@ export interface TenantInfo {
   customDomain?: string;
   isPrimary?: boolean;
 }
-
 

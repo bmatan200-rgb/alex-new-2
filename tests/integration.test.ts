@@ -220,13 +220,13 @@ test('business admin icon assignments are unique, transactional, visible in PWA 
   assert.equal((await api('/api/super-admin/tenants/icon_business_b',{...second,adminIcon:'flower_purple'},superToken,'icon_business_b','PUT')).success,true);
   const manifest=await nativeFetch(`${base}/manifest.json?app=admin&tenant=icon_business_b`);
   const manifestJson=await manifest.json();
-  assert.equal(manifestJson.icons[0].src,'/tenant-admin-icons/flower_purple.svg?name=Icon%20B');
+  assert.equal(manifestJson.icons[0].src,'/tenant-admin-icons/flower_purple.svg?v=38&name=Icon%20B');
   assert.equal(manifestJson.id,'/admin?tenant=icon_business_b');
   const customerManifest=await nativeFetch(`${base}/manifest.json?tenant=icon_business_b`);
   const customerManifestJson=await customerManifest.json();
   assert.equal(customerManifestJson.icons[0].src,manifestJson.icons[0].src);
   assert.equal(customerManifestJson.id,'/?tenant=icon_business_b');
-  const icon=await nativeFetch(`${base}/tenant-admin-icons/flower_purple.svg?name=Icon%20B`);
+  const icon=await nativeFetch(`${base}/tenant-admin-icons/flower_purple.svg?v=38&name=Icon%20B`);
   assert.equal(icon.status,200);assert.match(icon.headers.get('content-type')||'',/image\/svg\+xml/);const iconSvg=await icon.text();assert.match(iconSvg,/<path/);assert.match(iconSvg,/Icon B/);
   assert.equal((await nativeFetch(`${base}/tenant-admin-icons/unknown.svg`)).status,404);
   const raced=await Promise.all(['race_icon_a','race_icon_b'].map((tenantId,index)=>api('/api/super-admin/tenants',{tenantId,name:`Race ${index}`,phone:`050111112${index}`,adminIcon:'star_fuchsia'},superToken,tenantId)));

@@ -35,13 +35,13 @@ test('business admin icon choices change tenant manifest artwork without changin
   assert.equal(alex.icons[0].type,'image/svg+xml');
   assert.equal(alex.id,'/admin?tenant=alex_beauty');
   assert.equal(avi.id,'/admin?tenant=avi');
-  assert.equal(pwaMetadata('admin','avi','Avi','diamond_teal').icon,'/tenant-admin-icons/diamond_teal.svg?name=Avi');
+  assert.equal(pwaMetadata('admin','avi','Avi','diamond_teal').icon,'/tenant-admin-icons/diamond_teal.svg?v=38&name=Avi');
 });
 
 test('the selected business identity appears in customer and admin apps for the same tenant', () => {
   const customer = buildPwaManifest('customer', 'avi', 'Avi', 'diamond_teal');
   const admin = buildPwaManifest('admin', 'avi', 'Avi', 'diamond_teal');
-  assert.equal(customer.icons[0].src, '/tenant-admin-icons/diamond_teal.svg?name=Avi');
+  assert.equal(customer.icons[0].src, '/tenant-admin-icons/diamond_teal.svg?v=38&name=Avi');
   assert.equal(admin.icons[0].src, customer.icons[0].src);
   assert.equal(customer.id, '/?tenant=avi');
   assert.equal(admin.id, '/admin?tenant=avi');

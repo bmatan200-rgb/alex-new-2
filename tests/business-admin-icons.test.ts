@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BUSINESS_ADMIN_ICON_IDS, BUSINESS_ICON_CATEGORIES, BUSINESS_ICON_COLORS, BUSINESS_ICON_SYMBOLS, businessAdminIconId, businessAdminIconSvg, isBusinessAdminIconId } from '../src/utils/businessAdminIcons';
+import { BUSINESS_ADMIN_ICON_IDS, BUSINESS_ICON_CATEGORIES, BUSINESS_ICON_COLORS, BUSINESS_ICON_SYMBOLS, businessAdminIconId, businessAdminIconPreviewSvg, businessAdminIconAssetUrl, businessAdminIconSvg, isBusinessAdminIconId } from '../src/utils/businessAdminIcons';
 
 test('the icon gallery has 24 crisp vector choices per service category',()=>{
   for (const category of BUSINESS_ICON_CATEGORIES.filter((item) => item.id !== 'classic')) {
@@ -28,4 +28,13 @@ test('icon artwork is vector based, escapes business labels, and preserves uniqu
   assert.match(b!,/#0f766e/);
   assert.match(businessAdminIconSvg('flower_purple','<script>')!, /&lt;script&gt;/);
   assert.equal(businessAdminIconSvg('"><script>'),null);
+});
+
+
+test('all selectable artworks are distinct vectors and changed art bypasses old immutable cache', () => {
+  const artwork = BUSINESS_ICON_SYMBOLS.map((symbol) => businessAdminIconPreviewSvg(symbol.id));
+  assert.ok(artwork.every(Boolean));
+  assert.equal(new Set(artwork).size, BUSINESS_ICON_SYMBOLS.length);
+  assert.match(businessAdminIconAssetUrl('nails_purple', 'אלכס')!, /v=38/);
+  for (const id of BUSINESS_ADMIN_ICON_IDS) assert.doesNotMatch(businessAdminIconSvg(id)!, /Apple Color Emoji/);
 });

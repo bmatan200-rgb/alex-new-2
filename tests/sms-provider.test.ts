@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TelnyxProvider, createSmsProvider, normalizeTelnyxDelivery } from '../server/sms/providers';
-import { legacyLogLockKey, mergeDeliveryResult } from '../server/sms/logs';
+import { legacyLogLockKey, mergeDeliveryResult, manualSmsLockKey } from '../server/sms/logs';
 import { smsDeliveryView } from '../src/utils/smsDeliveryView';
-import { hash, reminderKey } from '../server/core';
+import { hash, reminderKey, claimOnce } from '../server/core';
 const to='+972543111409';
 const config={apiKey:'test-secret',from:'TEST',profileId:'profile'};
 const payload=(status:string)=>({data:{id:'msg_1',direction:'outbound',to:[{phone_number:to,status}],errors:[]}});
@@ -73,4 +73,32 @@ test('late pending lookup cannot overwrite terminal status',()=>{
  assert.equal(mergeDeliveryResult({status:'delivered'},{status:'queued'}).status,'delivered');
  assert.equal(mergeDeliveryResult({status:'failed',errorMessage:'rejected'},{status:'sent'}).errorMessage,'rejected');
  assert.equal(mergeDeliveryResult({status:'failed'},{status:'delivered'}).status,'delivered');
+});
+
+
+test('deliberate manual sends repeat, duplicate requests lock once, tenants stay isolated',async()=>{
+ const values=new Map<string,any>();
+ let tail=Promise.resolve();
+ const db={runTransaction:(fn:any)=>{
+  const run=tail.then(()=>fn({get:async(ref:any)=>({exists:values.has(ref.path)}),create:(ref:any,value:any)=>values.set(ref.path,value)}));
+  tail=run.catch(()=>{});return run;
+ }};
+ const first=manualSmsLockKey(to,'same text','2026-10-08','request_1');
+ const next=manualSmsLockKey(to,'same text','2026-10-08','request_2');
+ const ref=(tenant:string,key:string)=>({path:`tenants/${tenant}/reminder_locks/${key}`});
+ assert.deepEqual(await Promise.all([claimOnce(db,ref('a',first)),claimOnce(db,ref('a',first))]),[true,false]);
+ assert.equal(await claimOnce(db,ref('a',next)),true);
+ assert.equal(await claimOnce(db,ref('b',first)),true);
+ assert.equal(manualSmsLockKey(to,'changed text','2026-10-09','request_1'),first);
+ assert.equal(manualSmsLockKey(to,'same text','2026-10-08'),'manual_'+hash(JSON.stringify(['972543111409','same text','2026-10-08'])));
+ assert.throws(()=>manualSmsLockKey(to,'text','2026-10-08','../bad'),/Invalid/);
+ // Scheduled reminders still claim once for the recipient/date regardless of manual operations.
+ const scheduled=ref('a',reminderKey('today',to,'2026-10-08'));
+ assert.equal(await claimOnce(db,scheduled),true);assert.equal(await claimOnce(db,scheduled),false);
+});
+
+
+test('accepted ID in HTTP error is preserved for tracking and never retried blindly',async()=>{
+ const p=new TelnyxProvider(config,async()=>reply(payload('queued'),500));
+ const r=await p.send(to,'test');assert.equal(r.success,true);assert.equal(r.data?.id,'msg_1');assert.equal(r.uncertain,true);assert.equal(r.retryable,undefined);
 });

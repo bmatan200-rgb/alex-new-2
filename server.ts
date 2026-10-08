@@ -1,5 +1,6 @@
+import { DeliveryTracker, DELIVERY_JOBS } from './server/sms/deliveryTracker';
 import { createSmsProvider, SmsProviderError, type SmsProvider, type SmsSendResult, type DeliveryStatus } from './server/sms/providers';
-import { legacyLogLockKey, mergeDeliveryResult } from './server/sms/logs';
+import { legacyLogLockKey, mergeDeliveryResult, manualSmsLockKey } from './server/sms/logs';
 import { publicBusyAppointment } from './src/utils/calendarBlocks';
 import { scheduledRetryAt } from './server/smsDeliveryPolicy';
 import { DurableReminderScheduler, schedulePatch, scheduleId, SCHEDULE_COLLECTION, claimScheduledMessage, beginScheduledSend, MAX_MESSAGE_ATTEMPTS, SmsPacer, runBounded } from './server/reminderScheduler';
@@ -968,7 +969,13 @@ async function tryClaimReminderLock(key: string, tenantId = 'alex_beauty', legac
   return claimOnce(db,ref,legacyKeys.flatMap(k => [doc(db,'tenants',tenantId,'reminder_locks',k), ...(tenantId===PRIMARY_TENANT_ID ? [doc(db,'reminder_locks',k)] : [])]));
 }
 async function markReminderLockSuccess(key: string, tenantId = 'alex_beauty', result?: any): Promise<void> {
-  await setDoc(doc(db,'tenants',tenantId,'reminder_locks',key),{status:'sent',sentAt:new Date().toISOString(),providerMessageId:result?.data?.id || null,provider:result?.data?.provider || null},{merge:true});
+  const ref=doc(db,'tenants',tenantId,'reminder_locks',key);
+  const data=result?.data;
+  await db.runTransaction(async tx=>{
+    tx.set(ref,{status:'sent',sentAt:new Date().toISOString(),providerMessageId:data?.id || null,provider:data?.provider || null,
+      deliveryStatus:data?.status || 'unknown',deliveryAttention:data?.status === 'failed',deliveryAttentionReason:data?.status === 'failed' ? data.errorMessage || 'כישלון מסירה אצל הספק' : null},{merge:true});
+    if(data?.id) tx.set(deliveryTracker.jobRef(tenantId,key,data.id),deliveryTracker.acceptedJob(tenantId,key,data));
+  });
 }
 async function retainReminderFailure(key:string,tenantId:string,result:any, scheduledAttempts = 0) {
   // An uncertain provider result is never automatically retried: SMS APIs are not a transaction with Firestore.
@@ -994,6 +1001,8 @@ async function recordLogEntry(entry: SmsLogEntry, tenantId: string) {
       providerStatus: entry.providerStatus || null,
       reminderLockKey: entry.reminderLockKey || null,
       deliveryCheckedAt: entry.deliveryCheckedAt || null,
+      deliveryAttention:entry.status === 'failed' || (entry.status === 'unknown' && !entry.providerMessageId),
+      deliveryAttentionReason:entry.status === 'failed' ? entry.errorMessage || 'שליחה נכשלה; נדרש טיפול' : (entry.status === 'unknown' && !entry.providerMessageId ? 'לא התקבלה תוצאה ודאית ואין מזהה ספק; בדוק לפני שליחה חוזרת' : null),
       reminderType: entry.reminderType || 'manual_single',
       appointmentDate: entry.appointmentDate || null,
       startTime: entry.startTime || null,
@@ -1006,9 +1015,8 @@ async function recordLogEntry(entry: SmsLogEntry, tenantId: string) {
 
     if (db) {
       try {
-        await setDoc(doc(db, 'tenants', tenantId, 'sms_logs', sanitizedEntry.id), sanitizedEntry, { merge: true }).catch((err) => {
-          console.warn('[SMS Logs] Firestore setDoc warning (non-fatal):', err?.message);
-        });
+        await setDoc(doc(db, 'tenants', tenantId, 'sms_logs', sanitizedEntry.id), sanitizedEntry, { merge: true });
+        if(entry.providerMessageId && entry.reminderLockKey) await deliveryTracker.attachLog(tenantId,entry.reminderLockKey,entry.providerMessageId,sanitizedEntry.id);
       } catch (innerErr: any) {
         console.warn('[SMS Logs] setDoc catch block warning:', innerErr?.message);
       }
@@ -1216,6 +1224,20 @@ let smsEngineInitialized = false;
 const reminderScheduler = new DurableReminderScheduler(db, getTenantSmsSettings,
   (date,type,tenantId,settings,deadline,guard) => sendRemindersForDate(date,type,tenantId,settings,{scheduled:true,deadline,guard}));
 
+const deliveryTracker = new DeliveryTracker(db,getSmsProvider);
+async function checkPendingSmsDeliveries() {
+  if(Date.now()<firestoreQuotaBackoffUntil) return {checked:0,skipped:true};
+  try {
+    const result=await deliveryTracker.run();
+    if(result.checked) console.log(`[SMS Delivery] checked=${result.checked}; lookupErrors=${result.failures || 0}; no SMS sent by delivery checks`);
+    return result;
+  } catch(error:any) {
+    noteFirestoreQuota(error,'SMS delivery checks');
+    console.error('[SMS Delivery]',error?.message || 'Delivery worker failed');
+    return {checked:0,error:'Delivery checks paused; send locks preserved'};
+  }
+}
+
 async function checkAndDispatchDueReminders(): Promise<any> {
   if (process.env.SMS_SENDING_ENABLED === 'false') return {success:true,skipped:true,reason:'sending_disabled'};
   if (isDispatchingDueReminders) return {success:true,skipped:true,reason:'dispatch_in_progress'};
@@ -1238,6 +1260,7 @@ async function initSmsEngine() {
   let followUp: ReturnType<typeof setTimeout> | undefined;
   const tick = async () => {
     const result = await checkAndDispatchDueReminders();
+    await checkPendingSmsDeliveries();
     if (result.pending && !followUp) {
       followUp = setTimeout(()=>{followUp=undefined;void tick();},1000);
       followUp.unref?.();
@@ -1265,11 +1288,12 @@ app.all(['/api/sms/check-due', '/api/reminders/heartbeat'], requireSuperAdmin, a
 // Operational status without phone numbers, message bodies, or credentials.
 app.get('/api/super-admin/sms-scheduler', requireSuperAdmin, async (_req,res,next)=>{
   try {
-    const [control,attention]=await Promise.all([
+    const [control,attention,deliveryAttention]=await Promise.all([
       db.doc('sms_scheduler_control/discovery').get(),
-      db.collection(SCHEDULE_COLLECTION).where('attention','==',true).limit(50).get()
+      db.collection(SCHEDULE_COLLECTION).where('attention','==',true).limit(50).get(),
+      db.collection(DELIVERY_JOBS).where('attention','==',true).limit(50).get()
     ]);
-    res.json({success:true,discovery:control.data() || null,attention:attention.docs.map(d=>{
+    res.json({success:true,discovery:control.data() || null,deliveryAttention:deliveryAttention.docs.map(d=>{const j=d.data();return {tenantId:j.tenantId,provider:j.provider,status:j.delivery?.status,reason:j.attentionReason,lastCheckedAt:j.lastCheckedAt};}),attention:attention.docs.map(d=>{
       const s=d.data();return {tenantId:s.tenantId,type:s.type,nextRunAt:s.nextRunAt,lastRun:s.lastRun,lastAttention:s.lastAttention || null};
     })});
   }catch(err){next(err);}
@@ -1277,10 +1301,10 @@ app.get('/api/super-admin/sms-scheduler', requireSuperAdmin, async (_req,res,nex
 
 // Secure machine-to-machine heartbeat for cron-job.org. One Cron serves ALL tenants.
 app.all('/api/cron/heartbeat', requireCronSecret, async (_req: Request, res: Response) => {
-  if (process.env.SMS_SENDING_ENABLED === 'false') return res.status(503).json({success:false,cron:true,error:'SMS sending is disabled for maintenance'});
   try {
     const result = await checkAndDispatchDueReminders();
-    return res.status(200).json({ success: result?.success !== false, cron: true, scheduler: result, checkedAt: new Date().toISOString() });
+    const delivery=await checkPendingSmsDeliveries();
+    return res.status(200).json({ success: result?.success !== false, cron: true, scheduler: result, delivery, checkedAt: new Date().toISOString() });
   } catch (err: any) {
     console.error('[Cron] heartbeat failed:', err?.message || err);
     return res.status(500).json({ success: false, cron: true, error: err?.message || 'Cron heartbeat failed' });
@@ -1371,7 +1395,9 @@ app.post(['/api/sms/send-single', '/api/whatsapp/send'], requireAdmin, async (re
     await activeTenant(tenantId);
     const type=req.body.reminderType;
     const appointmentId=req.body.appointmentId || req.body.appointment?.id;
-    let lockKey = 'manual_' + hash(JSON.stringify([phoneDigits(phone),message,getIsraelDateString()]));
+    const manualOperation = !type || ['manual','manual_single','test'].includes(type);
+    if (manualOperation && req.body.requestId !== undefined && !validId(req.body.requestId)) return res.status(400).json({success:false,error:'מזהה שליחה לא תקין'});
+    let lockKey = manualSmsLockKey(phone,message,getIsraelDateString(),manualOperation ? req.body.requestId : undefined);
     let legacyKeys:string[]=[];
     if(['booking','2hours'].includes(type) && validId(String(appointmentId||''))) lockKey=type+'_'+hash(JSON.stringify([String(appointmentId),phoneDigits(phone)]));
     if(['today','1day'].includes(type)) {
@@ -1426,7 +1452,9 @@ app.post('/api/sms/test', requireAdmin, async (req: Request, res: Response) => {
     await activeTenant(tenantId);
     const type=req.body.reminderType;
     const appointmentId=req.body.appointmentId || req.body.appointment?.id;
-    let lockKey = 'manual_' + hash(JSON.stringify([phoneDigits(phone),message,getIsraelDateString()]));
+    const manualOperation = !type || ['manual','manual_single','test'].includes(type);
+    if (manualOperation && req.body.requestId !== undefined && !validId(req.body.requestId)) return res.status(400).json({success:false,error:'מזהה שליחה לא תקין'});
+    let lockKey = manualSmsLockKey(phone,message,getIsraelDateString(),manualOperation ? req.body.requestId : undefined);
     let legacyKeys:string[]=[];
     if(['booking','2hours'].includes(type) && validId(String(appointmentId||''))) lockKey=type+'_'+hash(JSON.stringify([String(appointmentId),phoneDigits(phone)]));
     if(['today','1day'].includes(type)) {
@@ -1472,7 +1500,7 @@ app.get('/api/sms/logs', requireAdmin, async (req,res,next)=>{
   try {const snap=await collection(db,'tenants',req.tenantId!,'sms_logs').orderBy('sentAt','desc').limit(100).get(); res.json({success:true,logs:snap.docs.map((d:any)=>d.data())});}catch(err){next(err);}
 });
 
-// Explicit checks avoid a polling loop across every business. No SMS is sent by this route.
+// Manual checks share durable delivery state with the bounded background worker.
 const deliveryChecksInFlight = new Set<string>();
 app.post('/api/sms/logs/:logId/check-delivery', requireAdmin, async (req,res) => {
   const tenantId=req.tenantId!;
@@ -1501,13 +1529,11 @@ app.post('/api/sms/logs/:logId/check-delivery', requireAdmin, async (req,res) =>
     const provider=await getSmsProvider(tenantId,providerId);
     const delivery=await provider.lookup(messageId,log.recipientPhone);
     const update={...delivery,provider:providerId,providerMessageId:messageId,deliveryCheckedAt:new Date().toISOString()};
-    // Only update the log. Accepted-message locks remain intact, including on delivery failure.
-    const saved=await db.runTransaction(async tx=>{
+    const saved=key ? await deliveryTracker.recordResult(tenantId,key,messageId,providerId,delivery,logId) : await db.runTransaction(async tx=>{
       const latest=await tx.get(ref);
-      if (!latest.exists) throw new Error('Log removed during check');
+      if(!latest.exists) throw new Error('Log removed during check');
       const merged=mergeDeliveryResult(latest.data(),update);
-      tx.update(ref,merged);
-      return {...latest.data(),...merged,id:logId};
+      tx.update(ref,merged);return {...latest.data(),...merged,id:logId};
     });
     return res.json({success:true,log:saved});
   } catch (error) {
@@ -2131,4 +2157,4 @@ async function startServer() {
 }
 
 if(process.env.NODE_ENV!=='test') startServer().catch(err=>{console.error('[Startup]',err?.message || err);process.exitCode=1;});
-export { app, ensurePrimaryTenant, sendRemindersForDate, checkAndDispatchDueReminders, db };
+export { app, ensurePrimaryTenant, sendRemindersForDate, checkAndDispatchDueReminders, checkPendingSmsDeliveries, db };

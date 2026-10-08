@@ -17,3 +17,13 @@ export function mergeDeliveryResult(previous: any, incoming: any) {
   const retain = previous.status === 'delivered' || (previous.status === 'failed' && incoming.status !== 'delivered');
   return retain ? {...incoming,status:previous.status,providerStatus:previous.providerStatus || incoming.providerStatus,errorMessage:previous.errorMessage || null} : incoming;
 }
+
+// A deliberate manual send has its own operation ID; retries share one lock.
+// Clients without an operation ID retain the legacy daily safeguard.
+export function manualSmsLockKey(phone: string, message: string, date: string, requestId?: string): string {
+  if (requestId !== undefined) {
+    if (!validId(requestId)) throw new Error('Invalid SMS request ID');
+    return 'manual_request_' + hash(requestId);
+  }
+  return 'manual_' + hash(JSON.stringify([phoneDigits(phone), message, date]));
+}

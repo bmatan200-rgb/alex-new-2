@@ -49,9 +49,14 @@ export class TelnyxProvider implements SmsProvider {
         body:JSON.stringify({to,text:message,from,messaging_profile_id:profileId}), signal:AbortSignal.timeout(15000),
       });
       const body = await response.json().catch(()=>({}));
+      const id = text(body?.data?.id);
+      // An ID in an error response must not be discarded: the provider may have accepted it.
+      if (!response.ok && id) {
+        const delivery=normalizeTelnyxDelivery(body.data,to);
+        return {success:true,uncertain:true,data:{id,provider:this.id,to,from,...delivery}};
+      }
       if (!response.ok) return {success:false,rateLimited:response.status===429,...classifySmsFailure(response.status,body,response.headers.get('retry-after')),
         error:`Telnyx: ${errorDetails(body?.errors) || `HTTP ${response.status}`}`};
-      const id = text(body?.data?.id);
       if (!id) return {success:false,uncertain:true,error:'הספק החזיר תשובה ללא מזהה הודעה; נדרשת בדיקה לפני שליחה חוזרת'};
       const delivery = normalizeTelnyxDelivery(body.data,to);
       // success means accepted by the provider, even when a terminal delivery failure is already returned.

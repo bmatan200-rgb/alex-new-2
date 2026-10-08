@@ -73,7 +73,7 @@ import {
   getStoredReminderSettings,
   createWhatsAppDirectLink,
 } from '../utils/whatsappReminder';
-import { getStoredSmsSettings, fetchServerSmsSettings } from '../utils/smsService';
+import { getStoredSmsSettings, fetchServerSmsSettings, sendSingleSms } from '../utils/smsService';
 
 interface AdminDashboardProps {
   appointments: Appointment[];
@@ -225,14 +225,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
     try {
       console.log(`[Admin Dashboard] שולח תזכורת SMS דרך Telnyx אל: ${phone} (לקוח/ה: ${appt.customer_name})`);
-      const result = await dispatchAutomatedWhatsAppApi({
-        phone,
-        message: text,
-        settings,
-        recipientType: target,
-        appointment: appt,
-        reminderType,
-      });
+      const sent = await sendSingleSms({phone,message:text,customerName:appt.customer_name,appointmentId:appt.id,reminderType:'manual'});
+      const failedDelivery=sent.data?.status === 'failed';
+      const result={success:sent.success && !failedDelivery,message:sent.error || (failedDelivery ? `הספק דיווח על כישלון: ${sent.data?.errorMessage || 'בדוק ביומן SMS'}` : 'ההודעה התקבלה אצל ספק ה־SMS. אפשר לבדוק מסירה ביומן SMS')};
 
       if (result.success) {
         markReminderSent(appt.id, target, reminderType);

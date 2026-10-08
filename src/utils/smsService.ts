@@ -26,6 +26,9 @@ export interface SmsLogEntry {
   providerMessageId?: string;
   providerStatus?: string;
   deliveryCheckedAt?: string;
+  deliveryAttention?: boolean;
+  deliveryAttentionReason?: string;
+  deliveryLookupError?: string;
   reminderType: 'morning_today' | 'evening_1day' | 'manual_single' | 'test';
   appointmentDate?: string;
   startTime?: string;
@@ -239,24 +242,34 @@ export async function fetchServerSmsSettings(): Promise<SmsReminderSettings | nu
   return null;
 }
 
+// Repeated clicks while the same request is running reuse its promise and ID.
+const manualSmsInFlight = new Map<string, Promise<{success:boolean;error?:string;data?:any}>>();
+function sendManualSmsRequest(endpoint: string, params: Record<string, unknown>) {
+  const key=JSON.stringify([getCurrentTenantId(),endpoint,params]);
+  const pending=manualSmsInFlight.get(key);
+  if (pending) return pending;
+  const requestId=crypto.randomUUID();
+  const operation=(async()=>{
+    try {
+      const headers=await getAdminApiHeaders();
+      const response=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify({...params,requestId})});
+      return await response.json();
+    } catch {
+      return {success:false,error:'תוצאת השליחה אינה ידועה עקב שגיאת תקשורת. בדוק ביומן SMS לפני שליחה נוספת'};
+    } finally { manualSmsInFlight.delete(key); }
+  })();
+  manualSmsInFlight.set(key,operation);
+  return operation;
+}
+
 export async function sendSingleSms(params: {
   phone: string;
   message: string;
   appointmentId?: string | number;
   customerName?: string;
   reminderType?: 'today' | '1day' | 'manual';
-}): Promise<{ success: boolean; error?: string; data?: any }> {
-  try {
-    const headers = await getAdminApiHeaders();
-    const res = await fetch('/api/sms/send-single', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(params),
-    });
-    return await res.json();
-  } catch (err: any) {
-    return { success: false, error: err?.message || 'שגיאת תקשורת' };
-  }
+}): Promise<{success:boolean;error?:string;data?:any}> {
+  return sendManualSmsRequest('/api/sms/send-single',params);
 }
 
 export async function triggerBatchSms(type: 'today' | '1day'): Promise<{
@@ -280,21 +293,8 @@ export async function triggerBatchSms(type: 'today' | '1day'): Promise<{
   }
 }
 
-export async function sendTestSms(
-  phone: string,
-  message: string
-): Promise<{ success: boolean; error?: string; data?: any }> {
-  try {
-    const headers = await getAdminApiHeaders();
-    const res = await fetch('/api/sms/test', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ phone, message }),
-    });
-    return await res.json();
-  } catch (err: any) {
-    return { success: false, error: err?.message || 'שגיאת תקשורת' };
-  }
+export async function sendTestSms(phone: string, message: string): Promise<{success:boolean;error?:string;data?:any}> {
+  return sendManualSmsRequest('/api/sms/test',{phone,message});
 }
 
 export async function fetchSmsLogs(): Promise<SmsLogEntry[]> {

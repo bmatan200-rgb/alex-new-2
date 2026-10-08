@@ -624,6 +624,8 @@ export const SmsReminderModal: React.FC<SmsReminderModalProps> = ({
                         }`}>
                           {smsDeliveryView(log.status,Boolean(log.deliveryCheckedAt || log.providerStatus)).label}
                         </span>
+                        {log.deliveryAttention && <p className="text-rose-700 font-bold">נדרש טיפול: {log.deliveryAttentionReason || 'לא אומתה מסירה'}</p>}
+                        {log.deliveryLookupError && <p className="text-amber-800">בדיקת הספק: {log.deliveryLookupError}</p>}
                         {log.errorMessage && <p className="text-rose-700 break-words" dir="auto">{log.errorMessage}</p>}
                         <button type="button" disabled={checkingLog !== null} onClick={()=>handleCheckDelivery(log.id)}
                           className="text-indigo-700 underline font-bold disabled:opacity-50">

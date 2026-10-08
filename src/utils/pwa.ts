@@ -8,7 +8,7 @@ export function pwaRoleForPath(pathname: string): PwaRole {
   return 'customer';
 }
 
-export function pwaMetadata(role: PwaRole, tenantId: string, tenantName: string, adminIcon?: string) {
+export function pwaMetadata(role: PwaRole, tenantId: string, tenantName: string, adminIcon?: string | null) {
   const tenantQuery = `tenant=${encodeURIComponent(tenantId)}`;
   if (role === 'super-admin') return {
     name: 'סופר אדמין',
@@ -24,7 +24,7 @@ export function pwaMetadata(role: PwaRole, tenantId: string, tenantName: string,
   };
 }
 
-export function buildPwaManifest(role: PwaRole, tenantId: string, tenantName: string, adminIcon?: string) {
+export function buildPwaManifest(role: PwaRole, tenantId: string, tenantName: string, adminIcon?: string | null) {
   const customerUrl = `/?tenant=${encodeURIComponent(tenantId)}`;
   const startUrl = role === 'super-admin' ? '/super-admin'
     : role === 'admin' ? `/admin?tenant=${encodeURIComponent(tenantId)}` : customerUrl;

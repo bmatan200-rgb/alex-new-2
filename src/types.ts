@@ -130,7 +130,7 @@ export interface TenantInfo {
   city?: string;
   primaryColor?: string;
   secondaryColor?: string;
-  adminIcon?: string;
+  adminIcon?: string | null;
   coverImage?: string; // tenant-specific hero/cover image (URL or compressed data URL)
   status: 'active' | 'trial' | 'suspended';
   plan: 'starter' | 'pro' | 'enterprise';

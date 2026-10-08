@@ -81,6 +81,7 @@ export function AddToHomePrompt({ tenantId, tenantName, primaryColor }: AddToHom
   }, [customerHome, installedKey]);
 
   const hidePermanently = () => {
+    if (!window.confirm(`האם להפסיק להציג את הצעת ההתקנה של ${tenantName}?\nההצעה לא תופיע שוב בדפדפן הזה. אפשר לבטל ולחזור להצעה.`)) return;
     try { localStorage.setItem(optOutKey, '1'); } catch {}
     setOpen(false);
   };
@@ -172,6 +173,7 @@ export function AddToHomePrompt({ tenantId, tenantName, primaryColor }: AddToHom
           <label className="flex min-h-11 cursor-pointer items-center justify-center gap-2 text-sm font-medium text-slate-600">
             <input
               type="checkbox"
+              checked={false}
               onChange={(event) => { if (event.target.checked) hidePermanently(); }}
               className="h-4 w-4 cursor-pointer"
               style={{ accentColor: primaryColor }}

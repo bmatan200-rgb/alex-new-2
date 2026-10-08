@@ -1,6 +1,8 @@
 import { publicBusyAppointment } from './src/utils/calendarBlocks';
+import { classifySmsFailure, scheduledRetryAt } from './server/smsDeliveryPolicy';
+import { DurableReminderScheduler, schedulePatch, scheduleId, SCHEDULE_COLLECTION, claimScheduledMessage, beginScheduledSend, MAX_MESSAGE_ATTEMPTS, SmsPacer } from './server/reminderScheduler';
 import { buildPwaManifest, type PwaRole } from './src/utils/pwa';
-import { BUSINESS_ADMIN_ICON_IDS, businessAdminIconSvg, isBusinessAdminIconId } from './src/utils/businessAdminIcons';
+import { BUSINESS_ADMIN_ICON_IDS, businessAdminIconSvg, isBusinessAdminIconId, isBusinessAdminRasterIcon, getBusinessAdminIconDetails } from './src/utils/businessAdminIcons';
 import 'dotenv/config';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { validId, validTime, validDate, phoneDigits, hash, reminderKey, overlaps, israelClock, parseFirebaseServiceAccount, authorizeTenant, publicSettings, claimOnce, copyOnce } from './server/core';
@@ -255,7 +257,19 @@ app.get('/manifest.json', async (req, res) => {
 });
 app.get('/tenant-admin-icons/:iconId.svg', (req, res) => {
   const businessName = typeof req.query.name === 'string' ? req.query.name : '';
-  const svg = businessAdminIconSvg(req.params.iconId, businessName);
+  let rasterDataUri = '';
+  if (isBusinessAdminRasterIcon(req.params.iconId)) {
+    const symbolId = getBusinessAdminIconDetails(req.params.iconId)?.symbol.id;
+    if (symbolId) {
+      try {
+        const artwork = fs.readFileSync(path.join(process.cwd(), 'public', 'business-icon-artwork', `${symbolId}.webp`));
+        rasterDataUri = `data:image/webp;base64,${artwork.toString('base64')}`;
+      } catch {
+        return res.status(404).type('text/plain').send('Icon artwork not found');
+      }
+    }
+  }
+  const svg = businessAdminIconSvg(req.params.iconId, businessName, rasterDataUri);
   if (!svg) return res.status(404).type('text/plain').send('Icon not found');
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.type('image/svg+xml').send(svg);
@@ -664,7 +678,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '38.0.1';
+const APP_VERSION = '39.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];
@@ -884,10 +898,18 @@ function sharedSmsProviderAllowed(tenantId: string): boolean {
 // ----------------------------------------------------------------------
 // Provider credentials are server-only. Tenant overrides live under private_settings/sms_provider.
 
-async function sendSmsViaTelnyx(to: string, message: string, tenantId: string): Promise<{ success: boolean; data?: any; error?: string; uncertain?:boolean }> {
+const smsPacer = new SmsPacer(clampMs(process.env.SMS_SEND_INTERVAL_MS, 1000, 100, 60_000));
+const smsProviderCache = new Map<string, { expiresAt: number; value: any }>();
+async function sendSmsViaTelnyx(to: string, message: string, tenantId: string, deadline = Infinity, begin?: () => Promise<boolean>): Promise<{ success: boolean; data?: any; error?: string; uncertain?:boolean; retryable?:boolean; retryAfterMs?:number; deferred?:boolean; lostClaim?:boolean }> {
   if (process.env.SMS_SENDING_ENABLED === 'false') return { success: false, error: 'שליחת SMS מושבתת זמנית לצורך תחזוקה' };
-  const providerSnap = await getDoc(doc(db,'tenants',tenantId,'private_settings','sms_provider'));
-  const provider = providerSnap.data() || {};
+  let cachedProvider = smsProviderCache.get(tenantId);
+  if (!cachedProvider || cachedProvider.expiresAt < Date.now()) {
+    const providerSnap = await getDoc(doc(db,'tenants',tenantId,'private_settings','sms_provider'));
+    cachedProvider = { expiresAt: Date.now() + 60_000, value: providerSnap.data() || {} };
+    if (smsProviderCache.size > 1000) smsProviderCache.clear();
+    smsProviderCache.set(tenantId, cachedProvider);
+  }
+  const provider = cachedProvider.value;
   const shared = sharedSmsProviderAllowed(tenantId);
   const apiKey = String(provider.telnyxApiKey || (shared ? process.env.TELNYX_API_KEY : '') || '').trim();
   const fromNumber = String(provider.telnyxFromNumber || provider.telnyxFrom || (shared ? process.env.TELNYX_FROM_NUMBER || process.env.TELNYX_FROM : '') || '').trim();
@@ -912,7 +934,13 @@ async function sendSmsViaTelnyx(to: string, message: string, tenantId: string): 
     messaging_profile_id: profileId,
   };
 
+  let requestStarted = false;
   try {
+    await smsPacer.wait();
+    if (Date.now() >= deadline) return { success: false, deferred: true, error: 'Dispatch time budget exhausted before provider request' };
+    if (process.env.SMS_SENDING_ENABLED === 'false') return { success: false, deferred: true, error: 'SMS sending disabled before provider request' };
+    if (begin && !await begin()) return { success: false, lostClaim: true, error: 'Reminder claim changed before provider request' };
+    requestStarted = true;
     const restRes = await fetch('https://api.telnyx.com/v2/messages', {
       method: 'POST',
       headers: {
@@ -928,7 +956,8 @@ async function sendSmsViaTelnyx(to: string, message: string, tenantId: string): 
     if (!restRes.ok) {
       const errDetail = restData?.errors?.[0]?.detail || restData?.errors?.[0]?.title || `קוד שגיאה ${restRes.status}`;
       console.error('[SMS Gateway] ❌ שגיאת Telnyx:', restData);
-      return { success: false, uncertain: restRes.status >= 500, error: `שגיאה מ-Telnyx: ${errDetail}` };
+      return { success:false,...classifySmsFailure(restRes.status,restData,restRes.headers.get('retry-after')),
+        error: `שגיאה מ-Telnyx: ${errDetail}` };
     }
 
     const messageId = restData?.data?.id;
@@ -945,6 +974,7 @@ async function sendSmsViaTelnyx(to: string, message: string, tenantId: string): 
       },
     };
   } catch (err: any) {
+    if (!requestStarted) throw err;
     console.error('[SMS Gateway] ❌ חריגת תקשורת:', err);
     return { success: false, uncertain:true, error: err?.message || 'שגיאת תקשורת עם Telnyx' };
   }
@@ -980,9 +1010,13 @@ async function tryClaimReminderLock(key: string, tenantId = 'alex_beauty', legac
 async function markReminderLockSuccess(key: string, tenantId = 'alex_beauty', result?: any): Promise<void> {
   await setDoc(doc(db,'tenants',tenantId,'reminder_locks',key),{status:'sent',sentAt:new Date().toISOString(),providerMessageId:result?.data?.id || null},{merge:true});
 }
-async function retainReminderFailure(key:string,tenantId:string,result:any) {
+async function retainReminderFailure(key:string,tenantId:string,result:any, scheduledAttempts = 0) {
   // An uncertain provider result is never automatically retried: SMS APIs are not a transaction with Firestore.
-  await setDoc(doc(db,'tenants',tenantId,'reminder_locks',key),{status:result.uncertain?'unknown':'failed',error:result.error || 'Unknown failure',updatedAt:new Date().toISOString()},{merge:true});
+  const retryAt = scheduledRetryAt(result,scheduledAttempts,MAX_MESSAGE_ATTEMPTS,Date.now()) || null;
+  const retry = retryAt !== null;
+  await setDoc(doc(db,'tenants',tenantId,'reminder_locks',key),{status:result.uncertain?'unknown':retry?'retry_pending':'failed', retryAt,
+    error:result.error || 'Unknown failure',updatedAt:new Date().toISOString()},{merge:true});
+  return retryAt;
 }
 
 async function recordLogEntry(entry: SmsLogEntry, tenantId: string) {
@@ -1019,8 +1053,9 @@ async function recordLogEntry(entry: SmsLogEntry, tenantId: string) {
   }
 }
 
-async function getTenantSmsSettings(tenantId: string): Promise<any> {
-  const snap = await getDoc(getTenantSettingsDoc(tenantId, 'sms_reminders'));
+async function getTenantSmsSettings(tenantId: string, tx?: any): Promise<any> {
+  const ref=getTenantSettingsDoc(tenantId,'sms_reminders');
+  const snap = tx ? await tx.get(ref) : await getDoc(ref);
   return {...DEFAULT_SMS_SETTINGS, ...publicSettings(snap.exists ? snap.data() : {}), ...(snap.exists ? {} : {enabled:false,autoSendEnabled:false})};
 }
 
@@ -1049,7 +1084,7 @@ function previousIsoDate(dateIso: string): string {
   return x.toISOString().slice(0, 10);
 }
 
-async function sendRemindersForDate(targetDate: string, reminderType: 'today' | '1day', tenantId = PRIMARY_TENANT_ID, tenantSettings?: any) {
+async function sendRemindersForDate(targetDate: string, reminderType: 'today' | '1day', tenantId = PRIMARY_TENANT_ID, tenantSettings?: any, options: { scheduled?: boolean; deadline?: number; guard?: {ref:any;revision:string;token:string} } = {}) {
   if (process.env.SMS_SENDING_ENABLED === 'false') return { success: true, sentCount: 0, skipped: true, reason: 'sending_disabled' };
   const smsSettings = tenantSettings || await getTenantSmsSettings(tenantId);
   const brand = await getTenantBrand(tenantId);
@@ -1100,22 +1135,38 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
     const acceptedPhones=new Set(previousLogs.docs.filter((d:any)=>['sent','queued'].includes(d.data().status) && d.data().reminderType===(isMorning?'morning_today':'evening_1day')).map((d:any)=>phoneDigits(d.data().recipientPhone)));
     let successCount = 0;
     let failedCount = 0;
+    let pendingCount = 0;
+    let attention = false;
+    let retryAt = Infinity;
     const results: any[] = [];
 
     for (const [phoneKey, appts] of Object.entries(customerGroups)) {
+      if (options.scheduled && Date.now() >= (options.deadline || Infinity)) { pendingCount++; continue; }
       if(acceptedPhones.has(phoneKey)) continue;
-      const firstAppt = appts[0];
+      // Recheck current records before dispatch so a cancellation or reschedule
+      // while a batch is draining cannot send the stale appointment text.
+      const fresh = options.scheduled ? (await db.getAll(...appts.map(a => getTenantAppointmentDoc(tenantId, String(a.id)))))
+        .filter(s => s.exists).map(s => ({ ...s.data(), id: s.id } as ServerAppointment))
+        .filter(a => a.status === 'confirmed' && a.appointment_date === targetDate && cleanPhoneDigits(a.customer_phone) === phoneKey
+          && (!isMorning || a.start_time > getIsraelTime().timeStr)) : appts;
+      if (!fresh.length) continue;
+      const firstAppt = fresh[0];
       const lockKey = reminderKey(reminderType,phoneKey,targetDate);
       const legacyKeys = appts.map(a=>`${isMorning?'morning':'evening'}_${a.id}_${targetDate}`);
 
-      const claimed = await tryClaimReminderLock(lockKey, tenantId, legacyKeys);
+      const lockRef = doc(db,'tenants',tenantId,'reminder_locks',lockKey);
+      const claim = options.scheduled ? await claimScheduledMessage(db, lockRef,
+        legacyKeys.flatMap(k => [doc(db,'tenants',tenantId,'reminder_locks',k), ...(tenantId===PRIMARY_TENANT_ID ? [doc(db,'reminder_locks',k)] : [])])) : null;
+      if (claim?.decision === 'wait') { pendingCount++; retryAt = Math.min(retryAt, claim.retryAt || Date.now() + 120_000); continue; }
+      if (claim?.decision === 'attention') { attention = true; continue; }
+      const claimed = options.scheduled ? claim?.decision === 'claim' : await tryClaimReminderLock(lockKey, tenantId, legacyKeys);
       if (!claimed) {
         console.log(`[SMS Scheduler] ⏭️ דילוג (נשלח כבר בעבר): ${firstAppt.customer_name} (${firstAppt.customer_phone})`);
         continue;
       }
 
       let messageText = '';
-      if (appts.length === 1) {
+      if (fresh.length === 1) {
         const rawTemplate = isMorning
           ? (smsSettings?.morningTemplate || smsSettings?.customerTodayTemplate || DEFAULT_SMS_SETTINGS.morningTemplate)
           : (smsSettings?.eveningTemplate || smsSettings?.customer1DayTemplate || DEFAULT_SMS_SETTINGS.eveningTemplate);
@@ -1123,13 +1174,29 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
       } else {
         const [y, m, d] = targetDate.split('-');
         const israeliDate = `${d}/${m}/${y}`;
-        const appointmentsList = appts.map((a) => `✨ בשעה ${a.start_time} - ${a.service_name}`).join('\n');
+        const appointmentsList = fresh.map((a) => `✨ בשעה ${a.start_time} - ${a.service_name}`).join('\n');
         messageText = isMorning
           ? `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך להיום (${israeliDate}):\n${appointmentsList}\nלבירור: ${brand?.phone || ''}\nנתראה! 💖`
           : `היי ${firstAppt.customer_name} 🌸\nתזכורת לתורים שלך למחר (${israeliDate}):\n${appointmentsList}\nלבירור: ${brand?.phone || ''}\nמחכים לראותך! 💖`;
       }
 
-      const res = await sendSmsViaTelnyx(firstAppt.customer_phone, messageText, tenantId);
+      const res = await sendSmsViaTelnyx(firstAppt.customer_phone, messageText, tenantId, options.deadline,
+        options.scheduled ? () => beginScheduledSend(db,lockRef,claim!.token!,Date.now(),options.guard) : undefined);
+      if (options.scheduled && (res.deferred || res.lostClaim)) {
+        await db.runTransaction(async tx => {
+          const current = await tx.get(lockRef);
+          if (current.data()?.token === claim!.token && current.data()?.status === 'prepared') tx.update(lockRef,{status:'retry_pending',retryAt:Date.now()+1000});
+        });
+        pendingCount++; continue;
+      }
+      // Persist the provider result before the optional UI log. If this write
+      // fails, the durable 'sending' state blocks an unsafe automatic resend.
+      if (res.success) await markReminderLockSuccess(lockKey, tenantId, res);
+      else {
+        const nextRetry = await retainReminderFailure(lockKey, tenantId, res, options.scheduled ? (claim!.attempts || 0) + 1 : 0);
+        if (nextRetry) { pendingCount++; retryAt = Math.min(retryAt,nextRetry); }
+        else attention = true;
+      }
 
       const logEntry: SmsLogEntry = {
         id: `sms_${tenantId}_${Date.now()}_${firstAppt.id}`,
@@ -1148,21 +1215,22 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 
       if (res.success) {
         successCount += 1;
-        await markReminderLockSuccess(lockKey, tenantId, res);
         results.push({ customer: firstAppt.customer_name, phone: firstAppt.customer_phone, success: true });
       } else {
         failedCount += 1;
-        await retainReminderFailure(lockKey, tenantId, res);
         results.push({ customer: firstAppt.customer_name, phone: firstAppt.customer_phone, success: false, error: res.error });
       }
     }
 
     console.log(`[SMS Scheduler] ✅ סיכום ריצה: ${successCount} נשלחו בהצלחה | ${failedCount} נכשלו`);
     return {
-      success: failedCount === 0,
+      success: failedCount === 0 && !attention,
       count: appointments.length,
       sentCount: successCount,
       failedCount,
+      pending: pendingCount > 0,
+      retryAt: Number.isFinite(retryAt) ? retryAt : undefined,
+      attention,
       results,
       message: `נשלחו ${successCount} תזכורות SMS בהצלחה`,
     };
@@ -1174,113 +1242,43 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
 }
 
 // ----------------------------------------------------------------------
-// Scheduler: quota-aware, once-per-reminder-window, multi-tenant
-// ----------------------------------------------------------------------
-// The old 30-second heartbeat reread tenants/settings/appointments for the
-// remainder of the day after a reminder became due. v18 polls lightly and,
-// once a tenant/day/type has been processed, never scans that reminder again
-// in the same process. Durable Firestore reminder locks remain the final
-// duplicate-send guard across restarts and multiple instances.
-const SMS_SCHEDULER_INTERVAL_MS = clampMs(process.env.SMS_SCHEDULER_INTERVAL_MS, 5 * 60_000, 60_000, 30 * 60_000);
-const SMS_SCHEDULER_CONFIG_CACHE_MS = clampMs(process.env.SMS_SCHEDULER_CONFIG_CACHE_MS, 15 * 60_000, 60_000, 60 * 60_000);
+// Durable per-tenant schedules; idle ticks query only due records.
+const SMS_SCHEDULER_INTERVAL_MS = clampMs(process.env.SMS_SCHEDULER_INTERVAL_MS, 60_000, 60_000, 30 * 60_000);
 let isDispatchingDueReminders = false;
 let smsEngineInitialized = false;
-let schedulerConfigCache: { expiresAt: number; items: Array<{ tenantId: string; settings: any }> } | null = null;
-const completedDispatches = new Map<string, number>();
-
-function schedulerDispatchKey(tenantId: string, type: 'today' | '1day', targetDate: string) {
-  return `${tenantId}:${type}:${targetDate}`;
-}
-function pruneCompletedDispatches() {
-  const cutoff = Date.now() - 3 * 24 * 60 * 60_000;
-  for (const [key, value] of completedDispatches) if (value < cutoff) completedDispatches.delete(key);
-}
-async function getSchedulerTenantConfigs(force = false) {
-  if (!force && schedulerConfigCache && schedulerConfigCache.expiresAt > Date.now()) return schedulerConfigCache.items;
-  const snap = await getDocs(collection(db, 'tenants').select('status'));
-  const ids = snap.docs.filter((d: any) => ['active', 'trial'].includes(d.data().status)).map((d: any) => d.id);
-  const items = (await Promise.all(ids.map(async (tenantId: string) => {
-    try { return { tenantId, settings: await getTenantSmsSettings(tenantId) }; }
-    catch (err: any) {
-      if (isFirestoreQuotaError(err)) throw err;
-      console.warn(`[SMS Scheduler] settings warning for ${tenantId}:`, err?.message || err);
-      return null;
-    }
-  }))).filter(Boolean) as Array<{ tenantId: string; settings: any }>;
-  schedulerConfigCache = { expiresAt: Date.now() + SMS_SCHEDULER_CONFIG_CACHE_MS, items };
-  return items;
-}
+const reminderScheduler = new DurableReminderScheduler(db, getTenantSmsSettings,
+  (date,type,tenantId,settings,deadline,guard) => sendRemindersForDate(date,type,tenantId,settings,{scheduled:true,deadline,guard}));
 
 async function checkAndDispatchDueReminders(): Promise<any> {
-  if (isDispatchingDueReminders) return { success: true, skipped: true, reason: 'dispatch_in_progress', checkedAt: new Date().toISOString() };
-  if (Date.now() < firestoreQuotaBackoffUntil) {
-    return { success: false, skipped: true, reason: 'firestore_quota_backoff', retryAfter: new Date(firestoreQuotaBackoffUntil).toISOString() };
-  }
+  if (process.env.SMS_SENDING_ENABLED === 'false') return {success:true,skipped:true,reason:'sending_disabled'};
+  if (isDispatchingDueReminders) return {success:true,skipped:true,reason:'dispatch_in_progress'};
+  if (Date.now() < firestoreQuotaBackoffUntil) return {success:false,skipped:true,reason:'firestore_quota_backoff',retryAfter:new Date(firestoreQuotaBackoffUntil).toISOString()};
   isDispatchingDueReminders = true;
   try {
-    pruneCompletedDispatches();
-    const { dateIso, tomorrowIso, hour, minute } = getIsraelTime();
-    const currentTotalMinutes = hour * 60 + minute;
-    const tenants = await getSchedulerTenantConfigs();
-    const results: any[] = [];
-
-    for (const { tenantId, settings } of tenants) {
-      if (settings?.enabled === false || settings?.autoSendEnabled === false) continue;
-      const [mH, mM] = String(settings.morningReminderTime || '08:00').split(':').map((v: string) => parseInt(v, 10) || 0);
-      const [eH, eM] = String(settings.eveningReminderTime || '20:00').split(':').map((v: string) => parseInt(v, 10) || 0);
-      const item: any = { tenantId };
-
-      const runDue = async (type: 'today' | '1day', targetDate: string) => {
-        const key = schedulerDispatchKey(tenantId, type, targetDate);
-        if (completedDispatches.has(key)) return { success: true, skipped: true, reason: 'already_processed_this_window' };
-        const result: any = await sendRemindersForDate(targetDate, type, tenantId, settings);
-        if (result?.quotaExceeded) {
-          noteFirestoreQuota({ code: 8, message: result.error || 'Firestore quota exceeded' }, 'SMS scheduler');
-          schedulerConfigCache = null;
-          return result;
-        }
-        // Do not repeatedly retry infrastructure failures. Quota failures are the
-        // exception because they recover after quota reset/backoff. Provider-side
-        // uncertainty is already protected by a durable reminder lock.
-        if (!result?.retryable) completedDispatches.set(key, Date.now());
-        return result;
-      };
-
-      if (currentTotalMinutes >= mH * 60 + mM && settings.notifyCustomerToday !== false) {
-        item.today = await runDue('today', dateIso);
-        if (item.today?.quotaExceeded) { results.push(item); break; }
-      }
-      if (currentTotalMinutes >= eH * 60 + eM && settings.notifyCustomer1DayBefore !== false) {
-        item.tomorrow = await runDue('1day', tomorrowIso);
-        if (item.tomorrow?.quotaExceeded) { results.push(item); break; }
-      }
-      if (item.today || item.tomorrow) results.push(item);
-    }
-    return { success: true, tenants: results, checkedAt: new Date().toISOString() };
-  } catch (err: any) {
-    const quotaExceeded = noteFirestoreQuota(err, 'SMS scheduler scan');
-    if (quotaExceeded) schedulerConfigCache = null;
-    console.error('[Automated Reminders] ❌ שגיאה בבדיקת תזכורות תקופתית:', err?.message || err);
-    return { success: false, quotaExceeded, error: err?.message, checkedAt: new Date().toISOString() };
-  } finally {
-    isDispatchingDueReminders = false;
-  }
+    const result = await reminderScheduler.run({limit:20,budgetMs:45_000});
+    if (result.results.some(x=>x.quotaExceeded)) noteFirestoreQuota({code:8,message:'Firestore quota exceeded'},'SMS scheduler');
+    return result;
+  } catch (err:any) {
+    const quotaExceeded = noteFirestoreQuota(err,'SMS scheduler');
+    console.error('[SMS Scheduler]',err?.message || err);
+    return {success:false,quotaExceeded,error:err?.message,checkedAt:new Date().toISOString()};
+  } finally { isDispatchingDueReminders = false; }
 }
 
 async function initSmsEngine() {
   if (smsEngineInitialized) return;
   smsEngineInitialized = true;
-  console.log(`[SMS Engine] 🚀 quota-aware scheduler active; interval=${Math.round(SMS_SCHEDULER_INTERVAL_MS / 1000)}s configCache=${Math.round(SMS_SCHEDULER_CONFIG_CACHE_MS / 1000)}s`);
-
-  const initialTimer = setTimeout(() => {
-    checkAndDispatchDueReminders().catch((err) => console.warn('[SMS Engine] initial check warning:', err?.message || err));
-  }, 15_000);
-  (initialTimer as any).unref?.();
-
-  const interval = setInterval(() => {
-    checkAndDispatchDueReminders().catch((err) => console.warn('[SMS Engine] heartbeat warning:', err?.message || err));
-  }, SMS_SCHEDULER_INTERVAL_MS);
-  (interval as any).unref?.();
+  let followUp: ReturnType<typeof setTimeout> | undefined;
+  const tick = async () => {
+    const result = await checkAndDispatchDueReminders();
+    if (result.pending && !followUp) {
+      followUp = setTimeout(()=>{followUp=undefined;void tick();},1000);
+      followUp.unref?.();
+    }
+  };
+  console.log(`[SMS Engine] durable scheduler active; interval=${SMS_SCHEDULER_INTERVAL_MS}ms`);
+  const initial = setTimeout(()=>void tick(),15_000); initial.unref?.();
+  const interval = setInterval(()=>void tick(),SMS_SCHEDULER_INTERVAL_MS); interval.unref?.();
 }
 
 // ----------------------------------------------------
@@ -1295,6 +1293,19 @@ app.all(['/api/sms/check-due', '/api/reminders/heartbeat'], requireSuperAdmin, a
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message });
   }
+});
+
+// Operational status without phone numbers, message bodies, or credentials.
+app.get('/api/super-admin/sms-scheduler', requireSuperAdmin, async (_req,res,next)=>{
+  try {
+    const [control,attention]=await Promise.all([
+      db.doc('sms_scheduler_control/discovery').get(),
+      db.collection(SCHEDULE_COLLECTION).where('attention','==',true).limit(50).get()
+    ]);
+    res.json({success:true,discovery:control.data() || null,attention:attention.docs.map(d=>{
+      const s=d.data();return {tenantId:s.tenantId,type:s.type,nextRunAt:s.nextRunAt,lastRun:s.lastRun,lastAttention:s.lastAttention || null};
+    })});
+  }catch(err){next(err);}
 });
 
 // Secure machine-to-machine heartbeat for cron-job.org. One Cron serves ALL tenants.
@@ -1341,15 +1352,19 @@ app.post(['/api/sms/settings', '/api/whatsapp/sync-settings'], requireAdmin, asy
     const providerFields=['telnyxApiKey','telnyxFromNumber','telnyxFrom','telnyxProfileId'];
     const provider=Object.fromEntries(providerFields.filter(k=>typeof raw[k]==='string' && raw[k].trim()).map(k=>[k,raw[k].trim()]));
     for(const k of providerFields) delete settings[k];
-    const batch=db.batch();
-    batch.set(getTenantSettingsDoc(tenantId,'sms_reminders'),settings);
-    if(Object.keys(provider).length) {
-      if((req as any).adminPayload.role!=='super_admin') return res.status(403).json({success:false,error:'Only Super Admin may configure SMS credentials'});
-      batch.set(doc(db,'tenants',tenantId,'private_settings','sms_provider'),provider,{merge:true});
-    }
-    await batch.commit();
-    schedulerConfigCache = null;
-    for (const key of completedDispatches.keys()) if (key.startsWith(tenantId + ':')) completedDispatches.delete(key);
+    if(Object.keys(provider).length && (req as any).adminPayload.role!=='super_admin') return res.status(403).json({success:false,error:'Only Super Admin may configure SMS credentials'});
+    await db.runTransaction(async tx=>{
+      const tenant=await tx.get(getTenantDoc(tenantId));
+      const refs=(['today','1day'] as const).map(type=>doc(db,SCHEDULE_COLLECTION,scheduleId(tenantId,type)));
+      const snapshots=await Promise.all(refs.map(ref=>tx.get(ref)));
+      tx.set(getTenantSettingsDoc(tenantId,'sms_reminders'),settings);
+      if(Object.keys(provider).length) tx.set(doc(db,'tenants',tenantId,'private_settings','sms_provider'),provider,{merge:true});
+      refs.forEach((ref,index)=>{
+        const patch=schedulePatch(tenantId,index===0?'today':'1day',settings,['active','trial'].includes(tenant.data()?.status),snapshots[index].data(),Date.now());
+        if(patch) tx.set(ref,patch,{merge:true});
+      });
+    });
+    smsProviderCache.delete(tenantId);
     res.json({success:true,settings});
   }catch(err){next(err);}
 });
@@ -1589,7 +1604,6 @@ async function ensurePrimaryTenant(options: { force?: boolean } = {}): Promise<{
     setDoc(markerRef, { status: 'completed', version: 18, tenantId: PRIMARY_TENANT_ID, completedAt: now }, { merge: true }),
   ]);
   invalidateTenantCaches(PRIMARY_TENANT_ID);
-  schedulerConfigCache = null;
   return { skipped: false, migrated: true };
 }
 
@@ -1670,13 +1684,14 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
     if(!create && !existing.exists) throw new Error('Tenant not found');
     if(existing.data()?.status==='deleted') throw new Error('Deleted tenant ID cannot be reused');
     const previousAdminIcon = existing.data()?.adminIcon;
+    const explicitlyNoIcon = profile.adminIcon === null;
     const requestedAdminIcon = isBusinessAdminIconId(profile.adminIcon) ? profile.adminIcon
-      : (!create && isBusinessAdminIconId(previousAdminIcon) ? previousAdminIcon : '');
+      : (!explicitlyNoIcon && !create && isBusinessAdminIconId(previousAdminIcon) ? previousAdminIcon : '');
     const allocationStart = parseInt(hash(tenantId).slice(0, 8), 16) % BUSINESS_ADMIN_ICON_IDS.length;
-    const candidates = requestedAdminIcon
+    const candidates = explicitlyNoIcon ? [] : requestedAdminIcon
       ? [requestedAdminIcon]
       : [...BUSINESS_ADMIN_ICON_IDS.slice(allocationStart), ...BUSINESS_ADMIN_ICON_IDS.slice(0, allocationStart)];
-    let selectedAdminIcon = '';
+    let selectedAdminIcon: string | null = explicitlyNoIcon ? null : '';
     for (const iconId of candidates) {
       const assignment = await tx.get(doc(db, 'tenantAdminIcons', iconId));
       if (assignment.exists && assignment.data()?.tenantId !== tenantId) {
@@ -1686,9 +1701,9 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
       selectedAdminIcon = iconId;
       break;
     }
-    if (!selectedAdminIcon) throw new Error('BUSINESS_ADMIN_ICONS_EXHAUSTED');
+    if (!explicitlyNoIcon && !selectedAdminIcon) throw new Error('BUSINESS_ADMIN_ICONS_EXHAUSTED');
     profile.adminIcon=selectedAdminIcon;
-    const selectedIconRef = doc(db, 'tenantAdminIcons', selectedAdminIcon);
+    const selectedIconRef = selectedAdminIcon ? doc(db, 'tenantAdminIcons', selectedAdminIcon) : null;
     const previousIconRef = isBusinessAdminIconId(previousAdminIcon) && previousAdminIcon !== selectedAdminIcon
       ? doc(db, 'tenantAdminIcons', previousAdminIcon) : null;
     const previousAssignment = previousIconRef ? await tx.get(previousIconRef) : null;
@@ -1696,8 +1711,16 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
     const mapping=domain?await tx.get(doc(db,'domains',domain)):null;
     const oldMapping=oldDomain && oldDomain!==domain?await tx.get(doc(db,'domains',oldDomain)):null;
     if(mapping?.exists && mapping.data()?.tenantId!==tenantId) throw new Error('Domain belongs to another tenant');
+    const smsConfig=await tx.get(getTenantSettingsDoc(tenantId,'sms_reminders'));
+    const scheduleRefs=(['today','1day'] as const).map(type=>doc(db,SCHEDULE_COLLECTION,scheduleId(tenantId,type)));
+    const scheduleSnapshots=await Promise.all(scheduleRefs.map(r=>tx.get(r)));
+    const smsSettings={...DEFAULT_SMS_SETTINGS,...publicSettings(smsConfig.data() || {}),...(smsConfig.exists?{}:{enabled:false,autoSendEnabled:false})};
+    scheduleRefs.forEach((r,index)=>{
+      const patch=schedulePatch(tenantId,index===0?'today':'1day',smsSettings,['active','trial'].includes(profile.status || existing.data()?.status),scheduleSnapshots[index].data(),Date.now());
+      if(patch) tx.set(r,patch,{merge:true});
+    });
     tx.set(ref,{...profile,adminIcon:selectedAdminIcon,customDomain:domain},{merge:!create});
-    tx.set(selectedIconRef,{tenantId,updatedAt:new Date().toISOString()},{merge:true});
+    if(selectedIconRef) tx.set(selectedIconRef,{tenantId,updatedAt:new Date().toISOString()},{merge:true});
     if(previousIconRef && previousAssignment?.data()?.tenantId===tenantId) tx.delete(previousIconRef);
     tx.set(getTenantSettingsDoc(tenantId),config,{merge:!create});
     if(domain) tx.set(doc(db,'domains',domain),{tenantId,hostname:domain});
@@ -1705,7 +1728,6 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
   });
   invalidateTenantCaches(tenantId);
   domainTenantCache.clear();
-  schedulerConfigCache = null;
 }
 
 async function ensureTenantAdminIcon(tenantId:string):Promise<string> {
@@ -1717,6 +1739,7 @@ async function ensureTenantAdminIcon(tenantId:string):Promise<string> {
     const tenantSnap = await tx.get(tenantRef);
     if (!tenantSnap.exists || tenantSnap.data()?.status === 'deleted') throw new Error('Tenant not found');
     const currentIcon = tenantSnap.data()?.adminIcon;
+    if (currentIcon === null) return '';
     if (isBusinessAdminIconId(currentIcon)) {
       const currentRef = doc(db, 'tenantAdminIcons', currentIcon);
       const currentAssignment = await tx.get(currentRef);
@@ -1785,7 +1808,7 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
       address: String(address || '').trim(),
       primaryColor: primaryColor || '#7c3aed',
       secondaryColor: secondaryColor || '#c4b5fd',
-      adminIcon: isBusinessAdminIconId(requestedAdminIcon) ? requestedAdminIcon : '',
+      adminIcon: req.body?.adminIcon === null ? null : isBusinessAdminIconId(requestedAdminIcon) ? requestedAdminIcon : '',
       customDomain: customDomain ? String(customDomain).trim().toLowerCase() : '',
       coverImage: String(coverImage || '').trim(),
       plan: plan || 'pro',
@@ -1872,7 +1895,7 @@ app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
       address: String(req.body?.address || '').trim(),
       primaryColor: req.body?.primaryColor || existing.primaryColor || '#7c3aed',
       secondaryColor: req.body?.secondaryColor || existing.secondaryColor || '#c4b5fd',
-      adminIcon: isBusinessAdminIconId(req.body?.adminIcon) ? req.body.adminIcon : '',
+      adminIcon: req.body?.adminIcon === null ? null : isBusinessAdminIconId(req.body?.adminIcon) ? req.body.adminIcon : '',
       customDomain,
       coverImage: String(req.body?.coverImage || '').trim(),
       plan: req.body?.plan || existing.plan || 'pro',
@@ -1965,6 +1988,12 @@ app.delete('/api/super-admin/tenants/:tenantId',requireSuperAdmin,async(req,res,
       const current=await tx.get(tenantRef);
       const iconRef=isBusinessAdminIconId(iconId)?doc(db,'tenantAdminIcons',iconId):null;
       const assignment=iconRef?await tx.get(iconRef):null;
+      const refs=(['today','1day'] as const).map(type=>doc(db,SCHEDULE_COLLECTION,scheduleId(tenantId,type)));
+      const schedules=await Promise.all(refs.map(r=>tx.get(r)));
+      refs.forEach((r,index)=>{
+        const patch=schedulePatch(tenantId,index===0?'today':'1day',schedules[index].data()?.settings || {},false,schedules[index].data(),Date.now());
+        if(patch) tx.set(r,patch,{merge:true});
+      });
       tx.update(tenantRef,{status:'deleted',deletedAt:new Date().toISOString()});
       if(iconRef && assignment?.data()?.tenantId===tenantId) tx.delete(iconRef);
     });
@@ -1976,7 +2005,6 @@ app.delete('/api/super-admin/tenants/:tenantId',requireSuperAdmin,async(req,res,
     for(const mapping of mappings.docs) await mapping.ref.delete();
     invalidateTenantCaches(tenantId);
     domainTenantCache.clear();
-    schedulerConfigCache = null;
     res.json({success:true,message:'Tenant deactivated; records retained for recovery'});
   }catch(err){next(err);}
 });

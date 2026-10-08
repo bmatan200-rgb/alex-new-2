@@ -530,7 +530,23 @@ export const BUSINESS_ICON_SYMBOLS = [
     "id": "sparkle",
     "label": "כוכב אור",
     "category": "classic"
-  }
+  },
+  { "id": "nailsHandGem", "label": "מניקור תכשיטי", "category": "nails" },
+  { "id": "nailsPolishRose", "label": "בקבוק לק ורוד", "category": "nails" },
+  { "id": "nailsHandSeal", "label": "יד מטופחת בזהב", "category": "nails" },
+  { "id": "nailsBrushArt", "label": "מברשת ועיטור", "category": "nails" },
+  { "id": "hairScissorsGem", "label": "מספריים ותלתל", "category": "hair" },
+  { "id": "hairCombCurls", "label": "מסרק ותלתלים", "category": "hair" },
+  { "id": "hairDryer", "label": "מייבש שיער", "category": "hair" },
+  { "id": "hairBarberPole", "label": "מספריים ומוט ספר", "category": "hair" },
+  { "id": "massageStoneHands", "label": "אבני עיסוי", "category": "massage" },
+  { "id": "massageHands", "label": "עיסוי גב", "category": "massage" },
+  { "id": "massageOil", "label": "שמן ולבנדר", "category": "massage" },
+  { "id": "massageTowels", "label": "מגבות וספא", "category": "massage" },
+  { "id": "cosmeticsEye", "label": "איפור עיניים", "category": "cosmetics" },
+  { "id": "cosmeticsFace", "label": "טיפוח פנים", "category": "cosmetics" },
+  { "id": "cosmeticsSkin", "label": "טיפוח וזוהר", "category": "cosmetics" },
+  { "id": "cosmeticsMakeup", "label": "איפור מקצועי", "category": "cosmetics" }
 ] as const;
 
 const LEGACY_BUSINESS_ICON_SYMBOLS = [
@@ -834,6 +850,17 @@ const ICON_ART: Record<string, string> = {
 const LEGACY_SYMBOLS = [...BUSINESS_ICON_SYMBOLS, ...LEGACY_BUSINESS_ICON_SYMBOLS];
 export const BUSINESS_SELECTABLE_ICON_IDS = BUSINESS_ICON_SYMBOLS.flatMap((symbol) => BUSINESS_ICON_COLORS.map((color) => `${symbol.id}_${color.id}`));
 export const BUSINESS_ADMIN_ICON_IDS = [...new Set([...BUSINESS_SELECTABLE_ICON_IDS, ...LEGACY_BUSINESS_ICON_SYMBOLS.flatMap((symbol) => BUSINESS_ICON_COLORS.map((color) => `${symbol.id}_${color.id}`))])];
+export const BUSINESS_ICON_RASTER_SYMBOL_IDS = [
+  'nailsHandGem', 'nailsPolishRose', 'nailsHandSeal', 'nailsBrushArt',
+  'hairScissorsGem', 'hairCombCurls', 'hairDryer', 'hairBarberPole',
+  'massageStoneHands', 'massageHands', 'massageOil', 'massageTowels',
+  'cosmeticsEye', 'cosmeticsFace', 'cosmeticsSkin', 'cosmeticsMakeup',
+] as const;
+const RASTER_ICON_IDS = new Set<string>(BUSINESS_ICON_RASTER_SYMBOL_IDS);
+export function isBusinessAdminRasterIcon(iconId: string): boolean {
+  const details = getBusinessAdminIconDetails(iconId);
+  return Boolean(details && RASTER_ICON_IDS.has(details.symbol.id));
+}
 export function businessAdminIconId(symbolId: string, colorId: string): string { return `${symbolId}_${colorId}`; }
 export function isBusinessAdminIconId(value: unknown): value is string { return typeof value === 'string' && BUSINESS_ADMIN_ICON_IDS.includes(value); }
 export function getBusinessAdminIconDetails(iconId: string) {
@@ -851,6 +878,11 @@ export function businessAdminIconPreviewSvg(symbolId: string): string | null {
   const art = vectorArt(symbolId, '#e8d7b4', '2.05');
   return art ? `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 64 64">${art}</svg>` : null;
 }
+export function businessAdminIconPreviewAsset(symbolId: string): string | null {
+  if (RASTER_ICON_IDS.has(symbolId)) return `/business-icon-artwork/${symbolId}.webp?v=39`;
+  const svg = businessAdminIconPreviewSvg(symbolId);
+  return svg ? `data:image/svg+xml,${encodeURIComponent(svg)}` : null;
+}
 function escapeXml(value: string): string { return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[char] || char); }
 function businessNameInIcon(value: string): { label: string; fontSize: number } {
   const normalized = String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -860,12 +892,14 @@ function businessNameInIcon(value: string): { label: string; fontSize: number } 
 }
 export function businessAdminIconAssetUrl(iconId: string, businessName = ''): string | null {
   if (!isBusinessAdminIconId(iconId)) return null; const label = String(businessName || '').trim();
-  return `/tenant-admin-icons/${encodeURIComponent(iconId)}.svg?v=38${label ? `&name=${encodeURIComponent(label)}` : ''}`;
+  return `/tenant-admin-icons/${encodeURIComponent(iconId)}.svg?v=39${label ? `&name=${encodeURIComponent(label)}` : ''}`;
 }
-export function businessAdminIconSvg(iconId: string, businessName = ''): string | null {
+export function businessAdminIconSvg(iconId: string, businessName = '', rasterDataUri = ''): string | null {
   const details = getBusinessAdminIconDetails(iconId); if (!details) return null;
   const { symbol, color } = details; const label = businessNameInIcon(businessName); const art = vectorArt(symbol.id, '#fff7e8', '2.05');
-  const picture = art ? `<svg x="122" y="66" width="268" height="268" viewBox="0 0 64 64">${art}</svg>` : `<text x="256" y="205" text-anchor="middle" dominant-baseline="central" font-family="Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif" font-size="170">${'glyph' in symbol ? symbol.glyph : '✦'}</text>`;
+  const picture = RASTER_ICON_IDS.has(symbol.id) && rasterDataUri
+    ? `<image x="76" y="34" width="360" height="300" href="${rasterDataUri}" preserveAspectRatio="xMidYMid meet"/>`
+    : art ? `<svg x="122" y="66" width="268" height="268" viewBox="0 0 64 64">${art}</svg>` : `<text x="256" y="205" text-anchor="middle" dominant-baseline="central" font-family="Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif" font-size="170">${'glyph' in symbol ? symbol.glyph : '✦'}</text>`;
   const labelPanel = label.label ? `<rect x="42" y="348" width="428" height="96" rx="34" fill="#fff" fill-opacity=".16"/><text x="256" y="410" text-anchor="middle" dominant-baseline="central" direction="rtl" unicode-bidi="plaintext" font-family="Arial, Noto Sans Hebrew, sans-serif" font-size="${label.fontSize}" font-weight="800" fill="#fffdf8">${label.label}</text>` : '';
   return `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs><linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${color.value}"/><stop offset="1" stop-color="#17151b" stop-opacity=".34"/></linearGradient></defs><rect width="512" height="512" fill="url(#tile)"/><rect x="18" y="18" width="476" height="476" rx="112" fill="none" stroke="#fff" stroke-opacity=".20" stroke-width="3"/><circle cx="256" cy="202" r="133" fill="#fff" fill-opacity=".07"/>${picture}${labelPanel}</svg>`;
 }

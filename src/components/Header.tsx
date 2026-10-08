@@ -80,28 +80,17 @@ export const Header: React.FC<HeaderProps> = ({
             className="flex items-center gap-3.5 cursor-pointer select-none group"
           >
             {/* Large, Elegant Salon Logo */}
-            <div
+            {businessIcon && <div
               className="relative w-14 h-14 sm:w-16 sm:h-16 rounded-2xl p-0.5 shadow-md flex-shrink-0 group-hover:scale-105 transition-all duration-300 border border-purple-500/30"
               style={{ background: `linear-gradient(135deg, ${primaryColor} 0%, #0f172a 100%)` }}
             >
               <div className="w-full h-full bg-slate-950 rounded-[14px] flex flex-col items-center justify-center relative overflow-hidden">
-                {businessIcon ? (
-                  <img className="h-full w-full rounded-[14px] object-cover" src={businessAdminIconAssetUrl(tenant.adminIcon || '', tenant.name) || undefined} alt={`סמל ${tenant.name}`} />
-                ) : (
-                  <>
-                    <span className="text-white font-black tracking-tight text-lg sm:text-xl font-['Rubik',sans-serif] leading-none text-center px-1 truncate max-w-full">
-                      {tenant.name.split(' ')[0]}
-                    </span>
-                    <span className="text-[8px] sm:text-[9px] text-purple-300 font-extrabold tracking-widest uppercase mt-1">
-                      STUDIO
-                    </span>
-                  </>
-                )}
+                <img className="h-full w-full rounded-[14px] object-cover" src={businessAdminIconAssetUrl(tenant.adminIcon || '', tenant.name) || undefined} alt={`סמל ${tenant.name}`} />
               </div>
               <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-white border border-purple-200 flex items-center justify-center shadow-sm">
                 <Sparkles className="w-3 h-3 text-purple-600" />
               </div>
-            </div>
+            </div>}
 
             <div className="space-y-0.5">
               <div className="flex items-baseline gap-2">

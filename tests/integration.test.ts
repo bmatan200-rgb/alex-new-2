@@ -220,13 +220,13 @@ test('business admin icon assignments are unique, transactional, visible in PWA 
   assert.equal((await api('/api/super-admin/tenants/icon_business_b',{...second,adminIcon:'flower_purple'},superToken,'icon_business_b','PUT')).success,true);
   const manifest=await nativeFetch(`${base}/manifest.json?app=admin&tenant=icon_business_b`);
   const manifestJson=await manifest.json();
-  assert.equal(manifestJson.icons[0].src,'/tenant-admin-icons/flower_purple.svg?v=38&name=Icon%20B');
+  assert.equal(manifestJson.icons[0].src,'/tenant-admin-icons/flower_purple.svg?v=39&name=Icon%20B');
   assert.equal(manifestJson.id,'/admin?tenant=icon_business_b');
   const customerManifest=await nativeFetch(`${base}/manifest.json?tenant=icon_business_b`);
   const customerManifestJson=await customerManifest.json();
   assert.equal(customerManifestJson.icons[0].src,manifestJson.icons[0].src);
   assert.equal(customerManifestJson.id,'/?tenant=icon_business_b');
-  const icon=await nativeFetch(`${base}/tenant-admin-icons/flower_purple.svg?v=38&name=Icon%20B`);
+  const icon=await nativeFetch(`${base}/tenant-admin-icons/flower_purple.svg?v=39&name=Icon%20B`);
   assert.equal(icon.status,200);assert.match(icon.headers.get('content-type')||'',/image\/svg\+xml/);const iconSvg=await icon.text();assert.match(iconSvg,/<path/);assert.match(iconSvg,/Icon B/);
   assert.equal((await nativeFetch(`${base}/tenant-admin-icons/unknown.svg`)).status,404);
   const raced=await Promise.all(['race_icon_a','race_icon_b'].map((tenantId,index)=>api('/api/super-admin/tenants',{tenantId,name:`Race ${index}`,phone:`050111112${index}`,adminIcon:'star_fuchsia'},superToken,tenantId)));
@@ -295,9 +295,45 @@ test('built production server boots with named database and serves API plus SPA'
     }
     assert.ok(ready,output);
     const html=await nativeFetch('http://127.0.0.1:43187/');assert.equal(html.status,200);assert.match(await html.text(),/<div id="root">/);
-  const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'35.0.0');
+  const health=await nativeFetch('http://127.0.0.1:43187/api/health');const healthJson=await health.json();assert.equal(healthJson.version,'39.0.0');
     const registerRoute=await nativeFetch('http://127.0.0.1:43187/api/customer/register',{method:'POST',headers:{'Content-Type':'application/json','x-tenant-id':'alex_beauty'},body:JSON.stringify({full_name:'x',phone:'bad',acceptedTerms:false})});
     assert.equal(registerRoute.status,400);assert.doesNotMatch(await registerRoute.text(),/API route not found/);
     const missing=await nativeFetch('http://127.0.0.1:43187/api/unknown');assert.equal(missing.status,404);assert.match(missing.headers.get('content-type')||'',/json/);
   } finally {child.kill('SIGTERM');await new Promise<void>(r=>child.once('exit',()=>r()));}
+});
+
+// V39: these tests require the Firestore/Auth emulators, never production.
+test('saving SMS settings commits both schedules atomically and scopes changes to the selected tenant',async()=>{
+  const untouched=await db.doc('sms_schedules/other_today').get();
+  const result=await api('/api/sms/settings',{settings:{enabled:true,autoSendEnabled:true,morningReminderTime:'11:00',eveningReminderTime:'20:00',notifyCustomerToday:true,notifyCustomer1DayBefore:true}},superToken);
+  assert.equal(result.status,200);
+  const [morning,evening]=await Promise.all([db.doc('sms_schedules/alex_beauty_today').get(),db.doc('sms_schedules/alex_beauty_1day').get()]);
+  assert.equal(morning.data()?.time,'11:00');assert.equal(evening.data()?.time,'20:00');
+  assert.equal(morning.data()?.tenantId,'alex_beauty');assert.equal(morning.data()?.settings.telnyxApiKey,undefined);
+  assert.deepEqual((await db.doc('sms_schedules/other_today').get()).data(),untouched.data());
+  assert.ok([401,403].includes((await api('/api/super-admin/sms-scheduler',undefined,ownerToken)).status));
+  assert.equal((await api('/api/super-admin/sms-scheduler',undefined,superToken)).status,200);
+});
+test('scheduler documents are server-only for customers, owners and Super Admin',async()=>{
+  for(const context of [rules.unauthenticatedContext(),rules.authenticatedContext('owner',{email:'owner@example.com',role:'business_admin',tenantId:'alex_beauty'}),rules.authenticatedContext('super',{email:'bmatan200@gmail.com',role:'super_admin'})]){
+    const client=context.firestore();
+    for(const path of ['sms_schedules/alex_beauty_today','sms_scheduler_control/discovery']){
+      await assertFails(getDoc(doc(client,path)));
+      await assertFails(setDoc(doc(client,path),{nextRunAt:0}));
+    }
+  }
+});
+test('scheduled dispatch rechecks cancelled records and retains accepted locks across retries',async()=>{
+  const {tomorrowIso}=israelClock();const tenant='scheduler_integration';
+  await db.doc(`tenants/${tenant}`).set({status:'active',name:'Scheduler Test'});
+  await db.doc(`tenants/${tenant}/private_settings/sms_provider`).set({telnyxApiKey:'fake',telnyxFrom:'TEST',telnyxProfileId:'fake'});
+  const config={enabled:true,autoSendEnabled:true,notifyCustomer1DayBefore:true,eveningReminderTime:'20:00'};
+  await db.doc(`tenants/${tenant}/appointments/confirmed`).set({status:'confirmed',appointment_date:tomorrowIso,start_time:'14:00',customer_name:'Fake',customer_phone:'0521112222',service_name:'Fake Service',created_at:'2020-01-01T00:00:00Z'});
+  await db.doc(`tenants/${tenant}/appointments/cancelled`).set({status:'cancelled',appointment_date:tomorrowIso,start_time:'15:00',customer_name:'Cancelled',customer_phone:'0521113333'});
+  const before=providerCalls;
+  const result=await sendRemindersForDate(tomorrowIso,'1day',tenant,config,{scheduled:true,deadline:Date.now()+30000});
+  assert.equal(result.sentCount,1);assert.equal(providerCalls-before,1);
+  await sendRemindersForDate(tomorrowIso,'1day',tenant,config,{scheduled:true,deadline:Date.now()+30000});assert.equal(providerCalls-before,1);
+  const lock=(await db.doc(`tenants/${tenant}/reminder_locks/${reminderKey('1day','0521112222',tomorrowIso)}`).get()).data();
+  assert.equal(lock?.schedulerVersion,39);assert.equal(lock?.status,'sent');assert.equal(lock?.attempts,1);
 });

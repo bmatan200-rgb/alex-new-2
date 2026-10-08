@@ -45,7 +45,7 @@ import { db, auth, signOut } from '../lib/firebase';
 import { clearAdminSession } from '../utils/storage';
 import { Appointment, Service, TenantInfo, ScheduleSettings } from '../types';
 import { formatILS } from '../utils/dateUtils';
-import { BUSINESS_ICON_CATEGORIES, BUSINESS_ICON_COLORS, BUSINESS_ICON_SYMBOLS, businessAdminIconId, businessAdminIconPreviewSvg, getBusinessAdminIconDetails } from '../utils/businessAdminIcons';
+import { BUSINESS_ICON_CATEGORIES, BUSINESS_ICON_COLORS, BUSINESS_ICON_SYMBOLS, businessAdminIconId, businessAdminIconPreviewAsset, getBusinessAdminIconDetails } from '../utils/businessAdminIcons';
 
 const COLOR_PALETTES = [
   { name: 'סגול + לילך', value: '#7c3aed', secondary: '#c4b5fd' },
@@ -91,7 +91,7 @@ export const SuperAdminPage: React.FC = () => {
   const [plan, setPlan] = useState<'starter' | 'pro' | 'enterprise'>('pro');
   const [coverImage, setCoverImage] = useState('');
   const [adminIcon, setAdminIcon] = useState('');
-  const [iconSymbol, setIconSymbol] = useState('scissors');
+  const [iconSymbol, setIconSymbol] = useState('');
   const [iconCategory, setIconCategory] = useState<string>('hair');
   const [iconColor, setIconColor] = useState('purple');
   const [coverImageError, setCoverImageError] = useState('');
@@ -293,7 +293,7 @@ export const SuperAdminPage: React.FC = () => {
     setTenantId(''); setName(''); setTagline(''); setOwnerName(''); setPhone(''); setEmail(''); setOwnerPassword('');
     setCity(''); setAddress(''); setCustomDomain(''); setPrimaryColor('#7c3aed'); setSecondaryColor('#c4b5fd');
     setPlan('pro'); setCoverImage(''); setCoverImageError(''); setServices([]);
-    setAdminIcon(''); setIconSymbol('scissors'); setIconCategory('hair'); setIconColor('purple');
+    setAdminIcon(''); setIconSymbol(''); setIconCategory('hair'); setIconColor('purple');
     setBusinessOpen(''); setBusinessClose(''); setFridayOpen(''); setFridayClose(''); setCreatedResult(null);
   };
 
@@ -308,7 +308,7 @@ export const SuperAdminPage: React.FC = () => {
       setEditingTenantId(tenant.id);
       setAdminIcon(t.adminIcon || '');
       const iconDetails = getBusinessAdminIconDetails(t.adminIcon || '');
-      setIconSymbol(iconDetails?.symbol.id || 'scissors'); setIconCategory(BUSINESS_ICON_SYMBOLS.find((symbol) => symbol.id === iconDetails?.symbol.id)?.category || 'hair'); setIconColor(iconDetails?.color.id || 'purple');
+      setIconSymbol(iconDetails?.symbol.id || ''); setIconCategory(BUSINESS_ICON_SYMBOLS.find((symbol) => symbol.id === iconDetails?.symbol.id)?.category || 'hair'); setIconColor(iconDetails?.color.id || 'purple');
       setTenantId(tenant.id);
       setName(t.name || ''); setTagline(t.tagline || ''); setOwnerName(t.ownerName || ''); setPhone(t.phone || '');
       setEmail(t.email || ''); setCity(t.city || ''); setAddress(t.address || ''); setCustomDomain(t.customDomain || '');
@@ -333,8 +333,7 @@ export const SuperAdminPage: React.FC = () => {
       alert('נא להזין שם עסק ומספר טלפון');
       return;
     }
-    if (!adminIcon) { alert('יש לבחור אייקון לבעל העסק'); return; }
-    const iconOwner = tenants.find((t) => t.id !== editingTenantId && t.adminIcon === adminIcon);
+    const iconOwner = adminIcon ? tenants.find((t) => t.id !== editingTenantId && t.adminIcon === adminIcon) : null;
     if (iconOwner) { alert(`האייקון כבר הוקצה לעסק ${iconOwner.name}. יש לבחור אייקון אחר.`); return; }
 
     const finalTenantId = (tenantId || name)
@@ -358,7 +357,7 @@ export const SuperAdminPage: React.FC = () => {
         secondaryColor,
         customDomain: customDomain.trim().toLowerCase(),
         coverImage,
-        adminIcon,
+        adminIcon: adminIcon || null,
         plan,
         services,
         scheduleSettings: {
@@ -825,7 +824,7 @@ export const SuperAdminPage: React.FC = () => {
                   <div className="rounded-3xl border border-indigo-800/70 bg-slate-950 p-4 sm:p-5 space-y-4">
                     <div className="flex items-center gap-3">
                       <div className="h-14 w-14 shrink-0 overflow-hidden rounded-2xl shadow-lg" style={{ backgroundColor: selectedIconDetails?.color.value || '#334155' }}>
-                        {businessAdminIconPreviewSvg(iconSymbol) ? <img className="h-full w-full" alt={BUSINESS_ICON_SYMBOLS.find((symbol) => symbol.id === iconSymbol)?.label || 'סמל העסק'} src={`data:image/svg+xml,${encodeURIComponent(businessAdminIconPreviewSvg(iconSymbol) || '')}`} /> : <span className="flex h-full items-center justify-center text-2xl">✦</span>}
+                        {adminIcon ? <img className="h-full w-full object-contain" alt={BUSINESS_ICON_SYMBOLS.find((symbol) => symbol.id === iconSymbol)?.label || 'סמל העסק'} src={businessAdminIconPreviewAsset(iconSymbol) || undefined} /> : <span className="flex h-full items-center justify-center px-1 text-center text-[10px] font-bold text-slate-400">ללא סמל</span>}
                       </div>
                       <div>
                         <h4 className="font-black text-white">אייקון ניהול לבעל העסק</h4>
@@ -835,21 +834,22 @@ export const SuperAdminPage: React.FC = () => {
                     <div>
                       <div className="mb-2 flex items-center justify-between gap-2 text-xs">
                         <span className="font-bold text-slate-200">1. בחרו סמל</span>
-                        <span className="text-slate-500">24 סמלים בכל תחום · {BUSINESS_ICON_SYMBOLS.length * BUSINESS_ICON_COLORS.length - tenants.filter((t) => t.id !== editingTenantId && t.adminIcon).length} שילובים פנויים</span>
+                        <span className="text-slate-500">{BUSINESS_ICON_SYMBOLS.filter((symbol) => symbol.category === iconCategory).length} סמלים בתחום · {BUSINESS_ICON_SYMBOLS.length * BUSINESS_ICON_COLORS.length - tenants.filter((t) => t.id !== editingTenantId && t.adminIcon).length} שילובים פנויים</span>
                       </div>
                       <div className="mb-3 flex flex-wrap gap-2">
-                        {BUSINESS_ICON_CATEGORIES.map((category) => <button key={category.id} type="button" onClick={() => setIconCategory(category.id)} aria-pressed={iconCategory === category.id} className={`rounded-xl border px-3 py-2 text-xs font-bold transition ${iconCategory === category.id ? 'border-indigo-400 bg-indigo-500/20 text-white' : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-white'}`}>{category.label}{category.id !== 'classic' && <span className="mr-1 text-slate-500">(24)</span>}</button>)}
+                        <button type="button" onClick={() => { setAdminIcon(''); setIconSymbol(''); }} aria-pressed={!adminIcon} className={`rounded-xl border px-3 py-2 text-xs font-bold transition ${!adminIcon ? 'border-indigo-400 bg-indigo-500/20 text-white' : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-white'}`}>{adminIcon ? 'בטל בחירת סמל' : 'ללא סמל'}</button>
+                        {BUSINESS_ICON_CATEGORIES.map((category) => <button key={category.id} type="button" onClick={() => setIconCategory(category.id)} aria-pressed={iconCategory === category.id} className={`rounded-xl border px-3 py-2 text-xs font-bold transition ${iconCategory === category.id ? 'border-indigo-400 bg-indigo-500/20 text-white' : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-white'}`}>{category.label}{category.id !== 'classic' && <span className="mr-1 text-slate-500">({BUSINESS_ICON_SYMBOLS.filter((symbol) => symbol.category === category.id).length})</span>}</button>)}
                       </div>
                       <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
                         {BUSINESS_ICON_SYMBOLS.filter((symbol) => symbol.category === iconCategory).map((symbol) => {
                           const taken = isAdminIconTaken(symbol.id, iconColor);
-                          const selected = iconSymbol === symbol.id;
-                          const svg = businessAdminIconPreviewSvg(symbol.id);
-                          return <button key={symbol.id} type="button" disabled={taken} onClick={() => { setIconSymbol(symbol.id); if (!taken) setAdminIcon(businessAdminIconId(symbol.id, iconColor)); }} title={taken ? `${symbol.label} בצבע שנבחר כבר הוקצה` : symbol.label} aria-label={symbol.label} aria-pressed={selected} className={`relative flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border p-2 text-[10px] font-bold transition ${selected ? 'border-white ring-2 ring-indigo-500 bg-slate-800 text-white' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'} ${taken ? 'opacity-30 cursor-not-allowed' : ''}`}>{svg && <img className="h-8 w-8" alt="" src={`data:image/svg+xml,${encodeURIComponent(svg)}`} />}<span className="line-clamp-1 w-full">{symbol.label}</span>{taken && <span className="absolute inset-0 flex items-center justify-center text-2xl text-rose-300">×</span>}</button>;
+                          const selected = Boolean(adminIcon) && iconSymbol === symbol.id;
+                          const preview = businessAdminIconPreviewAsset(symbol.id);
+                          return <button key={symbol.id} type="button" disabled={taken} onClick={() => { setIconSymbol(symbol.id); if (!taken) setAdminIcon(businessAdminIconId(symbol.id, iconColor)); }} title={taken ? `${symbol.label} בצבע שנבחר כבר הוקצה` : symbol.label} aria-label={symbol.label} aria-pressed={selected} className={`relative flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border p-2 text-[10px] font-bold transition ${selected ? 'border-white ring-2 ring-indigo-500 bg-slate-800 text-white' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'} ${taken ? 'opacity-30 cursor-not-allowed' : ''}`}>{preview && <img className="h-8 w-8 object-contain" alt="" src={preview} />}<span className="line-clamp-1 w-full">{symbol.label}</span>{taken && <span className="absolute inset-0 flex items-center justify-center text-2xl text-rose-300">×</span>}</button>;
                         })}
                       </div>
                     </div>
-                    <div>
+                    {adminIcon ? <div>
                       <div className="mb-2 text-xs font-bold text-slate-200">2. בחרו צבע</div>
                       <div className="flex flex-wrap gap-2">
                         {BUSINESS_ICON_COLORS.map((color) => {
@@ -858,8 +858,7 @@ export const SuperAdminPage: React.FC = () => {
                           return <button key={color.id} type="button" disabled={taken} onClick={() => { setIconColor(color.id); if (!taken) setAdminIcon(businessAdminIconId(iconSymbol, color.id)); }} title={taken ? `${color.label} כבר בשימוש עם הסמל הזה` : color.label} aria-label={color.label} aria-pressed={selected} className={`h-9 w-9 rounded-xl border-2 transition ${selected ? 'border-white scale-110 ring-2 ring-indigo-500' : 'border-slate-700'} ${taken ? 'opacity-30 cursor-not-allowed' : 'hover:scale-105'}`} style={{ backgroundColor: color.value }} />;
                         })}
                       </div>
-                    </div>
-                    {!adminIcon && <p className="text-xs font-bold text-amber-300">יש לבחור שילוב אייקון פנוי לפני שמירת העסק.</p>}
+                    </div> : <p className="text-xs text-slate-400">לא יוצג סמל בעסק. אפליקציית ההתקנה תשתמש באייקון ברירת המחדל.</p>}
                   </div>
 
                   <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_.65fr] gap-4">
@@ -1174,7 +1173,7 @@ export const SuperAdminPage: React.FC = () => {
                     <div className="flex items-start justify-between gap-3">
                       <div className="space-y-1">
                         <div className="flex items-center gap-2 flex-wrap">
-                          {(() => { const icon = getBusinessAdminIconDetails(t.adminIcon || ''); const svg = icon && businessAdminIconPreviewSvg(icon.symbol.id); return icon && svg ? <img className="h-8 w-8 rounded-xl bg-slate-800 p-1" src={`data:image/svg+xml,${encodeURIComponent(svg)}`} alt={`סמל ${t.name}`} title={`אייקון הניהול של ${t.name}`} /> : null; })()}
+                          {(() => { const icon = getBusinessAdminIconDetails(t.adminIcon || ''); const preview = icon && businessAdminIconPreviewAsset(icon.symbol.id); return icon && preview ? <img className="h-8 w-8 rounded-xl bg-slate-800 p-1 object-contain" src={preview} alt={`סמל ${t.name}`} title={`אייקון הניהול של ${t.name}`} /> : null; })()}
                           <h3 className="text-lg font-black text-white font-['Rubik',sans-serif]">
                             {t.name}
                           </h3>

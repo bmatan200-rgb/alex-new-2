@@ -121,13 +121,13 @@ function AdminRouteView({
       <header className="bg-slate-950 text-white px-4 sm:px-8 py-3.5 border-b border-purple-900/40 sticky top-0 z-30 shadow-md">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3">
-            <div
+            {businessIcon && <div
               className="relative w-8 h-8 rounded-xl flex items-center justify-center font-bold text-white text-xs shadow-xs"
-              style={{ backgroundColor: businessIcon?.color.value || tenant.primaryColor || '#9333ea' }}
+              style={{ backgroundColor: businessIcon.color.value }}
             >
-              {businessIcon ? <img className="h-full w-full rounded-xl object-cover" src={businessAdminIconAssetUrl(tenant.adminIcon || '', salonTitle) || undefined} alt={`סמל ${salonTitle}`} /> : salonTitle.charAt(0)}
+              <img className="h-full w-full rounded-xl object-cover" src={businessAdminIconAssetUrl(tenant.adminIcon || '', salonTitle) || undefined} alt={`סמל ${salonTitle}`} />
               <span className="w-2 h-2 rounded-full bg-emerald-400 absolute -top-0.5 -right-0.5 border border-slate-950 animate-pulse" />
-            </div>
+            </div>}
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <div className="flex items-center gap-1.5 font-black text-sm text-purple-200">

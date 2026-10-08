@@ -33,6 +33,8 @@ service cloud.firestore {
     }
 
     // All mutations pass through server validation and transactions.
+    match /sms_schedules/{id} { allow read, write: if false; }
+    match /sms_scheduler_control/{id} { allow read, write: if false; }
     match /domains/{hostname} { allow read, write: if false; }
     match /tenants/{tenantId} {
       allow read: if canManage(tenantId);

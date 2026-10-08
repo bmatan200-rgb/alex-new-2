@@ -1,8 +1,12 @@
-# Alex Multi-Tenant — V38.0.1
+# Alex Multi-Tenant — V39.0.0
 
 תיקון הפרדת לקוח, מנהל עסק וסופר אדמין: [דוח V35](ROLE-ISOLATION-FIX-HE.md).
 
-לכל עסק: בחירת סמל וקטורי וצבע, עם 24 אפשרויות בכל אחד מארבעת תחומי השירות. הסמל ושם העסק מופיעים באתר הלקוחות, בממשק הניהול ובאייקוני ההתקנה; שילוב שכבר הוקצה נחסם גם בשרת. פרטים: [מיתוג עסק V38](BUSINESS-BRANDING-V38-HE.md).
+לכל עסק: 28 סמלים בכל אחד מארבעת תחומי השירות, כולל ארבעה סמלי תמונה איכותיים לכל תחום, בחירת צבע, וגם אפשרות לשמור עסק ללא סמל. שם העסק מוצג באייקון ההתקנה; הקצאה כפולה נחסמת בשרת. פרטים: [קטלוג סמלים](BUSINESS-ICON-CATALOG-V38.0.2-HE.md).
+
+V39 מוסיפה תזמון SMS שמור, בדיקת משימות שהגיע זמנן בלבד, שליחה בקצב מוגבל ובדיקות עומס מדומות. פרטים ותוצאות: [דוח SMS V39](SMS-SCHEDULER-V39-HE.md).
+
+V38.0.3 מוסיפה בקשת אישור לפני הסתרה קבועה של הצעת ההתקנה. ביטול האישור אינו שומר את ההסתרה וההצעה נשארת פתוחה.
 
 גרסה מלאה ומעודכנת עם תיקוני הרשאות Super Admin, רישום לקוחות, Firestore quota, יציבות Render ובידוד multi-tenant.
 ה־Auth, ה־multi-tenant והפרדת הנתונים של v17 נשמרו. פירוט השינויים החדשים: [AUDIT-v18.md](AUDIT-v18.md).
@@ -31,7 +35,7 @@ NODE_ENV=production npm start
 
 ב־Render: Build Command הוא `npm ci && npm run build`; Start Command הוא `npm start`;
 הגדירו `NODE_ENV=production`. השרת מכבד את `PORT` של Render. נקודת בריאות: `/api/health`.
-ב־V38 נקודת הבריאות חייבת להחזיר `"version":"38.0.1"`; אם לא, Render עדיין מריץ build ישן.
+ב־V39 נקודת הבריאות חייבת להחזיר `"version":"39.0.0"`; אם לא, Render עדיין מריץ build ישן.
 אין צורך במפתח Gemini. מפתחות Telnyx וחשבון השירות נשארים בשרת בלבד.
 
 ## Firebase Admin ובסיס הנתונים
@@ -108,8 +112,9 @@ npx firebase deploy --only firestore --project gen-lang-client-0382531831
 
 ## SMS
 
-- תזמון אחד לכל העסקים, לפי `Asia/Jerusalem`, ברירת מחדל כל 5 דקות וגם לאחר האתחול.
-- הגדרות scheduler נשמרות בזיכרון ל־15 דקות; לאחר ששילוב `tenant + date + reminder type` טופל, אותו process אינו סורק אותו שוב באותו חלון.
+- תזמון שמור לכל עסק וסוג תזכורת, לפי `Asia/Jerusalem`. בדיקה רגילה פעם בדקה מורידה רק משימות שהגיע זמנן, עד 20 משימות ובתקציב 45 שניות לריצה.
+- השלמה יומית ומדופדפת של רשימת העסקים מחליפה את קריאת כל ההגדרות מדי רבע שעה. שינוי הגדרות או סטטוס עסק מעדכן את שתי המשימות באותה טרנזקציה.
+- קצב ברירת המחדל הוא בקשה אחת לשנייה, לכל תהליך שרת. יש להתאים את `SMS_SEND_INTERVAL_MS` למגבלות הספק בפועל.
 - נעילות Firestore נשארות שכבת ה־dedupe הסופית בין restarts/instances.
 - מכבד `enabled`, `autoSendEnabled`, סוג תזכורת וסטטוס עסק. עסק חדש ללא הגדרות SMS מתחיל כבוי.
 - רק חלון תזכורת שטרם טופל קורא את התורים. אין סריקה כל 30 שניות לאורך כל הערב.
@@ -121,6 +126,8 @@ npx firebase deploy --only firestore --project gen-lang-client-0382531831
   כ־`failed`/`unknown` או `in_progress`. היא אינה נפתחת אוטומטית לאחר 20 דקות.
   לפני ניסיון חוזר יש להשוות מול Telnyx, לוודא שלא נשלחה הודעה, ורק אז לטפל בנעילה בהרשאת שרת.
   הבחירה הזו מונעת ניסיונות אוטומטיים כפולים אך עלולה להשאיר הודעה שלא נשלחה עד לבדיקת מנהל.
+- בתזמון V39 בלבד, דחייה מפורשת של הספק עם 429 וללא מזהה הודעה מאפשרת עד שלושה ניסיונות עם המתנה. כשל לפני בקשת הספק ניתן לשחזור; קריסה אחרי תחילת הבקשה אינה גורמת לשליחה חוזרת אוטומטית.
+- `GET /api/super-admin/sms-scheduler` מציג משימות הדורשות בדיקה, בהרשאת Super Admin בלבד. אוספי התזמון חסומים לגישה ישירה מהדפדפן.
 - הודעה ידנית זהה לאותו מספר באותו יום חסומה משליחה חוזרת. גם בדיקות כפולות מוחזרות כ־409.
 - ברירת המחדל ב־v18: משתני Telnyx המרכזיים ב־Render משמשים את כל העסקים. `private_settings` של tenant יכול לדרוס אותם לעסק מסוים.
 - אם רוצים לבטל במפורש שיתוף ספק לעסקים שאינם Alex, מגדירים `ALLOW_SHARED_SMS_PROVIDER=false`.
@@ -168,4 +175,4 @@ Use one cron job for the entire multi-tenant system. Set `CRON_SECRET` in Render
 
 Preferred authentication is the `x-cron-secret: <CRON_SECRET>` header. `Authorization: Bearer <CRON_SECRET>` and `?key=<CRON_SECRET>` are also supported. The query-string form is only a fallback because URLs may be retained in third-party request history.
 
-The endpoint runs the central reminder scheduler, which already iterates all active/trial tenants. Do not create one cron job per tenant. The existing `/api/sms/check-due` and `/api/reminders/heartbeat` endpoints remain protected by Firebase Super Admin authentication.
+The endpoint runs the central reminder scheduler, which queries only due schedule records. A separate daily paginated reconciliation discovers missing schedules. Do not create one cron job per tenant. The existing `/api/sms/check-due` and `/api/reminders/heartbeat` endpoints remain protected by Firebase Super Admin authentication.

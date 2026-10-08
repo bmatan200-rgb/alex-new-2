@@ -1,4 +1,4 @@
-# Alex Multi-Tenant — V38.0.0
+# Alex Multi-Tenant — V38.0.1
 
 תיקון הפרדת לקוח, מנהל עסק וסופר אדמין: [דוח V35](ROLE-ISOLATION-FIX-HE.md).
 
@@ -31,7 +31,7 @@ NODE_ENV=production npm start
 
 ב־Render: Build Command הוא `npm ci && npm run build`; Start Command הוא `npm start`;
 הגדירו `NODE_ENV=production`. השרת מכבד את `PORT` של Render. נקודת בריאות: `/api/health`.
-ב־V38 נקודת הבריאות חייבת להחזיר `"version":"38.0.0"`; אם לא, Render עדיין מריץ build ישן.
+ב־V38 נקודת הבריאות חייבת להחזיר `"version":"38.0.1"`; אם לא, Render עדיין מריץ build ישן.
 אין צורך במפתח Gemini. מפתחות Telnyx וחשבון השירות נשארים בשרת בלבד.
 
 ## Firebase Admin ובסיס הנתונים

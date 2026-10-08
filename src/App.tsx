@@ -47,7 +47,7 @@ import {
   auth,
   signOut,
 } from './lib/firebase';
-import { formatILS, deduplicateAppointments, isAppointmentInPast } from './utils/dateUtils';
+import { deduplicateAppointments, isAppointmentInPast } from './utils/dateUtils';
 import { TenantProvider, useTenant } from './context/TenantContext';
 import { Header } from './components/Header';
 import { businessAdminIconAssetUrl, getBusinessAdminIconDetails } from './utils/businessAdminIcons';
@@ -372,7 +372,6 @@ function MainApp() {
     await saveScheduleSettingsToFirestore(updatedSettings,tenantId);
     updateScheduleSettings(updatedSettings);saveStoredScheduleSettings(updatedSettings);
   };
-  const mainService = services[0];
 
   const cleanUserPhone = currentUser?.phone ? currentUser.phone.replace(/\D/g, '') : '';
   const customerActiveBookings =
@@ -564,9 +563,6 @@ function MainApp() {
                           <h2 className="text-2xl sm:text-3xl lg:text-4xl font-black text-slate-900 tracking-tight font-['Rubik',sans-serif]">
                             קביעת תור
                           </h2>
-                          <p className="text-sm sm:text-base font-bold mt-1 sm:mt-1.5" style={{ color: primaryColor }} dir="rtl">
-                            {mainService ? `${mainService.name} • ${mainService.price} ש״ח` : 'פרטי השירותים יעודכנו בקרוב'}
-                          </p>
                         </div>
                       </div>
 

@@ -7,7 +7,7 @@ assert.match(server, /api\/customer\/register/, 'built server is missing /api/cu
 assert.match(server, /api\/register-webhook/, 'built server is missing the legacy registration compatibility route');
 assert.match(server, /API route not found/, 'built server is missing the API catch-all');
 assert.ok(server.indexOf('api/customer/register') < server.indexOf('API route not found'), 'built API catch-all precedes customer registration');
-assert.match(server, /38\.0\.0/, 'built server does not contain V38.0.0 version marker');
+assert.match(server, /38\.0\.1/, 'built server does not contain V38.0.1 version marker');
 
 function files(dir) {
   return readdirSync(dir).flatMap(name => {

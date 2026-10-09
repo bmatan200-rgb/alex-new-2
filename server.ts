@@ -1,3 +1,4 @@
+import { PLATFORM_DOMAIN, isPlatformHost, isPlatformRoot, platformDomainCandidates, allocatePlatformDomain, tenantLinks, resolveHostTenant, selectTenant } from './server/platformDomains';
 import { DeliveryTracker, DELIVERY_JOBS } from './server/sms/deliveryTracker';
 import { createSmsProvider, SmsProviderError, type SmsProvider, type SmsSendResult, type DeliveryStatus } from './server/sms/providers';
 import { legacyLogLockKey, mergeDeliveryResult, manualSmsLockKey } from './server/sms/logs';
@@ -196,25 +197,25 @@ export function getTenantDoc(tenantId: string) {
   return doc(db, 'tenants', tenantId);
 }
 
+async function boundTenantForHost(hostname: string): Promise<string | null> {
+  return resolveHostTenant(hostname, async host => {
+    const cached = domainTenantCache.get(host);
+    if (cached && cached.expiresAt > Date.now()) return cached.tenantId;
+    if (firestoreQuotaBackoffActive()) {
+      if (cached) return cached.tenantId;
+      throw quotaBackoffError(`domain ${host}`);
+    }
+    const mapped = await getDoc(doc(db, 'domains', host));
+    const tenantId = mapped.exists ? String(mapped.data()?.tenantId || '') : '';
+    if (!validId(tenantId)) return null;
+    domainTenantCache.set(host, {expiresAt: Date.now() + 10 * 60_000, tenantId});
+    return tenantId;
+  });
+}
 async function resolveTenantDomain(req: Request, res: Response, next: NextFunction) {
   try {
-    const selectors = [req.body?.tenantId, req.query.tenant, req.headers['x-tenant-id']].filter(v => v !== undefined && v !== '');
-    if (selectors.some(v => !validId(v)) || new Set(selectors).size > 1) return res.status(400).json({success:false,error:'Invalid or conflicting tenant selectors'});
-    if (selectors.length) req.tenantId = String(selectors[0]);
-    else {
-      const hostname = req.hostname.toLowerCase();
-      const cachedDomain = domainTenantCache.get(hostname);
-      if (cachedDomain && cachedDomain.expiresAt > Date.now()) req.tenantId = cachedDomain.tenantId;
-      else if (firestoreQuotaBackoffActive() && cachedDomain) req.tenantId = cachedDomain.tenantId;
-      else {
-        if (firestoreQuotaBackoffActive()) throw quotaBackoffError(`domain ${hostname}`);
-        const mapped = await getDoc(doc(db, 'domains', hostname));
-        const resolvedTenantId = mapped.exists ? String(mapped.data()?.tenantId || '') : PRIMARY_TENANT_ID;
-        req.tenantId = resolvedTenantId;
-        if (validId(resolvedTenantId)) domainTenantCache.set(hostname, { expiresAt: Date.now() + 10 * 60_000, tenantId: resolvedTenantId });
-      }
-    }
-    if (!validId(req.tenantId)) return res.status(400).json({success:false,error:'Invalid tenant ID'});
+    req.tenantId = selectTenant(await boundTenantForHost(req.hostname.toLowerCase()),
+      [req.body?.tenantId, req.query.tenant, req.headers['x-tenant-id']]);
     next();
   } catch (err) { next(err); }
 }
@@ -230,23 +231,10 @@ app.get('/manifest.json', async (req, res) => {
   res.type('application/manifest+json');
   // Platform management has no tenant dependency or tenant-specific install identity.
   if (role === 'super-admin') return res.json(buildPwaManifest(role, '', ''));
-  let tenantId = typeof req.query.tenant === 'string' && validId(req.query.tenant)
-    ? req.query.tenant
-    : PRIMARY_TENANT_ID;
-  if (!req.query.tenant) {
-    const cachedDomain = domainTenantCache.get(req.hostname.toLowerCase());
-    if (cachedDomain && validId(cachedDomain.tenantId)) tenantId = cachedDomain.tenantId;
-    else {
-      try {
-        const mapped = await getDoc(doc(db, 'domains', req.hostname.toLowerCase()));
-        const domainTenantId = mapped.exists ? String(mapped.data()?.tenantId || '') : '';
-        if (validId(domainTenantId)) {
-          tenantId = domainTenantId;
-          domainTenantCache.set(req.hostname.toLowerCase(), { expiresAt: Date.now() + 10 * 60_000, tenantId });
-        }
-      } catch {}
-    }
-  }
+  let tenantId: string;
+  try {
+    tenantId = selectTenant(await boundTenantForHost(req.hostname.toLowerCase()), [req.query.tenant]);
+  } catch (err: any) { return res.status(err.status || 503).json({error: err.message}); }
   let tenantName = 'הזמנת תורים לעסק';
   let adminIcon = '';
   try {
@@ -256,7 +244,7 @@ app.get('/manifest.json', async (req, res) => {
   } catch {
     // Keep the manifest available when tenant data is temporarily unavailable.
   }
-  res.json(buildPwaManifest(role, tenantId, tenantName, adminIcon));
+  res.json(buildPwaManifest(role, tenantId, tenantName, adminIcon, isPlatformHost(req.hostname.toLowerCase()) && !isPlatformRoot(req.hostname.toLowerCase())));
 });
 app.get('/tenant-admin-icons/:iconId.svg', (req, res) => {
   const businessName = typeof req.query.name === 'string' ? req.query.name : '';
@@ -1649,11 +1637,11 @@ async function ensurePrimaryTenant(options: { force?: boolean } = {}): Promise<{
 app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) => {
   try {
     if (superAdminTenantsCache && superAdminTenantsCache.expiresAt > Date.now()) {
-      return res.json({ success: true, tenants: superAdminTenantsCache.tenants, cached: true });
+      return res.json({ success: true, tenants: superAdminTenantsCache.tenants.map(t => ({...t, ...tenantLinks(t, _req.hostname.toLowerCase())})), cached: true });
     }
     if (firestoreQuotaBackoffActive()) {
       if (superAdminTenantsCache) {
-        return res.json({ success: true, tenants: superAdminTenantsCache.tenants, cached: true, stale: true, warning: 'Firestore quota temporarily exhausted' });
+        return res.json({ success: true, tenants: superAdminTenantsCache.tenants.map(t => ({...t, ...tenantLinks(t, _req.hostname.toLowerCase())})), cached: true, stale: true, warning: 'Firestore quota temporarily exhausted' });
       }
       throw quotaBackoffError('Super Admin tenant list');
     }
@@ -1663,6 +1651,7 @@ app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) 
       .filter((t: any) => t.status !== 'deleted');
     const assignedIcons = await Promise.all(baseTenants.map((tenant: any) => ensureTenantAdminIcon(tenant.id)));
     baseTenants.forEach((tenant: any, index: number) => { tenant.adminIcon = assignedIcons[index]; });
+    for (const tenant of baseTenants) tenant.platformDomain = await ensurePlatformDomain(tenant.id);
 
     // Aggregation count avoids downloading every appointment/customer document.
     // Firestore bills aggregation by index work (minimum one read) instead of one
@@ -1686,12 +1675,12 @@ app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) 
       }
     }));
     superAdminTenantsCache = { expiresAt: Date.now() + SUPER_ADMIN_CACHE_TTL_MS, tenants };
-    return res.json({ success: true, tenants });
+    return res.json({ success: true, tenants: tenants.map(t => ({...t, ...tenantLinks(t, _req.hostname.toLowerCase())})) });
   } catch (err: any) {
     const quotaExceeded = noteFirestoreQuota(err, 'Super Admin tenant list');
     console.error('[Tenants API] Failed:', err);
     if (quotaExceeded && superAdminTenantsCache) {
-      return res.json({ success: true, tenants: superAdminTenantsCache.tenants, cached: true, stale: true, warning: 'Firestore quota temporarily exhausted' });
+      return res.json({ success: true, tenants: superAdminTenantsCache.tenants.map(t => ({...t, ...tenantLinks(t, _req.hostname.toLowerCase())})), cached: true, stale: true, warning: 'Firestore quota temporarily exhausted' });
     }
     return res.status(quotaExceeded ? 503 : 500).json({ success: false, error: quotaExceeded ? 'Firestore quota temporarily exhausted; try again after reset' : (err?.message || 'Failed to load tenants') });
   }
@@ -1746,6 +1735,12 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
     const previousIconRef = isBusinessAdminIconId(previousAdminIcon) && previousAdminIcon !== selectedAdminIcon
       ? doc(db, 'tenantAdminIcons', previousAdminIcon) : null;
     const previousAssignment = previousIconRef ? await tx.get(previousIconRef) : null;
+    const platformDomain = await allocatePlatformDomain(tenantId, existing.data()?.platformDomain, async host => {
+      const assignment = await tx.get(doc(db, 'domains', host));
+      return assignment.exists ? String(assignment.data()?.tenantId || '') : null;
+    });
+    profile.platformDomain = platformDomain;
+    if (domain && isPlatformHost(domain) && domain !== platformDomain) throw new Error('Use the automatically assigned business domain');
     const oldDomain=existing.data()?.customDomain;
     const mapping=domain?await tx.get(doc(db,'domains',domain)):null;
     const oldMapping=oldDomain && oldDomain!==domain?await tx.get(doc(db,'domains',oldDomain)):null;
@@ -1759,14 +1754,37 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
       if(patch) tx.set(r,patch,{merge:true});
     });
     tx.set(ref,{...profile,adminIcon:selectedAdminIcon,customDomain:domain},{merge:!create});
+    tx.set(doc(db, 'domains', platformDomain), {tenantId, hostname: platformDomain, managedBy: 'platform'});
     if(selectedIconRef) tx.set(selectedIconRef,{tenantId,updatedAt:new Date().toISOString()},{merge:true});
     if(previousIconRef && previousAssignment?.data()?.tenantId===tenantId) tx.delete(previousIconRef);
     tx.set(getTenantSettingsDoc(tenantId),config,{merge:!create});
     if(domain) tx.set(doc(db,'domains',domain),{tenantId,hostname:domain});
-    if(oldMapping?.data()?.tenantId===tenantId) tx.delete(oldMapping.ref);
+    if(oldMapping?.data()?.tenantId===tenantId && oldDomain !== platformDomain) tx.delete(oldMapping.ref);
   });
   invalidateTenantCaches(tenantId);
   domainTenantCache.clear();
+}
+
+async function ensurePlatformDomain(tenantId: string): Promise<string> {
+  return db.runTransaction(async tx => {
+    const tenantRef = getTenantDoc(tenantId), tenant = await tx.get(tenantRef);
+    if (!tenant.exists || tenant.data()?.status === 'deleted') return '';
+    const hostname = await allocatePlatformDomain(tenantId, tenant.data()?.platformDomain, async host => {
+      const mapping = await tx.get(doc(db, 'domains', host));
+      return mapping.exists ? String(mapping.data()?.tenantId || '') : null;
+    });
+    const ref = doc(db, 'domains', hostname);
+    const mapping = await tx.get(ref);
+    if (!mapping.exists) tx.set(ref, {tenantId, hostname, managedBy: 'platform'});
+    if (!tenant.data()?.platformDomain) tx.set(tenantRef, {platformDomain: hostname}, {merge: true});
+    return hostname;
+  });
+}
+async function ensureExistingPlatformDomains() {
+  const tenants = await getDocs(collection(db, 'tenants'));
+  for (const tenant of tenants.docs) if (tenant.data()?.status !== 'deleted') await ensurePlatformDomain(tenant.id);
+  domainTenantCache.clear();
+  console.log(`[Domains] ready for existing and new businesses under ${PLATFORM_DOMAIN}; DNS/TLS must be configured in Render`);
 }
 
 async function ensureTenantAdminIcon(tenantId:string):Promise<string> {
@@ -1871,9 +1889,7 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
 
     await saveTenant(tenantId,tenantProfile,tenantConfig,true);
 
-    const publicBase = tenantProfile.customDomain ? 'https://' + tenantProfile.customDomain : '';
-    const testUrl = publicBase ? publicBase + '/' : `/?tenant=${tenantId}`;
-    const adminUrl = publicBase ? publicBase + '/admin' : `/admin?tenant=${tenantId}`;
+    const {testUrl, adminUrl, domainUrl, platformDomain} = tenantLinks(tenantProfile, req.hostname.toLowerCase());
 
     return res.json({
       success: true,
@@ -1882,6 +1898,8 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
       config: tenantConfig,
       testUrl,
       adminUrl,
+      domainUrl,
+      platformDomain,
       message: `Tenant ${tenantId} registered successfully`,
     });
   } catch (err: any) {
@@ -1949,8 +1967,7 @@ app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
     await saveTenant(tenantId,tenantProfile,tenantConfig,false);
 
     return res.json({ success: true, tenantId, tenant: { id: tenantId, ...existing, ...tenantProfile }, config: tenantConfig,
-      testUrl: customDomain ? 'https://' + customDomain + '/' : `/?tenant=${tenantId}`,
-      adminUrl: customDomain ? 'https://' + customDomain + '/admin' : `/admin?tenant=${tenantId}` });
+      ...tenantLinks({id: tenantId, ...existing, ...tenantProfile}, req.hostname.toLowerCase()) });
   } catch (err: any) {
     console.error('[Super Admin API] Error updating tenant:', err);
     return res.status(err?.message === 'BUSINESS_ADMIN_ICON_TAKEN' ? 409 : 500).json({ success: false, error: err?.message === 'BUSINESS_ADMIN_ICON_TAKEN' ? 'האייקון כבר הוקצה לעסק אחר. יש לבחור אייקון אחר.' : err?.message === 'BUSINESS_ADMIN_ICONS_EXHAUSTED' ? 'כל שילובי האייקונים בשימוש. יש להוסיף אפשרויות נוספות.' : err?.message });
@@ -2089,12 +2106,13 @@ app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
   const quotaExceeded = noteFirestoreQuota(err, 'API request');
   console.error('[API]',err?.message || err);
   if (quotaExceeded) return res.status(503).json({success:false,error:'מכסת Firestore היומית נוצלה זמנית. השירות יישאר פעיל ויחזור לנתונים לאחר איפוס המכסה.'});
-  res.status(err.status || 500).json({success:false,error:'הפעולה נכשלה. יש לנסות שוב או לפנות למנהלת.'});
+  res.status(err.status || 500).json({success:false,error: err.status === 404 ? 'העסק בכתובת הזאת לא נמצא' : err.status === 400 ? 'כתובת העסק אינה תואמת לבקשה' : 'הפעולה נכשלה. יש לנסות שוב או לפנות למנהלת.'});
 });
 let bootstrapRetryTimer: ReturnType<typeof setTimeout> | null = null;
 async function runBootstrapMaintenance() {
   try {
     const result = await ensurePrimaryTenant();
+    await ensureExistingPlatformDomains();
     console.log(`[Tenant Bootstrap] ✅ ${PRIMARY_TENANT_ID} migration=${result.skipped ? 'already-complete' : 'completed'}`);
   } catch (bootstrapErr: any) {
     const quotaExceeded = noteFirestoreQuota(bootstrapErr, 'Tenant Bootstrap');
@@ -2144,7 +2162,7 @@ async function startServer() {
   // Bind the HTTP port first. Firestore quota exhaustion must never prevent
   // Render from seeing a healthy process and must never create a restart storm.
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Alex Beauty Server v${APP_VERSION} running on http://0.0.0.0:${PORT} [Israel Time: ${getIsraelTime().timeStr}]`);
+    console.log(`MB Torim Server v${APP_VERSION} running on http://0.0.0.0:${PORT} [Israel Time: ${getIsraelTime().timeStr}]`);
     const timer = setTimeout(() => void runBootstrapMaintenance(), 1_000);
     (timer as any).unref?.();
     if (String(process.env.CRON_SECRET || '').trim().length >= 24) {

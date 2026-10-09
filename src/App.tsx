@@ -1,3 +1,4 @@
+import { isPlatformRoot } from './utils/platformHost';
 import { AdminAccountSettings } from './components/AdminAccountSettings';
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate, Link, useLocation, useSearchParams } from 'react-router-dom';
@@ -805,6 +806,17 @@ function ScopedMainApp() {
 }
 
 export default function App() {
+  const location = useLocation();
+  if (isPlatformRoot(window.location.hostname.toLowerCase()) && location.pathname === '/' && !new URLSearchParams(location.search).get('tenant')) {
+    return <main dir="rtl" className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-8">
+      <div className="max-w-md text-center space-y-5">
+        <h1 className="text-4xl font-bold">MB תורים</h1>
+        <p className="text-slate-300">מערכת קביעת תורים לעסקים</p>
+        <p>לקביעת תור, פתחו את הקישור האישי שקיבלתם מהעסק.</p>
+        <a href="/super-admin" className="inline-block text-sm text-slate-400 underline">ניהול המערכת</a>
+      </div>
+    </main>;
+  }
   return (
     <TenantProvider>
       <ScopedMainApp />

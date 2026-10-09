@@ -24,10 +24,10 @@ export function pwaMetadata(role: PwaRole, tenantId: string, tenantName: string,
   };
 }
 
-export function buildPwaManifest(role: PwaRole, tenantId: string, tenantName: string, adminIcon?: string | null) {
-  const customerUrl = `/?tenant=${encodeURIComponent(tenantId)}`;
+export function buildPwaManifest(role: PwaRole, tenantId: string, tenantName: string, adminIcon?: string | null, cleanUrls = false) {
+  const customerUrl = cleanUrls ? '/' : `/?tenant=${encodeURIComponent(tenantId)}`;
   const startUrl = role === 'super-admin' ? '/super-admin'
-    : role === 'admin' ? `/admin?tenant=${encodeURIComponent(tenantId)}` : customerUrl;
+    : role === 'admin' ? (cleanUrls ? '/admin' : `/admin?tenant=${encodeURIComponent(tenantId)}`) : customerUrl;
   const name = role === 'super-admin' ? 'סופר אדמין'
     : role === 'admin' ? `${tenantName} | ניהול העסק` : `${tenantName} | קביעת תורים`;
   const iconPrefix = role === 'super-admin' ? '/pwa-super-admin' : role === 'admin' ? '/pwa-admin' : '/pwa';

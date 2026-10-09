@@ -38,6 +38,13 @@ test('business admin icon choices change tenant manifest artwork without changin
   assert.equal(pwaMetadata('admin','avi','Avi','diamond_teal').icon,'/tenant-admin-icons/diamond_teal.svg?v=39&name=Avi');
 });
 
+test('businesses without a logo use the app default icon, not an assigned drawing',()=>{
+  const manifest=buildPwaManifest('admin','plain_business','Plain Business',null);
+  assert.deepEqual(manifest.icons.map(icon=>icon.src),['/pwa-admin-192x192.png','/pwa-admin-512x512.png']);
+  assert.equal(pwaMetadata('admin','plain_business','Plain Business',null).icon,'/pwa-admin-192x192.png');
+  assert.equal(manifest.id,'/admin?tenant=plain_business');
+});
+
 test('the selected business identity appears in customer and admin apps for the same tenant', () => {
   const customer = buildPwaManifest('customer', 'avi', 'Avi', 'diamond_teal');
   const admin = buildPwaManifest('admin', 'avi', 'Avi', 'diamond_teal');

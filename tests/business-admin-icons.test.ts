@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync as readSource } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { BUSINESS_ADMIN_ICON_IDS, BUSINESS_ICON_CATEGORIES, BUSINESS_ICON_COLORS, BUSINESS_ICON_RASTER_SYMBOL_IDS, BUSINESS_ICON_SYMBOLS, businessAdminIconId, businessAdminIconPreviewAsset, businessAdminIconPreviewSvg, businessAdminIconAssetUrl, businessAdminIconSvg, isBusinessAdminIconId, isBusinessAdminRasterIcon } from '../src/utils/businessAdminIcons';
 
@@ -48,4 +49,12 @@ test('all selectable artworks are distinct vectors and changed art bypasses old 
     assert.equal(bytes.toString('ascii',0,4),'RIFF',`${id} artwork is missing or not WebP`);
     assert.equal(bytes.toString('ascii',8,12),'WEBP',`${id} artwork has an invalid WebP header`);
   }
+});
+
+test('super admin explicitly supports creating and editing businesses without a custom logo or drawing',()=>{
+  const source=readSource('src/pages/SuperAdmin.tsx','utf8');
+  assert.match(source,/ללא לוגו או ציור/);
+  assert.match(source,/adminIcon: adminIcon \|\| null/);
+  assert.match(source,/\{wantsAdminIcon && <div>/,'icon gallery is shown only when the user opts into a custom symbol');
+  assert.match(source,/setWantsAdminIcon\(Boolean\(t\.adminIcon\)\)/,'edit screen reflects a previously icon-free tenant');
 });

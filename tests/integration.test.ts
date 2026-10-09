@@ -251,6 +251,24 @@ test('business admin icon assignments are unique, transactional, visible in PWA 
   assert.equal((await db.doc('tenantAdminIcons/flower_purple').get()).exists,false);
   assert.equal((await api('/api/super-admin/tenants',{tenantId:'icon_business_c',name:'Icon C',phone:'0501111116',adminIcon:'flower_purple'},superToken,'icon_business_c')).success,true);
 });
+
+test('business can be created and edited without assigning a logo or drawing',async()=>{
+  const tenantId='no_logo_business';
+  const input={tenantId,name:'No Logo',phone:'0501111199',adminIcon:null};
+  const created=await api('/api/super-admin/tenants',input,superToken,tenantId);
+  assert.equal(created.success,true);
+  assert.equal(created.tenant.adminIcon,null);
+  assert.equal((await db.doc(`tenants/${tenantId}`).get()).data()?.adminIcon,null);
+  assert.equal((await db.collection('tenantAdminIcons').get()).docs.some((d:any)=>d.data()?.tenantId===tenantId),false);
+  const listed=await api('/api/tenants',undefined,superToken);
+  assert.equal(listed.tenants.find((t:any)=>t.id===tenantId)?.adminIcon,'');
+  const manifest=await (await nativeFetch(`${base}/manifest.json?app=admin&tenant=${tenantId}`)).json();
+  assert.equal(manifest.icons[0].src,'/pwa-admin-192x192.png');
+  assert.equal((await api(`/api/super-admin/tenants/${tenantId}`,{...input,adminIcon:null},superToken,tenantId,'PUT')).success,true);
+  assert.equal((await db.doc(`tenants/${tenantId}`).get()).data()?.adminIcon,null);
+  assert.equal((await db.collection('tenantAdminIcons').get()).docs.some((d:any)=>d.data()?.tenantId===tenantId),false);
+  await api(`/api/super-admin/tenants/${tenantId}`,undefined,superToken,tenantId,'DELETE');
+});
 test('disabled owner rejected with previously issued token',async()=>{await getAuth().updateUser('owner',{disabled:true});assert.equal((await api('/api/admin/customers',undefined,ownerToken)).status,401);});
 test('disabled reminder switches and suspended tenants prevent dispatch',async()=>{
   const date=israelClock().tomorrowIso;

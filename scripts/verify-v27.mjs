@@ -51,7 +51,7 @@ assert.match(installPrompt, /beforeinstallprompt/);
 assert.match(installPrompt, /standalone\?: boolean/);
 assert.match(installPrompt, /Share.* באייפון|באייפון או באייפד/);
 assert.match(main, /serviceWorker\.register\('\/service-worker\.js'/);
-assert.match(manifestRoute, /buildPwaManifest\(role, tenantId, tenantName, adminIcon\)/);
+assert.match(manifestRoute, /buildPwaManifest\(role, tenantId, tenantName, adminIcon, isPlatformHost\(/);
 assert.match(manifestRoute, /role === 'super-admin'/);
 assert.match(manifestRoute, /adminIcon = await ensureTenantAdminIcon\(tenantId\)/, 'customer and admin manifests must share the tenant icon');
 assert.match(server, /tenant-admin-icons\/:iconId\.svg/);

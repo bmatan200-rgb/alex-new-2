@@ -139,6 +139,10 @@ export interface TenantInfo {
   totalRevenue?: number;
   activeServicesCount?: number;
   customDomain?: string;
+  platformDomain?: string;
+  testUrl?: string;
+  adminUrl?: string;
+  domainUrl?: string;
   isPrimary?: boolean;
 }
 

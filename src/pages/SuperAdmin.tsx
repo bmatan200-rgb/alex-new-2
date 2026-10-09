@@ -91,6 +91,7 @@ export const SuperAdminPage: React.FC = () => {
   const [plan, setPlan] = useState<'starter' | 'pro' | 'enterprise'>('pro');
   const [coverImage, setCoverImage] = useState('');
   const [adminIcon, setAdminIcon] = useState('');
+  const [wantsAdminIcon, setWantsAdminIcon] = useState(false);
   const [iconSymbol, setIconSymbol] = useState('');
   const [iconCategory, setIconCategory] = useState<string>('hair');
   const [iconColor, setIconColor] = useState('purple');
@@ -114,6 +115,7 @@ export const SuperAdminPage: React.FC = () => {
     adminUrl: string;
     name: string;
     customDomain?: string;
+    domainUrl?: string;
   } | null>(null);
 
   const [copiedLink, setCopiedLink] = useState<string | null>(null);
@@ -293,7 +295,7 @@ export const SuperAdminPage: React.FC = () => {
     setTenantId(''); setName(''); setTagline(''); setOwnerName(''); setPhone(''); setEmail(''); setOwnerPassword('');
     setCity(''); setAddress(''); setCustomDomain(''); setPrimaryColor('#7c3aed'); setSecondaryColor('#c4b5fd');
     setPlan('pro'); setCoverImage(''); setCoverImageError(''); setServices([]);
-    setAdminIcon(''); setIconSymbol(''); setIconCategory('hair'); setIconColor('purple');
+    setAdminIcon(''); setWantsAdminIcon(false); setIconSymbol(''); setIconCategory('hair'); setIconColor('purple');
     setBusinessOpen(''); setBusinessClose(''); setFridayOpen(''); setFridayClose(''); setCreatedResult(null);
   };
 
@@ -307,6 +309,7 @@ export const SuperAdminPage: React.FC = () => {
       const c = data.config || {};
       setEditingTenantId(tenant.id);
       setAdminIcon(t.adminIcon || '');
+      setWantsAdminIcon(Boolean(t.adminIcon));
       const iconDetails = getBusinessAdminIconDetails(t.adminIcon || '');
       setIconSymbol(iconDetails?.symbol.id || ''); setIconCategory(BUSINESS_ICON_SYMBOLS.find((symbol) => symbol.id === iconDetails?.symbol.id)?.category || 'hair'); setIconColor(iconDetails?.color.id || 'purple');
       setTenantId(tenant.id);
@@ -394,6 +397,7 @@ export const SuperAdminPage: React.FC = () => {
           adminUrl: data.adminUrl || `/admin?tenant=${encodeURIComponent(finalTenantId)}`,
           name: name.trim(),
           customDomain: customDomain.trim(),
+          domainUrl: data.domainUrl,
         });
         fetchTenants();
       } else {
@@ -407,7 +411,7 @@ export const SuperAdminPage: React.FC = () => {
   };
 
   const copyToClipboard = (text: string, key: string) => {
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(text.startsWith('/') ? new URL(text, window.location.origin).href : text);
     setCopiedLink(key);
     setTimeout(() => setCopiedLink(null), 3000);
   };
@@ -600,10 +604,11 @@ export const SuperAdminPage: React.FC = () => {
                   </div>
                 </div>
 
+                {createdResult.domainUrl && <p className="text-sm text-slate-300">כתובת העסק הקבועה: <span dir="ltr" className="font-mono">{createdResult.domainUrl}</span></p>}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
                   {/* Test Customer View Link */}
                   <div className="bg-slate-950/80 p-4 rounded-2xl border border-emerald-800/60 space-y-2">
-                    <span className="text-xs text-emerald-400 font-bold block">🔗 קישור בדיקה מקומי ללקוחות (Customer Booking View):</span>
+                    <span className="text-xs text-emerald-400 font-bold block">🔗 קישור ללקוחות:</span>
                     <div className="flex items-center gap-2">
                       <input
                         type="text"
@@ -633,7 +638,7 @@ export const SuperAdminPage: React.FC = () => {
 
                   {/* Test Admin Dashboard Link */}
                   <div className="bg-slate-950/80 p-4 rounded-2xl border border-emerald-800/60 space-y-2">
-                    <span className="text-xs text-purple-300 font-bold block">🛡️ קישור בדיקה מקומי ללוח הניהול (Tenant Admin Dashboard):</span>
+                    <span className="text-xs text-purple-300 font-bold block">🛡️ קישור לניהול העסק:</span>
                     <div className="flex items-center gap-2">
                       <input
                         type="text"
@@ -828,16 +833,23 @@ export const SuperAdminPage: React.FC = () => {
                       </div>
                       <div>
                         <h4 className="font-black text-white">אייקון ניהול לבעל העסק</h4>
-                        <p className="text-xs text-slate-400">בוחרים סמל וצבע. כל שילוב יכול להיות מוקצה לעסק אחד בלבד.</p>
+                        <p className="text-xs text-slate-400">הבחירה אופציונלית. אפשר להשאיר את העסק בלי לוגו או ציור.</p>
                       </div>
                     </div>
-                    <div>
+                    <div role="group" aria-label="בחירת מיתוג לעסק" className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button type="button" onClick={() => { setWantsAdminIcon(false); setAdminIcon(''); setIconSymbol(''); }} aria-pressed={!wantsAdminIcon} className={`rounded-xl border p-3 text-right transition ${!wantsAdminIcon ? 'border-indigo-400 bg-indigo-500/20 text-white ring-1 ring-indigo-400' : 'border-slate-700 bg-slate-900 text-slate-300 hover:text-white'}`}>
+                        <span className="block font-bold">ללא לוגו או ציור</span><span className="mt-1 block text-xs opacity-75">העסק יופיע בלי סמל מותאם</span>
+                      </button>
+                      <button type="button" onClick={() => setWantsAdminIcon(true)} aria-pressed={wantsAdminIcon} className={`rounded-xl border p-3 text-right transition ${wantsAdminIcon ? 'border-indigo-400 bg-indigo-500/20 text-white ring-1 ring-indigo-400' : 'border-slate-700 bg-slate-900 text-slate-300 hover:text-white'}`}>
+                        <span className="block font-bold">בחירת סמל לעסק</span><span className="mt-1 block text-xs opacity-75">בחירת ציור וצבע ליישומון הניהול</span>
+                      </button>
+                    </div>
+                    {wantsAdminIcon && <div>
                       <div className="mb-2 flex items-center justify-between gap-2 text-xs">
-                        <span className="font-bold text-slate-200">1. בחרו סמל</span>
+                        <span className="font-bold text-slate-200">בחרו סמל וצבע</span>
                         <span className="text-slate-500">{BUSINESS_ICON_SYMBOLS.filter((symbol) => symbol.category === iconCategory).length} סמלים בתחום · {BUSINESS_ICON_SYMBOLS.length * BUSINESS_ICON_COLORS.length - tenants.filter((t) => t.id !== editingTenantId && t.adminIcon).length} שילובים פנויים</span>
                       </div>
                       <div className="mb-3 flex flex-wrap gap-2">
-                        <button type="button" onClick={() => { setAdminIcon(''); setIconSymbol(''); }} aria-pressed={!adminIcon} className={`rounded-xl border px-3 py-2 text-xs font-bold transition ${!adminIcon ? 'border-indigo-400 bg-indigo-500/20 text-white' : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-white'}`}>{adminIcon ? 'בטל בחירת סמל' : 'ללא סמל'}</button>
                         {BUSINESS_ICON_CATEGORIES.map((category) => <button key={category.id} type="button" onClick={() => setIconCategory(category.id)} aria-pressed={iconCategory === category.id} className={`rounded-xl border px-3 py-2 text-xs font-bold transition ${iconCategory === category.id ? 'border-indigo-400 bg-indigo-500/20 text-white' : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-white'}`}>{category.label}{category.id !== 'classic' && <span className="mr-1 text-slate-500">({BUSINESS_ICON_SYMBOLS.filter((symbol) => symbol.category === category.id).length})</span>}</button>)}
                       </div>
                       <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
@@ -848,8 +860,8 @@ export const SuperAdminPage: React.FC = () => {
                           return <button key={symbol.id} type="button" disabled={taken} onClick={() => { setIconSymbol(symbol.id); if (!taken) setAdminIcon(businessAdminIconId(symbol.id, iconColor)); }} title={taken ? `${symbol.label} בצבע שנבחר כבר הוקצה` : symbol.label} aria-label={symbol.label} aria-pressed={selected} className={`relative flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border p-2 text-[10px] font-bold transition ${selected ? 'border-white ring-2 ring-indigo-500 bg-slate-800 text-white' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'} ${taken ? 'opacity-30 cursor-not-allowed' : ''}`}>{preview && <img className="h-8 w-8 object-contain" alt="" src={preview} />}<span className="line-clamp-1 w-full">{symbol.label}</span>{taken && <span className="absolute inset-0 flex items-center justify-center text-2xl text-rose-300">×</span>}</button>;
                         })}
                       </div>
-                    </div>
-                    {adminIcon ? <div>
+                    </div>}
+                    {wantsAdminIcon && adminIcon ? <div>
                       <div className="mb-2 text-xs font-bold text-slate-200">2. בחרו צבע</div>
                       <div className="flex flex-wrap gap-2">
                         {BUSINESS_ICON_COLORS.map((color) => {
@@ -858,7 +870,7 @@ export const SuperAdminPage: React.FC = () => {
                           return <button key={color.id} type="button" disabled={taken} onClick={() => { setIconColor(color.id); if (!taken) setAdminIcon(businessAdminIconId(iconSymbol, color.id)); }} title={taken ? `${color.label} כבר בשימוש עם הסמל הזה` : color.label} aria-label={color.label} aria-pressed={selected} className={`h-9 w-9 rounded-xl border-2 transition ${selected ? 'border-white scale-110 ring-2 ring-indigo-500' : 'border-slate-700'} ${taken ? 'opacity-30 cursor-not-allowed' : 'hover:scale-105'}`} style={{ backgroundColor: color.value }} />;
                         })}
                       </div>
-                    </div> : <p className="text-xs text-slate-400">לא יוצג סמל בעסק. אפליקציית ההתקנה תשתמש באייקון ברירת המחדל.</p>}
+                    </div> : !wantsAdminIcon ? <p className="text-xs text-slate-400">לא יופיע לוגו או ציור ייחודי לעסק. התקנה למסך הבית תציג אייקון כללי של האפליקציה.</p> : <p className="text-xs text-amber-300">בחרו ציור אחד כדי להשלים את הסמל, או עברו ל״ללא לוגו או ציור״.</p>}
                   </div>
 
                   <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_.65fr] gap-4">
@@ -1163,7 +1175,7 @@ export const SuperAdminPage: React.FC = () => {
                 const tenantSlug = t.tenantSlug || t.id;
                 // Build a deployment-safe customer URL for every current/future tenant.
                 // Relative URL keeps the active Render/custom-domain origin instead of localhost.
-                const customerSiteUrl = `/?tenant=${encodeURIComponent(tenantSlug)}`;
+                const customerSiteUrl = t.testUrl || `/?tenant=${encodeURIComponent(tenantSlug)}`;
 
                 return (
                   <div
@@ -1212,7 +1224,7 @@ export const SuperAdminPage: React.FC = () => {
                       </div>
                       <div className="flex items-center gap-1.5">
                         <Globe className="w-3.5 h-3.5 text-indigo-400" />
-                        <span>{t.customDomain || 'ללא דומיין'}</span>
+                        <span>{t.customDomain || t.platformDomain || 'כתובת Render'}</span>
                       </div>
                     </div>
 
@@ -1241,7 +1253,7 @@ export const SuperAdminPage: React.FC = () => {
 
                         <button
                           type="button"
-                          onClick={() => navigate(`/admin/dashboard?tenant=${encodeURIComponent(tenantSlug)}`)}
+                          onClick={() => { if (t.adminUrl?.startsWith('https://')) window.location.assign(t.adminUrl); else navigate(t.adminUrl || `/admin/dashboard?tenant=${encodeURIComponent(tenantSlug)}`); }}
                           className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold flex items-center gap-1 transition shadow-xs cursor-pointer active:scale-95"
                           title={`פתיחת אדמין של ${t.name}`}
                         >

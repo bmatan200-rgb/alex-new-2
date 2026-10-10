@@ -15,7 +15,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { getApps, initializeApp, cert } from 'firebase-admin/app';
-import { getFirestore, type DocumentReference } from 'firebase-admin/firestore';
+import { FieldPath, getFirestore, type DocumentReference } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import firebaseClientConfig from './firebase-applet-config.json';
 import { createServer as createViteServer } from 'vite';
@@ -620,6 +620,105 @@ app.post('/api/admin/calendar/reset',requireAdmin,async(req,res)=>{
   }catch(err:any){res.status(400).json({success:false,error:err.message});}
 });
 
+// Super Admin only: create a full local backup, then permanently clear test
+// appointment/customer history for one selected tenant. Business settings and
+// its owner account are intentionally retained.
+const FINAL_WIPE_COLLECTIONS = ['customers','customer_access','customer_recovery','calendar_exports','calendar_resets','sms_logs','reminder_locks','booking_days'] as const;
+async function readCollectionRows(ref:any) {
+  const rows:any[]=[];
+  let cursor:any=null;
+  for (;;) {
+    let query=ref.orderBy(FieldPath.documentId()).limit(400);
+    if(cursor) query=query.startAfter(cursor);
+    const page=await query.get();
+    if(!page.docs.length) break;
+    rows.push(...page.docs.map((d:any)=>({...d.data(),id:d.id})));
+    cursor=page.docs[page.docs.length-1];
+    if(page.docs.length<400) break;
+  }
+  return rows;
+}
+async function finalWipeSnapshot(tenantId:string) {
+  const appointmentsRef=getTenantAppointmentsRef(tenantId);
+  const [appointmentRows,...collections]=await Promise.all([
+    readCollectionRows(appointmentsRef),
+    ...FINAL_WIPE_COLLECTIONS.map(name=>readCollectionRows(collection(db,'tenants',tenantId,name))),
+  ]);
+  const appointments:any[]=new Array(appointmentRows.length);
+  await runBounded(appointmentRows.map((a:any,index:number)=>({a,index})),20,async({a,index}:any)=>{
+    const {accessTokenHash,...safe}=a;
+    const audit=await readCollectionRows(getTenantAppointmentDoc(tenantId,a.id).collection('audit'));
+    appointments[index]={...safe,audit};
+  });
+  const related:any={}; FINAL_WIPE_COLLECTIONS.forEach((name,index)=>related[name]=collections[index]);
+  const legacySms=(await readCollectionRows(collection(db,'sms_logs'))).filter((x:any)=>x.tenantId===tenantId || (tenantId===PRIMARY_TENANT_ID && String(x.id).startsWith('sms_alex_beauty_')));
+  const legacyLocks=tenantId===PRIMARY_TENANT_ID ? (await readCollectionRows(collection(db,'reminder_locks'))).filter((x:any)=>!x.tenantId || x.tenantId===tenantId) : (await readCollectionRows(collection(db,'reminder_locks'))).filter((x:any)=>x.tenantId===tenantId);
+  const [scheduledMessages,deliveryJobs]=await Promise.all([
+    readCollectionRows(collection(db,SCHEDULE_COLLECTION)),
+    readCollectionRows(collection(db,DELIVERY_JOBS)),
+  ]);
+  related.legacySmsLogs=legacySms;
+  related.legacyReminderLocks=legacyLocks;
+  related.smsSchedules=scheduledMessages.filter((x:any)=>x.tenantId===tenantId);
+  related.smsDeliveryJobs=deliveryJobs.filter((x:any)=>x.tenantId===tenantId);
+  return {schemaVersion:44,tenantId,exportedAt:new Date().toISOString(),appointments,related};
+}
+function finalWipeDigest(snapshot:any) { const {exportedAt:_exportedAt,...stable}=snapshot; return hash(JSON.stringify(stable)); }
+async function deleteCollectionContents(ref:any) {
+  for (;;) {
+    const page=await ref.limit(400).get();
+    if(!page.docs.length) break;
+    const batch=db.batch(); page.docs.forEach((d:any)=>batch.delete(d.ref));
+    await batch.commit();
+    if(page.docs.length<400) break;
+  }
+}
+app.post('/api/super-admin/tenant-data-wipe/export',requireSuperAdmin,async(req,res)=>{
+  try {
+    await recentPasswordAuth(req);
+    const tenantId=String(req.body?.tenantId||'').trim();
+    if(!validId(tenantId)) throw new Error('יש לבחור עסק תקין לניקוי');
+    const tenant=await getTenantDoc(tenantId).get();
+    if(!tenant.exists) return res.status(404).json({success:false,error:'העסק לא נמצא'});
+    const backup=await finalWipeSnapshot(tenantId),digest=finalWipeDigest(backup),exportId=randomUUID();
+    await doc(db,'super_admin_data_wipe_exports',exportId).create({tenantId,digest,uid:(req as any).adminPayload.uid,createdAt:Date.now(),used:false});
+    res.json({success:true,exportId,digest,backup});
+  }catch(err:any){res.status(400).json({success:false,error:err.message});}
+});
+app.post('/api/super-admin/tenant-data-wipe/execute',requireSuperAdmin,async(req,res)=>{
+  try {
+    await recentPasswordAuth(req);
+    const tenantId=String(req.body?.tenantId||'').trim(),id=String(req.body?.exportId||''),digest=String(req.body?.digest||'');
+    if(!validId(tenantId)||!validId(id)||!digest) throw new Error('פרטי הגיבוי אינם תקינים');
+    const exportRef=doc(db,'super_admin_data_wipe_exports',id),exported=await exportRef.get(),e=exported.data();
+    if(!e||e.used||e.tenantId!==tenantId||e.uid!==(req as any).adminPayload.uid||e.createdAt<Date.now()-10*60_000||e.digest!==digest) throw new Error('הגיבוי פג או אינו תואם; יש לנסות שוב');
+    await db.runTransaction(async(tx:any)=>{const snap=await tx.get(exportRef),current=snap.data();if(!current||current.used||current.tenantId!==tenantId||current.uid!==(req as any).adminPayload.uid) throw new Error('הגיבוי כבר נוצל');tx.update(exportRef,{used:true});});
+    const fresh=await finalWipeSnapshot(tenantId);
+    if(finalWipeDigest(fresh)!==digest) throw new Error('נוספו או השתנו נתונים אחרי הגיבוי; יש לייצא מחדש');
+    const appointmentsRef=getTenantAppointmentsRef(tenantId);
+    for (;;) {
+      const page=await appointmentsRef.limit(200).get();
+      if(!page.docs.length) break;
+      await runBounded(page.docs,20,async(d:any)=>deleteCollectionContents(d.ref.collection('audit')));
+      const batch=db.batch(); page.docs.forEach((d:any)=>batch.delete(d.ref)); await batch.commit();
+      if(page.docs.length<200) break;
+    }
+    for(const name of FINAL_WIPE_COLLECTIONS) await deleteCollectionContents(collection(db,'tenants',tenantId,name));
+    for(const name of ['sms_logs','reminder_locks']) {
+      const snap=await collection(db,name).get();
+      const matches=snap.docs.filter((d:any)=>d.data()?.tenantId===tenantId || (tenantId===PRIMARY_TENANT_ID && name==='sms_logs' && d.id.startsWith('sms_alex_beauty_')) || (tenantId===PRIMARY_TENANT_ID && name==='reminder_locks' && !d.data()?.tenantId));
+      for(let i=0;i<matches.length;i+=400){const batch=db.batch();matches.slice(i,i+400).forEach((d:any)=>batch.delete(d.ref));await batch.commit();}
+    }
+    for(const name of [SCHEDULE_COLLECTION,DELIVERY_JOBS]) {
+      const snap=await collection(db,name).get(),matches=snap.docs.filter((d:any)=>d.data()?.tenantId===tenantId);
+      for(let i=0;i<matches.length;i+=400){const batch=db.batch();matches.slice(i,i+400).forEach((d:any)=>batch.delete(d.ref));await batch.commit();}
+    }
+    await exportRef.delete();
+    invalidateTenantCaches(tenantId);
+    res.json({success:true,tenantId});
+  }catch(err:any){res.status(400).json({success:false,error:err.message});}
+});
+
 app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
   try {
     const { services } = req.body;
@@ -880,7 +979,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '43.0.0';
+const APP_VERSION = '44.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];

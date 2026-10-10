@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { EmailAuthProvider, onAuthStateChanged, reauthenticateWithCredential } from 'firebase/auth';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Building2,
@@ -124,9 +124,37 @@ export const SuperAdminPage: React.FC = () => {
   const [verificationPhone, setVerificationPhone] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [tenantToWipe,setTenantToWipe]=useState<TenantInfo|null>(null);
+  const [wipePassword,setWipePassword]=useState('');
+  const [wipeError,setWipeError]=useState('');
+  const [isWiping,setIsWiping]=useState(false);
 
   const REQUIRED_DELETE_PHONE = '0543111408';
   const isPhoneMatch = verificationPhone.trim().replace(/[-\s]/g, '') === REQUIRED_DELETE_PHONE;
+
+  const runFinalTenantWipe = async () => {
+    if(!tenantToWipe || !auth.currentUser?.email || !wipePassword || isWiping) return;
+    setIsWiping(true);setWipeError('');
+    try {
+      const user=auth.currentUser;
+      await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email!,wipePassword));
+      const token=await user.getIdToken(true),headers={'Content-Type':'application/json',Authorization:`Bearer ${token}`};
+      const exported=await fetch('/api/super-admin/tenant-data-wipe/export',{method:'POST',headers,body:JSON.stringify({tenantId:tenantToWipe.id})});
+      const exportData=await exported.json().catch(()=>({}));
+      if(!exported.ok || !exportData.success) throw new Error(exportData.error||'ייצוא הגיבוי נכשל');
+      const fileName=`${tenantToWipe.id}-test-data-backup-${new Date().toISOString().slice(0,10)}.json`;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(exportData.backup,null,2)],{type:'application/json'}));
+      const link=document.createElement('a');link.href=url;link.download=fileName;document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),60_000);
+      const wiped=await fetch('/api/super-admin/tenant-data-wipe/execute',{method:'POST',headers,body:JSON.stringify({tenantId:tenantToWipe.id,exportId:exportData.exportId,digest:exportData.digest})});
+      const wipeData=await wiped.json().catch(()=>({}));
+      if(!wiped.ok || !wipeData.success) throw new Error(wipeData.error||'ניקוי הנתונים נכשל');
+      for(const key of [`alex_beauty_appointments_v5__${tenantToWipe.id}`,`booking_access__${tenantToWipe.id}`,`customer_access__${tenantToWipe.id}`]) { try { localStorage.removeItem(key); } catch {} }
+      window.dispatchEvent(new Event('appointments-changed'));
+      setTenantToWipe(null);setWipePassword('');setWipeError('');
+      await fetchTenants();
+    } catch(err:any) { setWipeError(err?.message||'הניקוי נכשל'); }
+    finally { setIsWiping(false); }
+  };
 
   const handleConfirmDelete = async () => {
     if (!tenantToDelete || !isPhoneMatch || isDeleting) return;
@@ -1247,6 +1275,16 @@ export const SuperAdminPage: React.FC = () => {
 
                         <button
                           type="button"
+                          onClick={() => { setTenantToWipe(t); setWipePassword(''); setWipeError(''); }}
+                          className="px-3 py-1.5 bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-800 rounded-lg text-xs font-bold flex items-center gap-1 transition"
+                          title={`ניקוי נתוני ניסיון של ${t.name}`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>ניקוי נתוני ניסיון</span>
+                        </button>
+
+                        <button
+                          type="button"
                           onClick={() => navigate(`/admin/dashboard?tenant=${encodeURIComponent(tenantSlug)}`)}
                           className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold flex items-center gap-1 transition shadow-xs cursor-pointer active:scale-95"
                           title={`פתיחת אדמין של ${t.name}`}
@@ -1317,6 +1355,27 @@ export const SuperAdminPage: React.FC = () => {
           </div>
         )}
       </main>
+
+      {tenantToWipe && (
+        <div className="fixed inset-0 z-[60] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg rounded-3xl border border-amber-700 bg-slate-900 p-6 sm:p-8 text-right shadow-2xl space-y-5">
+            <div className="flex items-center gap-3 border-b border-slate-700 pb-4">
+              <div className="h-12 w-12 rounded-2xl bg-amber-950 text-amber-300 flex items-center justify-center"><Trash2 className="h-6 w-6" /></div>
+              <div><h3 className="text-xl font-black text-white">ניקוי נתוני ניסיון</h3><p className="text-sm text-amber-200">{tenantToWipe.name}</p></div>
+            </div>
+            <p className="text-sm leading-6 text-slate-300">הפעולה מורידה קובץ גיבוי למכשיר ואז מוחקת לצמיתות את התורים, הביטולים, יומן הלקוחות, קודי הגישה והיסטוריית ה-SMS של העסק. פרטי העסק, חשבון המנהל וההגדרות נשארים.</p>
+            <div className="space-y-2">
+              <label className="block text-sm font-bold text-slate-200">סיסמת הסופר אדמין להפעלה</label>
+              <input type="password" autoComplete="current-password" value={wipePassword} onChange={e=>setWipePassword(e.target.value)} placeholder="סיסמת החשבון שלך" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-base text-white focus:border-amber-500 focus:outline-none" />
+            </div>
+            {wipeError && <div role="alert" className="rounded-xl border border-red-700 bg-red-950 p-3 text-sm text-red-200">{wipeError}</div>}
+            <div className="flex justify-between gap-3 pt-1">
+              <button type="button" disabled={isWiping} onClick={()=>{setTenantToWipe(null);setWipePassword('');setWipeError('');}} className="rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-bold text-slate-200 disabled:opacity-50">סגירה</button>
+              <button type="button" disabled={!wipePassword || isWiping} onClick={runFinalTenantWipe} className="rounded-xl bg-amber-600 px-5 py-2.5 text-sm font-black text-white hover:bg-amber-500 disabled:opacity-50">{isWiping?'מגבה ומנקה…':'גבה ונקה עכשיו'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* CONFIRMATION MODAL FOR TENANT DELETION (Requirements 3, 4, 5, 6) */}
       {tenantToDelete && (

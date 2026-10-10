@@ -159,7 +159,7 @@ export const WhatsAppReminderModal: React.FC<WhatsAppReminderModalProps> = ({
     appointment_date: new Date().toISOString().split('T')[0],
     start_time: '12:00',
     end_time: '13:50',
-    status: 'confirmed',
+    status: 'active',
     notes: 'הגעה בפעם הראשונה',
   };
 

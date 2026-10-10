@@ -302,7 +302,7 @@ export function formatMinutesCountdown(minutes: number): string {
  * Check if an appointment is in the 1-day reminder window (tomorrow or ~16-36 hours away)
  */
 export function isAppointmentIn1DayReminderWindow(appointment: Appointment): boolean {
-  if (appointment.status !== 'confirmed') return false;
+  if ((appointment.status !== 'active' || appointment.archivedAt)) return false;
   if (
     appointment.customer_name.includes('🔒') ||
     appointment.customer_name.includes('חופש') ||
@@ -329,7 +329,7 @@ export function isAppointmentIn1DayReminderWindow(appointment: Appointment): boo
  * Check if an appointment is today
  */
 export function isAppointmentToday(appointment: Appointment): boolean {
-  if (appointment.status !== 'confirmed') return false;
+  if ((appointment.status !== 'active' || appointment.archivedAt)) return false;
   if (
     appointment.customer_name.includes('🔒') ||
     appointment.customer_name.includes('חופש') ||
@@ -348,7 +348,7 @@ export function isAppointmentToday(appointment: Appointment): boolean {
  * Check if an appointment is in the short-term alert window (based on configurable hours, default 2)
  */
 export function isAppointmentIn2HourAlertWindow(appointment: Appointment): boolean {
-  if (appointment.status !== 'confirmed') return false;
+  if ((appointment.status !== 'active' || appointment.archivedAt)) return false;
   if (
     appointment.customer_name.includes('🔒') ||
     appointment.customer_name.includes('חופש') ||
@@ -794,7 +794,7 @@ export async function autoDispatchAllPendingReminders(appointments: Appointment[
   // Group confirmed client appointments by phone
   const clientAppts = appointments.filter(
     (a) =>
-      a.status === 'confirmed' &&
+      a.status === 'active' && !a.archivedAt &&
       !a.customer_name.includes('🔒') &&
       !a.customer_name.includes('חופש') &&
       !a.customer_name.includes('חסימה') &&

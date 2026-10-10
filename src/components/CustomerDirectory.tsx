@@ -142,7 +142,7 @@ export const CustomerDirectory: React.FC<CustomerDirectoryProps> = ({
         };
       }
 
-      if (appt.status !== 'cancelled') {
+      if (appt.status === 'active' && !appt.archivedAt) {
         apptsMap[clean].count += 1;
       }
 

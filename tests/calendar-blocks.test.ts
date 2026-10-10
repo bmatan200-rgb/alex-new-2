@@ -7,7 +7,7 @@ import type { Appointment } from '../src/types';
 const date = '2026-10-08';
 const block: Appointment = { id: 'break', customer_name: '🔒 עניין אישי', customer_phone: 'חסימת יומן',
   service_id: 1, service_name: 'private reason', price: 0, appointment_date: date,
-  start_time: '09:20', end_time: '10:50', status: 'confirmed', notes: 'private note' };
+  start_time: '09:20', end_time: '10:50', status: 'active', notes: 'private note' };
 const client: Appointment = { ...block, id: 'client', customer_name: 'לקוחה', customer_phone: '0541234567', price: 0 };
 
 test('daily release includes only confirmed calendar blocks on selected date, once per ID', () => {

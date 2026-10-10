@@ -6,6 +6,8 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    build: { target: ['chrome100','edge100','safari15','firefox102'], cssTarget: ['chrome100','edge100','safari15','firefox102'] },
+    css: { transformer: 'lightningcss' as const, lightningcss: { targets: { chrome: 100 << 16, safari: 15 << 16, firefox: 102 << 16 } } },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

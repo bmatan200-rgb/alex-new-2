@@ -17,7 +17,17 @@ export interface Appointment {
   appointment_date: string; // YYYY-MM-DD
   start_time: string; // HH:MM
   end_time: string; // HH:MM
-  status: 'confirmed' | 'cancelled';
+  status: 'active' | 'cancelled' | 'rescheduled';
+  createdAt?: string;
+  updatedAt?: string;
+  cancelledAt?: string;
+  cancelledBy?: 'client' | 'admin';
+  cancellationReason?: string;
+  archivedAt?: string;
+  rescheduledTo?: string;
+  rescheduledFrom?: string;
+  originalCreatedAt?: string;
+  recordType?: 'appointment' | 'calendar_block';
   notes?: string;
   created_at?: string;
   reminder_sent_customer?: boolean;
@@ -120,6 +130,7 @@ export interface Customer {
 
 export interface TenantInfo {
   id: string; // e.g. 'alex_beauty'
+  appShortName?: string; // Optional name for the home-screen label and icon.
   tenantSlug?: string; // e.g. 'yossibarber' or 'glam_studio_tlv'
   name: string;
   tagline?: string;
@@ -139,10 +150,6 @@ export interface TenantInfo {
   totalRevenue?: number;
   activeServicesCount?: number;
   customDomain?: string;
-  platformDomain?: string;
-  testUrl?: string;
-  adminUrl?: string;
-  domainUrl?: string;
   isPrimary?: boolean;
 }
 

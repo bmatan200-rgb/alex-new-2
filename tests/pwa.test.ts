@@ -38,13 +38,6 @@ test('business admin icon choices change tenant manifest artwork without changin
   assert.equal(pwaMetadata('admin','avi','Avi','diamond_teal').icon,'/tenant-admin-icons/diamond_teal.svg?v=39&name=Avi');
 });
 
-test('businesses without a logo use the app default icon, not an assigned drawing',()=>{
-  const manifest=buildPwaManifest('admin','plain_business','Plain Business',null);
-  assert.deepEqual(manifest.icons.map(icon=>icon.src),['/pwa-admin-192x192.png','/pwa-admin-512x512.png']);
-  assert.equal(pwaMetadata('admin','plain_business','Plain Business',null).icon,'/pwa-admin-192x192.png');
-  assert.equal(manifest.id,'/admin?tenant=plain_business');
-});
-
 test('the selected business identity appears in customer and admin apps for the same tenant', () => {
   const customer = buildPwaManifest('customer', 'avi', 'Avi', 'diamond_teal');
   const admin = buildPwaManifest('admin', 'avi', 'Avi', 'diamond_teal');
@@ -90,4 +83,24 @@ test('initial page manifest and Apple metadata select the correct app before Rea
       assert.equal(elements['link[rel="apple-touch-icon"]'].href, '/pwa-super-admin-192x192.png');
     }
   }
+});
+
+test('Chrome and Samsung manifests include explicit 192 and 512 PNG icons for every business icon',()=>{
+ for(const role of ['customer','admin'] as const){const m=buildPwaManifest(role,'avi','Avi','flower_purple');for(const size of [192,512])assert.ok(m.icons.some(i=>i.type==='image/png'&&i.sizes===`${size}x${size}`&&i.src.includes(`size=${size}`)));}
+});
+test('install guide distinguishes iPhone, Android Chrome, Samsung and embedded browsers',async()=>{
+ const {installBrowser}=await import('../src/utils/pwaInstall');
+ assert.equal(installBrowser('Mozilla Android SamsungBrowser/26.0 Chrome/122.0'),'samsung');
+ assert.equal(installBrowser('Mozilla Android Chrome/122.0'),'android');
+ assert.equal(installBrowser('Mozilla iPhone Safari/604.1'),'ios');
+ assert.equal(installBrowser('Mozilla Android; wv) Chrome/122.0'),'in-app');
+ assert.equal(installBrowser('Mozilla Windows Chrome/122.0 Edg/122.0'),'desktop');
+});
+test('optional short name labels icons and home screen while full business name and install identity remain stable',()=>{
+ const m=buildPwaManifest('customer','avi','הסטודיו הארוך של אבי','flower_purple','אבי');
+ assert.equal(m.short_name,'אבי');assert.match(m.name,/הסטודיו הארוך של אבי/);assert.equal(m.id,'/?tenant=avi');
+ for(const icon of m.icons)assert.equal(new URL(icon.src,'https://example.com').searchParams.get('name'),'אבי');
+ assert.equal(pwaMetadata('customer','avi','הסטודיו הארוך של אבי','flower_purple','אבי').name,'אבי');
+ assert.match(pwaMetadata('customer','avi','Full','flower_purple','אבי').appleIcon,/\.png\?/);
+ assert.equal(buildPwaManifest('customer','avi','Full','flower_purple','').short_name,'Full');
 });

@@ -1,7 +1,6 @@
-import { isPlatformHost, isPlatformRoot } from './platformHost';
 export function bookingLink(origin: string, tenantId: string): string {
   const url = new URL('/', origin);
-  if (!isPlatformHost(url.hostname) || isPlatformRoot(url.hostname)) url.searchParams.set('tenant', tenantId);
+  url.searchParams.set('tenant', tenantId);
   return url.toString();
 }
 

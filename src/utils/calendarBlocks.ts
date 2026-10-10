@@ -10,7 +10,7 @@ export function isCalendarBlock(appointment: { customer_phone?: string; customer
 
 export function blocksForDay(appointments: Appointment[], date: string): Appointment[] {
   return Array.from(new Map(appointments.filter(a =>
-    a.appointment_date === date && a.status === 'confirmed' && a.customer_phone === 'חסימת יומן'
+    a.appointment_date === date && a.status === 'active' && !a.archivedAt && a.customer_phone === 'חסימת יומן'
   ).map(a => [String(a.id), a])).values());
 }
 
@@ -29,7 +29,7 @@ export function publicBusyAppointment(id: string | number, data: {
   appointment_date: string; start_time: string; end_time: string; customer_phone?: string;
 }): Appointment {
   return { id, appointment_date: data.appointment_date, start_time: data.start_time,
-    end_time: data.end_time, status: 'confirmed',
+    end_time: data.end_time, status: 'active',
     customer_name: data.customer_phone === 'חסימת יומן' ? CALENDAR_BLOCK_LABEL : 'תפוס',
     customer_phone: '', service_id: 0, service_name: '', price: 0, notes: '' };
 }

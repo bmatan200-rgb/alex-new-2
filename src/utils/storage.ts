@@ -133,7 +133,7 @@ export function getStoredAppointments(): Appointment[] {
     const parsed: Appointment[] = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     
-    return deduplicateAppointments(parsed.filter((a) => a.status !== 'cancelled'));
+    return deduplicateAppointments(parsed);
   } catch {
     return [];
   }
@@ -142,13 +142,7 @@ export function getStoredAppointments(): Appointment[] {
 export function saveAppointment(appointment: Appointment): void {
   const current = getStoredAppointments();
   const idStr = appointment.id ? String(appointment.id) : null;
-  const filtered = current.filter((app) => {
-    if (idStr && app.id && String(app.id) === idStr) return false;
-    if (app.appointment_date === appointment.appointment_date && app.start_time === appointment.start_time) {
-      return false;
-    }
-    return true;
-  });
+  const filtered = current.filter(app => String(app.id)!==idStr);
   const updated = deduplicateAppointments([appointment, ...filtered]);
   localStorage.setItem(tenantStorageKey(STORAGE_KEY_APPOINTMENTS), JSON.stringify(updated));
 }
@@ -157,20 +151,11 @@ export function cancelAppointment(appointmentId: number | string): void {
   deleteAppointmentPermanently(appointmentId);
 }
 
+// Compatibility alias: cancellation retains the complete record.
 export function deleteAppointmentPermanently(appointmentId: number | string): void {
-  const current = getStoredAppointments();
-  const idStr = String(appointmentId);
-  const target = current.find((a) => String(a.id) === idStr);
-
-  const updated = current.filter((app) => {
-    if (String(app.id) === idStr) return false;
-    if (target && app.appointment_date === target.appointment_date && app.start_time === target.start_time) {
-      return false;
-    }
-    return true;
-  });
-  const deduped = deduplicateAppointments(updated);
-  localStorage.setItem(tenantStorageKey(STORAGE_KEY_APPOINTMENTS), JSON.stringify(deduped));
+  const now = new Date().toISOString();
+  const updated = getStoredAppointments().map(a => String(a.id)===String(appointmentId) ? {...a,status:'cancelled' as const,updatedAt:now} : a);
+  localStorage.setItem(tenantStorageKey(STORAGE_KEY_APPOINTMENTS), JSON.stringify(updated));
 }
 
 export function getStoredUserSession(): UserSession | null {
@@ -270,6 +255,7 @@ export function clearUserSession(): void {
     // Customer logout must never clear an active admin session.
     // Admin and customer identities are intentionally isolated.
     localStorage.removeItem(tenantStorageKey(STORAGE_KEY_USER_SESSION));
+    localStorage.removeItem('customer_access__'+getStorageTenantId());
     // alex_beauty historically used an unscoped customer-session key. If it is
     // left behind, getTenantOrLegacyRaw() can restore that stale customer after
     // an explicit logout on the next refresh. Remove only this legacy customer

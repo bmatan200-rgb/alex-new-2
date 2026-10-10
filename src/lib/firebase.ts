@@ -93,12 +93,18 @@ function capabilities(tenantId:string):Record<string,string> {
   try {return JSON.parse(localStorage.getItem('booking_access__'+tenantId)||'{}');}catch{return {};}
 }
 export function subscribeAppointments(onUpdate:(appointments:Appointment[])=>void,onError?:(error:Error)=>void,tenantId=getCurrentTenantId(),authMode:TenantApiAuthMode="none"):()=>void {
-  let active=true, running=false;
+  let active=true, running=false, queued=false;
   const poll=async()=>{
-    if(running || (typeof document!=='undefined' && document.visibilityState==='hidden')) return;
+    if(running){queued=true;return;}
+    if(typeof document!=='undefined' && document.visibilityState==='hidden') return;
     running=true;
-    try {const data=await tenantApi('/api/appointments/list',{capabilities:capabilities(tenantId)},tenantId,{auth:authMode});if(active) onUpdate(data.appointments);}
-    catch(err){if(active){onError?.(err as Error);}} finally {running=false;}
+    try {const data=await tenantApi('/api/appointments/list',{capabilities:capabilities(tenantId),customerAccess:localStorage.getItem('customer_access__'+tenantId)},tenantId,{auth:authMode});if(active && !queued){
+      const tokens=capabilities(tenantId);
+      for(const row of data.appointments||[]) if(row.capabilitySourceId && tokens[row.capabilitySourceId]) tokens[row.id]=tokens[row.capabilitySourceId];
+      try{localStorage.setItem('booking_access__'+tenantId,JSON.stringify(tokens));}catch{}
+      onUpdate(data.appointments);
+    }}
+    catch(err){if(active){onError?.(err as Error);}} finally {running=false;if(queued&&active){queued=false;void poll();}}
   };
   void poll();
   // v17 polled every 10s and could exhaust Firestore's daily free read quota in a
@@ -109,11 +115,13 @@ export function subscribeAppointments(onUpdate:(appointments:Appointment[])=>voi
   const onFocus=()=>{void poll();};
   const onVisibility=()=>{if(document.visibilityState==='visible') void poll();};
   if(typeof window!=='undefined') window.addEventListener('focus',onFocus);
+  if(typeof window!=='undefined') window.addEventListener('appointments-changed',onFocus);
   if(typeof document!=='undefined') document.addEventListener('visibilitychange',onVisibility);
   const unsub=onAuthStateChanged(auth,()=>{void poll();});
   return ()=>{
     active=false;clearInterval(timer);unsub();
     if(typeof window!=='undefined') window.removeEventListener('focus',onFocus);
+    if(typeof window!=='undefined') window.removeEventListener('appointments-changed',onFocus);
     if(typeof document!=='undefined') document.removeEventListener('visibilitychange',onVisibility);
   };
 }
@@ -142,14 +150,16 @@ export async function addAppointmentToFirestore(
     if(!options.asAdmin) {
       localStorage.setItem('booking_access__'+tenantId,JSON.stringify({...capabilities(tenantId),[data.id]:data.accessToken}));
     }
+    if(typeof window!=='undefined') window.dispatchEvent(new Event('appointments-changed'));
     return data.id;
   }catch(err:any){if(err.message.includes('השעה הזו כבר נתפסה')) throw new SlotTakenError();throw err;}
 }
-export async function cancelAppointmentInFirestore(appointmentId:string|number,_phone?:string,_date?:string,_time?:string,tenantId=getCurrentTenantId(),authMode:TenantApiAuthMode='none'):Promise<void> {
-  await tenantApi('/api/appointments/cancel',{appointmentId:String(appointmentId),accessToken:capabilities(tenantId)[String(appointmentId)]},tenantId,{auth:authMode});
+export async function cancelAppointmentInFirestore(appointmentId:string|number,_phone?:string,_date?:string,_time?:string,tenantId=getCurrentTenantId(),authMode:TenantApiAuthMode='none',cancellationReason?:string):Promise<void> {
+  await tenantApi('/api/appointments/cancel',{appointmentId:String(appointmentId),accessToken:capabilities(tenantId)[String(appointmentId)],customerAccess:localStorage.getItem('customer_access__'+tenantId),cancellationReason},tenantId,{auth:authMode});
+  if(typeof window!=='undefined') window.dispatchEvent(new Event('appointments-changed'));
 }
-export async function deleteAppointmentInFirestore(appointmentId:string|number,_date?:string,_time?:string,tenantId=getCurrentTenantId()):Promise<void> {
-  await tenantApi('/api/admin/appointments/delete',{appointmentId:String(appointmentId)},tenantId);
+export async function deleteAppointmentInFirestore(appointmentId:string|number,_date?:string,_time?:string,tenantId=getCurrentTenantId(),cancellationReason?:string):Promise<void> {
+  await tenantApi('/api/admin/appointments/delete',{appointmentId:String(appointmentId),cancellationReason},tenantId);
 }
 
 /**

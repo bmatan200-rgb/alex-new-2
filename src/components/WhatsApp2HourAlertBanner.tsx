@@ -69,7 +69,7 @@ export const WhatsApp2HourAlertBanner: React.FC<WhatsApp2HourAlertBannerProps> =
   // Filter confirmed client appointments
   const activeClientAppts = appointments.filter(
     (a) =>
-      a.status === 'confirmed' &&
+      a.status === 'active' && !a.archivedAt &&
       !a.customer_name.includes('🔒') &&
       !a.customer_name.includes('חופש') &&
       !a.customer_name.includes('חסימה') &&

@@ -1,4 +1,5 @@
-import { isPlatformRoot } from './utils/platformHost';
+import { CustomerBookingRecovery } from './components/CustomerBookingRecovery';
+import { canonicalPhone } from './utils/phone';
 import { AdminAccountSettings } from './components/AdminAccountSettings';
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate, Link, useLocation, useSearchParams } from 'react-router-dom';
@@ -126,7 +127,7 @@ function AdminRouteView({
               className="relative w-8 h-8 rounded-xl flex items-center justify-center font-bold text-white text-xs shadow-xs"
               style={{ backgroundColor: businessIcon.color.value }}
             >
-              <img className="h-full w-full rounded-xl object-cover" src={businessAdminIconAssetUrl(tenant.adminIcon || '', salonTitle) || undefined} alt={`סמל ${salonTitle}`} />
+              <img className="h-full w-full rounded-xl object-cover" src={businessAdminIconAssetUrl(tenant.adminIcon || '',tenant.appShortName||salonTitle) || undefined} alt={`סמל ${salonTitle}`} />
               <span className="w-2 h-2 rounded-full bg-emerald-400 absolute -top-0.5 -right-0.5 border border-slate-950 animate-pulse" />
             </div>}
             <div>
@@ -333,25 +334,22 @@ function MainApp() {
     setConfirmedAppointment(newAppointment);
   };
 
-  const handleCancelAppointment = async (id:number|string, authMode:'none'|'required') => {
+  const handleCancelAppointment = async (id:number|string, authMode:'none'|'required', reason?:string) => {
     const a=appointments.find(a=>String(a.id)===String(id));
     try {
-      await cancelAppointmentInFirestore(id,a?.customer_phone,a?.appointment_date,a?.start_time,tenantId,authMode);
+      await cancelAppointmentInFirestore(id,a?.customer_phone,a?.appointment_date,a?.start_time,tenantId,authMode,reason);
       deleteAppointmentPermanently(id);
-      setAppointments(prev=>prev.filter(a=>String(a.id)!==String(id)));
+      setAppointments(prev=>prev.map(a=>String(a.id)===String(id)?{...a,status:'cancelled',cancelledBy:authMode==='required'?'admin':'client',cancelledAt:new Date().toISOString(),cancellationReason:reason||''}:a));
       showToast('התור בוטל והשעה שוחררה ביומן');
     } catch(err:any){showToast(err.message || 'ביטול התור נכשל','error');throw err;}
   };
   const handleCustomerCancelAppointment = (id:number|string) => handleCancelAppointment(id,'none');
-  const handleAdminCancelAppointment = (id:number|string) => handleCancelAppointment(id,'required');
-  const handleDeleteAppointment = async(id:number|string)=>{
-    try {
-      await deleteAppointmentInFirestore(id,undefined,undefined,tenantId);
-      deleteAppointmentPermanently(id);
-      setAppointments(prev=>prev.filter(a=>String(a.id)!==String(id)));
-      showToast('התור הוסר מהיומן');
-    }catch(err:any){showToast(err.message || 'מחיקת התור נכשלה','error');throw err;}
+  const handleAdminCancelAppointment = (id:number|string, reason?:string) => {
+    const text=reason ?? window.prompt('סיבת ביטול התור (חובה):');
+    if(!text?.trim()) return Promise.reject(new Error('חובה לציין סיבת ביטול'));
+    return handleCancelAppointment(id,'required',text.trim());
   };
+  const handleDeleteAppointment = handleAdminCancelAppointment;
 
   const handleAddManualAppointment = async (newApp: Omit<Appointment, 'id'>) => {
     try {
@@ -374,14 +372,14 @@ function MainApp() {
     updateScheduleSettings(updatedSettings);saveStoredScheduleSettings(updatedSettings);
   };
 
-  const cleanUserPhone = currentUser?.phone ? currentUser.phone.replace(/\D/g, '') : '';
+  const cleanUserPhone = currentUser?.phone ? canonicalPhone(currentUser.phone) : '';
   const customerActiveBookings =
     cleanUserPhone && cleanUserPhone.length >= 7
       ? appointments.filter((app) => {
-          const cleanAppPhone = app.customer_phone.replace(/\D/g, '');
+          const cleanAppPhone = canonicalPhone(app.customer_phone);
           return (
             cleanAppPhone === cleanUserPhone &&
-            app.status !== 'cancelled' &&
+            app.status === 'active' && !app.archivedAt &&
             !isAppointmentInPast(app)
           );
         })
@@ -701,6 +699,8 @@ function MainApp() {
                 }}
               />
 
+              <CustomerBookingRecovery tenantId={tenantId} onRecovered={(session) => { saveUserSession(session); setCurrentUser(session); }} />
+
               <ConfirmationModal
                 appointment={confirmedAppointment}
                 onClose={() => setConfirmedAppointment(null)}
@@ -806,17 +806,6 @@ function ScopedMainApp() {
 }
 
 export default function App() {
-  const location = useLocation();
-  if (isPlatformRoot(window.location.hostname.toLowerCase()) && location.pathname === '/' && !new URLSearchParams(location.search).get('tenant')) {
-    return <main dir="rtl" className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-8">
-      <div className="max-w-md text-center space-y-5">
-        <h1 className="text-4xl font-bold">MB תורים</h1>
-        <p className="text-slate-300">מערכת קביעת תורים לעסקים</p>
-        <p>לקביעת תור, פתחו את הקישור האישי שקיבלתם מהעסק.</p>
-        <a href="/super-admin" className="inline-block text-sm text-slate-400 underline">ניהול המערכת</a>
-      </div>
-    </main>;
-  }
   return (
     <TenantProvider>
       <ScopedMainApp />

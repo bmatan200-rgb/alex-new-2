@@ -1,4 +1,5 @@
-import { PLATFORM_DOMAIN, isPlatformHost, isPlatformRoot, platformDomainCandidates, allocatePlatformDomain, tenantLinks, resolveHostTenant, selectTenant } from './server/platformDomains';
+import sharp from 'sharp';
+import { normalizeAppointment, cancellationPatch, validateBookingDetails, scheduleSnapshot } from './server/appointmentAudit';
 import { DeliveryTracker, DELIVERY_JOBS } from './server/sms/deliveryTracker';
 import { createSmsProvider, SmsProviderError, type SmsProvider, type SmsSendResult, type DeliveryStatus } from './server/sms/providers';
 import { legacyLogLockKey, mergeDeliveryResult, manualSmsLockKey } from './server/sms/logs';
@@ -8,7 +9,7 @@ import { DurableReminderScheduler, schedulePatch, scheduleId, SCHEDULE_COLLECTIO
 import { buildPwaManifest, type PwaRole } from './src/utils/pwa';
 import { BUSINESS_ADMIN_ICON_IDS, businessAdminIconSvg, isBusinessAdminIconId, isBusinessAdminRasterIcon, getBusinessAdminIconDetails } from './src/utils/businessAdminIcons';
 import 'dotenv/config';
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, randomInt, timingSafeEqual } from 'node:crypto';
 import { validId, validTime, validDate, phoneDigits, hash, reminderKey, overlaps, israelClock, parseFirebaseServiceAccount, authorizeTenant, publicSettings, claimOnce, copyOnce } from './server/core';
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
@@ -150,7 +151,7 @@ async function cachedAppointmentRows(tenantId: string, adminView: boolean): Prom
   // appointments for every visitor. Admins still receive the complete history.
   if (!adminView) ref = ref.where('appointment_date', '>=', israelClock().dateIso);
   const snap = await getDocs(ref);
-  const rows = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+  const rows = snap.docs.map((d: any) => normalizeAppointment({ ...d.data(), id: d.id }));
   appointmentListCache.set(key, { expiresAt: Date.now() + APPOINTMENTS_CACHE_TTL_MS, rows });
   return rows;
 }
@@ -197,25 +198,25 @@ export function getTenantDoc(tenantId: string) {
   return doc(db, 'tenants', tenantId);
 }
 
-async function boundTenantForHost(hostname: string): Promise<string | null> {
-  return resolveHostTenant(hostname, async host => {
-    const cached = domainTenantCache.get(host);
-    if (cached && cached.expiresAt > Date.now()) return cached.tenantId;
-    if (firestoreQuotaBackoffActive()) {
-      if (cached) return cached.tenantId;
-      throw quotaBackoffError(`domain ${host}`);
-    }
-    const mapped = await getDoc(doc(db, 'domains', host));
-    const tenantId = mapped.exists ? String(mapped.data()?.tenantId || '') : '';
-    if (!validId(tenantId)) return null;
-    domainTenantCache.set(host, {expiresAt: Date.now() + 10 * 60_000, tenantId});
-    return tenantId;
-  });
-}
 async function resolveTenantDomain(req: Request, res: Response, next: NextFunction) {
   try {
-    req.tenantId = selectTenant(await boundTenantForHost(req.hostname.toLowerCase()),
-      [req.body?.tenantId, req.query.tenant, req.headers['x-tenant-id']]);
+    const selectors = [req.body?.tenantId, req.query.tenant, req.headers['x-tenant-id']].filter(v => v !== undefined && v !== '');
+    if (selectors.some(v => !validId(v)) || new Set(selectors).size > 1) return res.status(400).json({success:false,error:'Invalid or conflicting tenant selectors'});
+    if (selectors.length) req.tenantId = String(selectors[0]);
+    else {
+      const hostname = req.hostname.toLowerCase();
+      const cachedDomain = domainTenantCache.get(hostname);
+      if (cachedDomain && cachedDomain.expiresAt > Date.now()) req.tenantId = cachedDomain.tenantId;
+      else if (firestoreQuotaBackoffActive() && cachedDomain) req.tenantId = cachedDomain.tenantId;
+      else {
+        if (firestoreQuotaBackoffActive()) throw quotaBackoffError(`domain ${hostname}`);
+        const mapped = await getDoc(doc(db, 'domains', hostname));
+        const resolvedTenantId = mapped.exists ? String(mapped.data()?.tenantId || '') : PRIMARY_TENANT_ID;
+        req.tenantId = resolvedTenantId;
+        if (validId(resolvedTenantId)) domainTenantCache.set(hostname, { expiresAt: Date.now() + 10 * 60_000, tenantId: resolvedTenantId });
+      }
+    }
+    if (!validId(req.tenantId)) return res.status(400).json({success:false,error:'Invalid tenant ID'});
     next();
   } catch (err) { next(err); }
 }
@@ -231,20 +232,35 @@ app.get('/manifest.json', async (req, res) => {
   res.type('application/manifest+json');
   // Platform management has no tenant dependency or tenant-specific install identity.
   if (role === 'super-admin') return res.json(buildPwaManifest(role, '', ''));
-  let tenantId: string;
-  try {
-    tenantId = selectTenant(await boundTenantForHost(req.hostname.toLowerCase()), [req.query.tenant]);
-  } catch (err: any) { return res.status(err.status || 503).json({error: err.message}); }
+  let tenantId = typeof req.query.tenant === 'string' && validId(req.query.tenant)
+    ? req.query.tenant
+    : PRIMARY_TENANT_ID;
+  if (!req.query.tenant) {
+    const cachedDomain = domainTenantCache.get(req.hostname.toLowerCase());
+    if (cachedDomain && validId(cachedDomain.tenantId)) tenantId = cachedDomain.tenantId;
+    else {
+      try {
+        const mapped = await getDoc(doc(db, 'domains', req.hostname.toLowerCase()));
+        const domainTenantId = mapped.exists ? String(mapped.data()?.tenantId || '') : '';
+        if (validId(domainTenantId)) {
+          tenantId = domainTenantId;
+          domainTenantCache.set(req.hostname.toLowerCase(), { expiresAt: Date.now() + 10 * 60_000, tenantId });
+        }
+      } catch {}
+    }
+  }
   let tenantName = 'הזמנת תורים לעסק';
   let adminIcon = '';
+  let appShortName='';
   try {
     const tenant = await activeTenant(tenantId);
     if (typeof tenant?.name === 'string' && tenant.name.trim()) tenantName = tenant.name.trim();
     adminIcon = await ensureTenantAdminIcon(tenantId);
+    appShortName=String(tenant?.appShortName||'');
   } catch {
     // Keep the manifest available when tenant data is temporarily unavailable.
   }
-  res.json(buildPwaManifest(role, tenantId, tenantName, adminIcon, isPlatformHost(req.hostname.toLowerCase()) && !isPlatformRoot(req.hostname.toLowerCase())));
+  res.json(buildPwaManifest(role, tenantId, tenantName, adminIcon, appShortName));
 });
 app.get('/tenant-admin-icons/:iconId.svg', (req, res) => {
   const businessName = typeof req.query.name === 'string' ? req.query.name : '';
@@ -264,6 +280,37 @@ app.get('/tenant-admin-icons/:iconId.svg', (req, res) => {
   if (!svg) return res.status(404).type('text/plain').send('Icon not found');
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.type('image/svg+xml').send(svg);
+});
+const rasterIconCache=new Map<string,Buffer>();
+const rasterIconWork=new Map<string,Promise<Buffer>>();
+app.get('/tenant-admin-icons/:iconId.png',async(req,res)=>{
+ try {
+  const iconId=req.params.iconId,size=Number(req.query.size||192);
+  const name=typeof req.query.name==='string'?req.query.name.trim().slice(0,100):'';
+  if(!isBusinessAdminIconId(iconId)||![192,512].includes(size)) return res.status(400).send('Invalid icon');
+  const key=iconId+':'+size+':'+name;
+  let png=rasterIconCache.get(key);
+  if(!png){
+   let work=rasterIconWork.get(key);
+   if(!work){
+    if(rasterIconWork.size>=8) return res.status(503).send('Try again shortly');
+    work=(async()=>{
+     let rasterDataUri='';
+     if(isBusinessAdminRasterIcon(iconId)){
+      const symbolId=getBusinessAdminIconDetails(iconId)!.symbol.id;
+      rasterDataUri='data:image/webp;base64,'+fs.readFileSync(path.join(process.cwd(),'public','business-icon-artwork',symbolId+'.webp')).toString('base64');
+     }
+     const svg=businessAdminIconSvg(iconId,name,rasterDataUri)!;
+     const bytes=await sharp(Buffer.from(svg)).resize(size,size).png().toBuffer();
+     if(rasterIconCache.size>=128) rasterIconCache.delete(rasterIconCache.keys().next().value!);
+     rasterIconCache.set(key,bytes);return bytes;
+    })().finally(()=>rasterIconWork.delete(key));
+    rasterIconWork.set(key,work);
+   }
+   png=await work;
+  }
+  res.setHeader('Cache-Control','public, max-age=31536000, immutable');res.type('image/png').send(png);
+ }catch(err){res.status(500).send('Icon could not be rendered');}
 });
 app.param(['tenantId','id'], (req,res,next,value)=>{
   if(!validId(value)) return res.status(400).json({success:false,error:'Invalid document ID'});
@@ -309,18 +356,24 @@ async function cancelBooking(req: Request, res: Response) {
     if (!validId(appointmentId)) return res.status(400).json({success:false,error:'Invalid appointment ID'});
     const admin = (req as any).adminPayload || await optionalAdmin(req);
     const allowed = admin && authorizeTenant(admin,[tenantId],tenantId) === tenantId;
+    const customer=await verifiedCustomer(req);
     await activeTenant(tenantId);
     await db.runTransaction(async tx => {
       const ref=getTenantAppointmentDoc(tenantId,appointmentId);
-      const snap=await tx.get(ref);
+      const [snap,tenant]=await tx.getAll(ref,getTenantDoc(tenantId));
       if(!snap.exists) throw new Error('התור לא נמצא');
-      const data=snap.data()!;
-      if(!allowed && !(typeof accessToken==='string' && data.accessTokenHash && hash(accessToken)===data.accessTokenHash)) throw new Error('נדרש קישור הביטול המקורי או הרשאת מנהלת');
-      // Keep a tombstone so legacy migration can never resurrect cancelled bookings.
-      tx.update(ref,{status:'cancelled',updated_at:new Date().toISOString()});
+      const data=normalizeAppointment(snap.data()!);
+      if((data.calendarGeneration||'initial')!==(tenant.data()?.calendarGeneration||'initial')) throw new Error('התור הועבר לארכיון');
+      if(!allowed && !(customer && phoneDigits(data.customer_phone)===customer.phone) && !(typeof accessToken==='string' && data.accessTokenHash && hash(accessToken)===data.accessTokenHash)) throw new Error('נדרש קישור הביטול המקורי או הרשאת מנהלת');
+      if (data.status === 'cancelled') return;
+      if (data.status === 'rescheduled') throw new Error('זהו תיעוד של תור שהועבר; יש לבטל את התור העדכני');
+      const patch=cancellationPatch(data,allowed?'admin':'client',req.body.cancellationReason);
+      tx.update(ref,patch);
+      tx.update(getTenantDoc(tenantId),{calendarRevision:Number(tenant.data()?.calendarRevision||0)+1});
+      tx.create(ref.collection('audit').doc(),{type:'cancelled',at:patch.updatedAt,by:patch.cancelledBy,reason:patch.cancellationReason,before:scheduleSnapshot(data)});
       tx.set(doc(db,'tenants',tenantId,'booking_days',data.appointment_date),{updatedAt:new Date().toISOString()});
     });
-    invalidateAppointmentsCache(tenantId);
+    invalidateTenantCaches(tenantId);
     res.json({success:true});
   } catch(err:any) {
     const quotaExceeded = noteFirestoreQuota(err, 'cancel appointment');
@@ -332,14 +385,21 @@ app.post('/api/admin/appointments/delete',requireAdmin,cancelBooking);
 app.post('/api/appointments/list',async(req,res)=>{
   try {
     const tenantId=req.tenantId!;
-    await activeTenant(tenantId);
+    const tenant=await activeTenant(tenantId);
     const admin=await optionalAdmin(req);
     const canRead=!!(admin && authorizeTenant(admin,[tenantId],tenantId)===tenantId);
     const capabilities=req.body?.capabilities || {};
-    const rows=await cachedAppointmentRows(tenantId, canRead);
-    const appointments=rows.filter((row:any)=>row.status!=='cancelled').map((row:any)=>{
+    const customer=await verifiedCustomer(req);
+    const legacyRows:any[]=[];
+    if(customer) for(let i=0;i<customer.legacyIds.length;i+=100){const docs=await db.getAll(...customer.legacyIds.slice(i,i+100).filter(validId).map(id=>getTenantAppointmentDoc(tenantId,id)));legacyRows.push(...docs.filter(d=>d.exists).map(d=>normalizeAppointment({...d.data(),id:d.id})));}
+    const customerRows=customer ? (await getTenantAppointmentsRef(tenantId).where('customer_phone_normalized','==',customer.phone).get()).docs.map(d=>normalizeAppointment({...d.data(),id:d.id})) : [];
+
+    const rawRows=[...new Map([...(await cachedAppointmentRows(tenantId, canRead)),...customerRows,...legacyRows].map(row=>[row.id,row])).values()];
+    const rows=rawRows.map(row=>({...row,...((row.calendarGeneration||'initial')!==(tenant?.calendarGeneration||'initial')?{archivedAt:tenant?.calendarResetAt || 'archived'}:{})}));
+    const hashes=new Set(Object.values(capabilities).filter((v):v is string=>typeof v==='string' && v.length===64).map(v=>hash(v)));
+    const appointments=rows.filter((row:any)=>canRead || (!row.archivedAt && row.status==='active')).map((row:any)=>{
       const {id,accessTokenHash,...data}=row;
-      if(canRead || (accessTokenHash && typeof capabilities[id]==='string' && hash(capabilities[id])===accessTokenHash)) return {...data,id};
+      if(canRead || (customer && phoneDigits(data.customer_phone)===customer.phone) || (accessTokenHash && hashes.has(accessTokenHash))) return {...data,id};
       return publicBusyAppointment(id, data);
     });
     res.json({success:true,appointments});
@@ -361,6 +421,8 @@ app.post('/api/appointments/book',async(req,res)=>{
     const admin=await optionalAdmin(req);
     const canManage=!!(admin && authorizeTenant(admin,[tenantId],tenantId)===tenantId);
     const a=req.body?.appointment || {};
+    const block=canManage && a.customer_phone==='חסימת יומן';
+    if(!block) validateBookingDetails(a);
     if(!validDate(a.appointment_date) || !validTime(a.start_time) || !validTime(a.end_time) || a.start_time>=a.end_time || typeof a.customer_name!=='string' || !a.customer_name.trim() || a.customer_name.length>100 || (!canManage && !phoneDigits(a.customer_phone))) {recordBookingTiming();return res.status(400).json({success:false,error:'פרטי תור לא תקינים'});}
     const accessToken=randomBytes(32).toString('hex');
     const id=validId(req.body.requestId) ? req.body.requestId : randomUUID();
@@ -380,6 +442,8 @@ app.post('/api/appointments/book',async(req,res)=>{
       if(!tenant.exists || !['active','trial'].includes(tenant.data()?.status)) throw new Error('העסק אינו פעיל');
       if(existing.exists) throw new Error('בקשה זו כבר נשמרה; יש לרענן את היומן');
       let service:any;
+      service=config.data()?.services?.find((x:any)=>String(x.id)===String(a.service_id));
+      if(!block && !(service?.name || String(a.service_name||'').trim())) throw new Error('חובה לבחור טיפול מפורט');
       if(!canManage){
         service=config.data()?.services?.find((x:any)=>String(x.id)===String(a.service_id));
         if(!service) throw new Error('השירות אינו זמין');
@@ -393,13 +457,16 @@ app.post('/api/appointments/book',async(req,res)=>{
         if(day===6 || !validTime(open) || !validTime(close) || a.start_time<open || a.end_time>close) throw new Error('השעה מחוץ לשעות הפעילות');
       }
       const sameDay=await tx.get(getTenantAppointmentsRef(tenantId).where('appointment_date','==',a.appointment_date));
-      if(sameDay.docs.some((d:any)=>overlaps(d.data(),a))) throw new Error('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
-      const saved={customer_name:a.customer_name.trim(),customer_phone:String(a.customer_phone||''),service_id:a.service_id ?? 0,service_name:service?.name || String(a.service_name||''),price:service?.price ?? Number(a.price||0),appointment_date:a.appointment_date,start_time:a.start_time,end_time:a.end_time,status:'confirmed',notes:String(a.notes||'').slice(0,2000),created_at:new Date().toISOString(),tenantId,accessTokenHash:hash(accessToken)};
-      tx.create(ref,saved);
+      if(sameDay.docs.some((d:any)=>(d.data().calendarGeneration||'initial')===(tenant.data()?.calendarGeneration||'initial') && overlaps(d.data(),a))) throw new Error('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
+      const now=new Date().toISOString();
+      const saved={customer_name:a.customer_name.trim(),customer_phone:String(a.customer_phone||''),customer_phone_normalized:phoneDigits(a.customer_phone),recordType:block?'calendar_block':'appointment',service_id:a.service_id ?? 0,service_name:service?.name || String(a.service_name||''),price:service?.price ?? Number(a.price||0),appointment_date:a.appointment_date,start_time:a.start_time,end_time:a.end_time,status:'active',notes:String(a.notes||'').slice(0,2000),created_at:now,createdAt:now,updatedAt:now,tenantId,accessTokenHash:hash(accessToken)};
+      tx.create(ref,{...saved,calendarGeneration:tenant.data()?.calendarGeneration||'initial'});
+      tx.update(tenantRef,{calendarRevision:Number(tenant.data()?.calendarRevision||0)+1});
+      tx.create(ref.collection('audit').doc(),{type:'created',at:saved.createdAt,by:canManage?'admin':'client',after:scheduleSnapshot(saved)});
       if(customerRef && !customer?.exists) tx.create(customerRef,{full_name:saved.customer_name,phone:saved.customer_phone,notes:'',created_at:saved.created_at,last_login_at:saved.created_at});
       tx.set(guard,{updatedAt:new Date().toISOString()});
     });
-    invalidateAppointmentsCache(tenantId);
+    invalidateTenantCaches(tenantId);
     recordBookingTiming();
     res.json({success:true,id,accessToken});
   }catch(err:any){
@@ -407,6 +474,150 @@ app.post('/api/appointments/book',async(req,res)=>{
     const quotaExceeded = noteFirestoreQuota(err, 'book appointment');
     res.status(quotaExceeded ? 503 : 409).json({success:false,error:quotaExceeded?'Firestore quota temporarily exhausted':err.message});
   }
+});
+
+// Customer recovery proves possession of the phone; knowing a number alone grants no access.
+async function verifiedCustomer(req: Request): Promise<{phone:string;legacyIds:string[]}|null> {
+  const token=req.body?.customerAccess;
+  if (typeof token!=='string' || !/^[a-f0-9]{64}$/.test(token)) return null;
+  const snap=await doc(db,'tenants',req.tenantId!,'customer_access',hash(token)).get();
+  return snap.exists && snap.data()!.expiresAt>Date.now() ? {phone:snap.data()!.phone,legacyIds:snap.data()!.legacyIds || []} : null;
+}
+app.post('/api/customer/access/check',async(req,res)=>{
+ try {const customer=await verifiedCustomer(req);res.json({success:true,verified:!!customer && customer.phone===phoneDigits(req.body.phone)});}
+ catch {res.status(503).json({success:false,error:'לא ניתן לאמת כניסה כעת'});}
+});
+app.post('/api/customer/recovery/start',async(req,res)=>{
+  try {
+    const phone=phoneDigits(req.body.phone),tenantId=req.tenantId!;
+    if (!phone) return res.status(400).json({success:false,error:'מספר טלפון לא תקין'});
+    await activeTenant(tenantId);
+    const ref=doc(db,'tenants',tenantId,'customer_recovery',hash(phone));
+    const code=String(randomInt(100000,1000000)),challenge=randomUUID();
+    await db.runTransaction(async tx=>{
+      const old=await tx.get(ref);
+      if(old.exists && Date.now()-old.data()!.sentAt<60_000) throw new Error('יש להמתין דקה לפני בקשת קוד נוסף');
+      tx.set(ref,{phone,challenge,codeHash:hash(challenge+code),sentAt:Date.now(),expiresAt:Date.now()+5*60_000,attempts:0,used:false});
+    });
+    if(isDispatchRateLimited('recover:'+req.ip)) throw new Error('בקשות רבות מדי, נסו שוב מאוחר יותר');
+    if(process.env.SMS_SENDING_ENABLED==='false') throw new Error('שליחת SMS מושבתת כעת');
+    const result=await sendSmsViaProvider(phone,`קוד לאחזור התורים שלך: ${code}. הקוד תקף ל-5 דקות. אין למסור אותו לאחרים.`,tenantId);
+    if(!result.success) throw new Error('לא ניתן לשלוח קוד כרגע');
+    res.json({success:true,challenge});
+  } catch(err:any){res.status(400).json({success:false,error:err.message});}
+});
+app.post('/api/customer/recovery/verify',async(req,res)=>{
+  try {
+    const tenantId=req.tenantId!,phone=phoneDigits(req.body.phone),code=String(req.body.code||''),challenge=req.body.challenge;
+    if(!phone || !/^\d{6}$/.test(code) || !validId(challenge)) throw new Error('קוד לא תקין');
+    await activeTenant(tenantId);
+    const ref=doc(db,'tenants',tenantId,'customer_recovery',hash(phone));
+    const token=randomBytes(32).toString('hex');
+    const valid=await db.runTransaction(async tx=>{
+      const snap=await tx.get(ref),d=snap.data();
+      if(!d || d.used || d.expiresAt<Date.now() || d.attempts>=5 || d.challenge!==challenge) return false;
+      if(hash(challenge+code)!==d.codeHash){tx.update(ref,{attempts:d.attempts+1});return false;}
+      tx.update(ref,{used:true});
+      tx.create(doc(db,'tenants',tenantId,'customer_access',hash(token)),{phone,expiresAt:Date.now()+30*86400_000});
+      return true;
+    });
+    if(!valid) throw new Error('הקוד שגוי או פג תוקף');
+    // Preserve historical rows untouched; retain verified references for legacy phone formats.
+    const rows=await getTenantAppointmentsRef(tenantId).get();
+    const own=rows.docs.filter(d=>phoneDigits(d.data().customer_phone)===phone);
+    await doc(db,'tenants',tenantId,'customer_access',hash(token)).update({legacyIds:own.filter(d=>!d.data().customer_phone_normalized).map(d=>d.id)});
+    invalidateTenantCaches(tenantId);
+    res.json({success:true,customerAccess:token,customerName:own[0]?.data().customer_name || ''});
+  } catch(err:any){res.status(403).json({success:false,error:err.message});}
+});
+
+app.post('/api/admin/appointments/update',requireAdmin,async(req,res)=>{
+  try {
+    const tenantId=req.tenantId!,id=req.body.appointmentId,a=req.body.appointment||{};
+    if(!validId(id)) throw new Error('מזהה תור לא תקין');
+    const newId=randomUUID(),newRef=getTenantAppointmentDoc(tenantId,newId);
+    let moved=false;
+    await db.runTransaction(async tx=>{
+      const tenantRef=getTenantDoc(tenantId),ref=getTenantAppointmentDoc(tenantId,id);
+      const [tenant,snap]=await tx.getAll(tenantRef,ref);
+      if(!snap.exists) throw new Error('התור לא נמצא');
+      const before=normalizeAppointment(snap.data()),generation=tenant.data()?.calendarGeneration || 'initial';
+      if(before.status!=='active' || (before.calendarGeneration||'initial')!==generation) throw new Error('ניתן לערוך רק תור פעיל ביומן הנוכחי');
+      const after={...before,...Object.fromEntries(['customer_name','customer_phone','service_id','service_name','appointment_date','start_time','end_time','notes','price'].filter(k=>a[k]!==undefined).map(k=>[k,a[k]]))};
+      if(before.recordType!=='calendar_block' && before.customer_phone!=='חסימת יומן') validateBookingDetails(after);
+      if(!validDate(after.appointment_date)||!validTime(after.start_time)||!validTime(after.end_time)||after.start_time>=after.end_time) throw new Error('תאריך או שעה לא תקינים');
+      const sameDay=await tx.get(getTenantAppointmentsRef(tenantId).where('appointment_date','==',after.appointment_date));
+      if(sameDay.docs.some(d=>d.id!==id && (d.data().calendarGeneration||'initial')===generation && overlaps(d.data(),after))) throw new Error('השעה הזו כבר נתפסה');
+      const now=new Date().toISOString();
+      if (after.notes!==undefined && (typeof after.notes!=='string' || after.notes.length>2000)) throw new Error('הערות לא תקינות');
+      if (after.price!==undefined && (!Number.isFinite(after.price) || after.price<0)) throw new Error('מחיר לא תקין');
+      if (typeof after.service_name!=='string' || !after.service_name.trim()) throw new Error('חובה להזין טיפול מפורט');
+      after.customer_phone_normalized=phoneDigits(after.customer_phone);after.updatedAt=now;
+      moved=before.appointment_date!==after.appointment_date||before.start_time!==after.start_time||before.end_time!==after.end_time;
+      const event={type:moved?'rescheduled':'edited',at:now,by:'admin',uid:(req as any).adminPayload.uid,before:scheduleSnapshot(before),after:scheduleSnapshot(after)};
+      if(moved){
+        tx.update(ref,{status:'rescheduled',updatedAt:now,rescheduledTo:newId});
+        tx.create(newRef,{...after,status:'active',calendarGeneration:generation,rescheduledFrom:id,capabilitySourceId:before.capabilitySourceId||id,createdAt:now,created_at:now,originalCreatedAt:before.originalCreatedAt||before.createdAt,accessTokenHash:before.accessTokenHash||null});
+        tx.create(newRef.collection('audit').doc(),event);
+      }else{tx.update(ref,after);}
+      tx.create(ref.collection('audit').doc(),event);
+      tx.set(doc(db,'tenants',tenantId,'booking_days',before.appointment_date),{updatedAt:now});
+      tx.set(doc(db,'tenants',tenantId,'booking_days',after.appointment_date),{updatedAt:now});
+      tx.update(tenantRef,{calendarRevision:Number(tenant.data()?.calendarRevision||0)+1});
+    });
+    invalidateTenantCaches(tenantId);res.json({success:true,id:moved?newId:id});
+  }catch(err:any){res.status(400).json({success:false,error:err.message});}
+});
+app.post('/api/admin/appointments/audit',requireAdmin,async(req,res)=>{
+  try{
+    if(!validId(req.body.appointmentId)) throw new Error('מזהה לא תקין');
+    const snap=await getTenantAppointmentDoc(req.tenantId!,req.body.appointmentId).collection('audit').orderBy('at').get();
+    res.json({success:true,events:snap.docs.map(d=>({id:d.id,...d.data()}))});
+  }catch(err:any){res.status(400).json({success:false,error:err.message});}
+});
+async function recentPasswordAuth(req: Request) {
+  const raw=String(req.headers.authorization||'').replace(/^Bearer\s+/i,'');
+  const token=await getAuth().verifyIdToken(raw,true);
+  if(token.firebase?.sign_in_provider!=='password'||Date.now()/1000-token.auth_time>120) throw new Error('יש לאמת מחדש את סיסמת המנהל לפני האיפוס');
+}
+app.post('/api/admin/calendar/export',requireAdmin,async(req,res)=>{
+  try {
+    await recentPasswordAuth(req);
+    const tenantId=req.tenantId!,tenant=await getTenantDoc(tenantId).get(),revision=Number(tenant.data()?.calendarRevision||0);
+    const rows=await getTenantAppointmentsRef(tenantId).get();
+    const appointments:any[]=new Array(rows.docs.length);
+    await runBounded(rows.docs.map((d,index)=>({d,index})),20,async({d,index})=>{
+      const audit=await d.ref.collection('audit').orderBy('at').get();
+      const {accessTokenHash,...data}=normalizeAppointment({...d.data(),id:d.id});
+      appointments[index]={...data,audit:audit.docs.map(e=>({id:e.id,...e.data()}))};
+    });
+    const resetRecords=await collection(db,'tenants',tenantId,'calendar_resets').get();
+    const latest=await getTenantDoc(tenantId).get();
+    if(Number(latest.data()?.calendarRevision||0)!==revision) throw new Error('היומן השתנה במהלך הייצוא; יש לנסות שוב');
+    const exportId=randomUUID(),backup={schemaVersion:43,tenantId,exportedAt:new Date().toISOString(),calendarGeneration:tenant.data()?.calendarGeneration||'initial',appointments,resetHistory:resetRecords.docs.map(d=>({id:d.id,...d.data()}))};
+    const digest=hash(JSON.stringify(backup));
+    await doc(db,'tenants',tenantId,'calendar_exports',exportId).create({revision,digest,uid:(req as any).adminPayload.uid,createdAt:Date.now(),used:false,count:appointments.length});
+    res.json({success:true,exportId,digest,backup});
+  }catch(err:any){res.status(400).json({success:false,error:err.message});}
+});
+app.post('/api/admin/calendar/reset',requireAdmin,async(req,res)=>{
+  try {
+    await recentPasswordAuth(req);
+    const tenantId=req.tenantId!,id=req.body.exportId;
+    if(!validId(id)||req.body.downloadConfirmed!==true) throw new Error('נדרש ייצוא גיבוי ואישור שמירתו');
+    await db.runTransaction(async tx=>{
+      const tenantRef=getTenantDoc(tenantId),exportRef=doc(db,'tenants',tenantId,'calendar_exports',id);
+      const [tenant,exported]=await tx.getAll(tenantRef,exportRef),e=exported.data();
+      if(!e||e.used||e.uid!==(req as any).adminPayload.uid||e.createdAt<Date.now()-10*60_000||e.digest!==req.body.digest) throw new Error('הייצוא אינו תקף; יש לייצא מחדש');
+      if(e.revision!==Number(tenant.data()?.calendarRevision||0)) throw new Error('היומן השתנה מאז הגיבוי; יש לייצא מחדש');
+      const now=new Date().toISOString(),generation=randomUUID();
+      // One atomic generation switch archives every existing row; no appointment is deleted.
+      tx.update(tenantRef,{calendarGeneration:generation,calendarResetAt:now,calendarRevision:e.revision+1});
+      tx.update(exportRef,{used:true,resetAt:now,newGeneration:generation});
+      tx.create(doc(db,'tenants',tenantId,'calendar_resets',id),{at:now,by:'admin',uid:e.uid,previousGeneration:tenant.data()?.calendarGeneration||'initial',newGeneration:generation,backupDigest:e.digest,count:e.count});
+    });
+    invalidateTenantCaches(tenantId);res.json({success:true});
+  }catch(err:any){res.status(400).json({success:false,error:err.message});}
 });
 
 app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
@@ -669,7 +880,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '41.0.0';
+const APP_VERSION = '43.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];
@@ -947,8 +1158,9 @@ function formatMessageTemplate(template: string, appt: any, brand: any = PRIMARY
 
 // Fetch Confirmed Appointments from Firestore
 async function fetchAppointmentsForDate(targetDate: string, tenantId = 'alex_beauty'): Promise<ServerAppointment[]> {
+  const tenant=await getTenantDoc(tenantId).get();
   const snap = await getTenantAppointmentsRef(tenantId).where('appointment_date','==',targetDate).get();
-  return snap.docs.map((d:any)=>({...d.data(),id:d.id})).filter((a:any)=>a.status==='confirmed' && phoneDigits(a.customer_phone)).sort((a:any,b:any)=>a.start_time.localeCompare(b.start_time));
+  return snap.docs.map((d:any)=>normalizeAppointment({...d.data(),id:d.id})).filter((a:any)=>a.status==='active' && (a.calendarGeneration||'initial')===(tenant.data()?.calendarGeneration||'initial') && phoneDigits(a.customer_phone)).sort((a:any,b:any)=>a.start_time.localeCompare(b.start_time));
 }
 
 // Lock Helpers (Deduplication across server restarts & multiple instances)
@@ -1106,9 +1318,10 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
       if(acceptedPhones.has(phoneKey)) return;
       // Recheck current records before dispatch so a cancellation or reschedule
       // while a batch is draining cannot send the stale appointment text.
+      const currentGeneration=(await getTenantDoc(tenantId).get()).data()?.calendarGeneration||'initial';
       const fresh = options.scheduled ? (await db.getAll(...appts.map(a => getTenantAppointmentDoc(tenantId, String(a.id)))))
         .filter(s => s.exists).map(s => ({ ...s.data(), id: s.id } as ServerAppointment))
-        .filter(a => a.status === 'confirmed' && a.appointment_date === targetDate && cleanPhoneDigits(a.customer_phone) === phoneKey
+        .filter(a => normalizeAppointment(a).status === 'active' && ((a as any).calendarGeneration||'initial')===currentGeneration && a.appointment_date === targetDate && cleanPhoneDigits(a.customer_phone) === phoneKey
           && (!isMorning || a.start_time > getIsraelTime().timeStr)) : appts;
       if (!fresh.length) return;
       const firstAppt = fresh[0];
@@ -1380,7 +1593,7 @@ app.post(['/api/sms/send-single', '/api/whatsapp/send'], requireAdmin, async (re
     }
 
     const tenantId = req.tenantId!;
-    await activeTenant(tenantId);
+    const currentTenant=await activeTenant(tenantId);
     const type=req.body.reminderType;
     const appointmentId=req.body.appointmentId || req.body.appointment?.id;
     const manualOperation = !type || ['manual','manual_single','test'].includes(type);
@@ -1391,7 +1604,7 @@ app.post(['/api/sms/send-single', '/api/whatsapp/send'], requireAdmin, async (re
     if(['today','1day'].includes(type)) {
       if(!validId(String(appointmentId || ''))) return res.status(400).json({success:false,error:'Appointment ID required'});
       const appt=await getDoc(getTenantAppointmentDoc(tenantId,String(appointmentId)));
-      if(!appt.exists || appt.data()?.status!=='confirmed' || phoneDigits(appt.data()?.customer_phone)!==phoneDigits(phone)) return res.status(400).json({success:false,error:'Appointment/recipient mismatch'});
+      if(!appt.exists || normalizeAppointment(appt.data()||{}).status!=='active' || (appt.data()?.calendarGeneration||'initial')!==((await activeTenant(tenantId))?.calendarGeneration||'initial') || phoneDigits(appt.data()?.customer_phone)!==phoneDigits(phone)) return res.status(400).json({success:false,error:'Appointment/recipient mismatch'});
       lockKey=reminderKey(type,phone,appt.data()?.appointment_date);
       const peers=await getTenantAppointmentsRef(tenantId).where('appointment_date','==',appt.data()?.appointment_date).get();
       legacyKeys=peers.docs.filter((d:any)=>phoneDigits(d.data().customer_phone)===phoneDigits(phone)).map((d:any)=>`${type==='today'?'morning':'evening'}_${d.id}_${appt.data()?.appointment_date}`);
@@ -1437,7 +1650,7 @@ app.post('/api/sms/test', requireAdmin, async (req: Request, res: Response) => {
     }
 
     const tenantId = req.tenantId!;
-    await activeTenant(tenantId);
+    const currentTenant=await activeTenant(tenantId);
     const type=req.body.reminderType;
     const appointmentId=req.body.appointmentId || req.body.appointment?.id;
     const manualOperation = !type || ['manual','manual_single','test'].includes(type);
@@ -1448,7 +1661,7 @@ app.post('/api/sms/test', requireAdmin, async (req: Request, res: Response) => {
     if(['today','1day'].includes(type)) {
       if(!validId(String(appointmentId || ''))) return res.status(400).json({success:false,error:'Appointment ID required'});
       const appt=await getDoc(getTenantAppointmentDoc(tenantId,String(appointmentId)));
-      if(!appt.exists || appt.data()?.status!=='confirmed' || phoneDigits(appt.data()?.customer_phone)!==phoneDigits(phone)) return res.status(400).json({success:false,error:'Appointment/recipient mismatch'});
+      if(!appt.exists || normalizeAppointment(appt.data()||{}).status!=='active' || (appt.data()?.calendarGeneration||'initial')!==((await activeTenant(tenantId))?.calendarGeneration||'initial') || phoneDigits(appt.data()?.customer_phone)!==phoneDigits(phone)) return res.status(400).json({success:false,error:'Appointment/recipient mismatch'});
       lockKey=reminderKey(type,phone,appt.data()?.appointment_date);
       const peers=await getTenantAppointmentsRef(tenantId).where('appointment_date','==',appt.data()?.appointment_date).get();
       legacyKeys=peers.docs.filter((d:any)=>phoneDigits(d.data().customer_phone)===phoneDigits(phone)).map((d:any)=>`${type==='today'?'morning':'evening'}_${d.id}_${appt.data()?.appointment_date}`);
@@ -1637,11 +1850,11 @@ async function ensurePrimaryTenant(options: { force?: boolean } = {}): Promise<{
 app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) => {
   try {
     if (superAdminTenantsCache && superAdminTenantsCache.expiresAt > Date.now()) {
-      return res.json({ success: true, tenants: superAdminTenantsCache.tenants.map(t => ({...t, ...tenantLinks(t, _req.hostname.toLowerCase())})), cached: true });
+      return res.json({ success: true, tenants: superAdminTenantsCache.tenants, cached: true });
     }
     if (firestoreQuotaBackoffActive()) {
       if (superAdminTenantsCache) {
-        return res.json({ success: true, tenants: superAdminTenantsCache.tenants.map(t => ({...t, ...tenantLinks(t, _req.hostname.toLowerCase())})), cached: true, stale: true, warning: 'Firestore quota temporarily exhausted' });
+        return res.json({ success: true, tenants: superAdminTenantsCache.tenants, cached: true, stale: true, warning: 'Firestore quota temporarily exhausted' });
       }
       throw quotaBackoffError('Super Admin tenant list');
     }
@@ -1651,7 +1864,6 @@ app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) 
       .filter((t: any) => t.status !== 'deleted');
     const assignedIcons = await Promise.all(baseTenants.map((tenant: any) => ensureTenantAdminIcon(tenant.id)));
     baseTenants.forEach((tenant: any, index: number) => { tenant.adminIcon = assignedIcons[index]; });
-    for (const tenant of baseTenants) tenant.platformDomain = await ensurePlatformDomain(tenant.id);
 
     // Aggregation count avoids downloading every appointment/customer document.
     // Firestore bills aggregation by index work (minimum one read) instead of one
@@ -1675,12 +1887,12 @@ app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) 
       }
     }));
     superAdminTenantsCache = { expiresAt: Date.now() + SUPER_ADMIN_CACHE_TTL_MS, tenants };
-    return res.json({ success: true, tenants: tenants.map(t => ({...t, ...tenantLinks(t, _req.hostname.toLowerCase())})) });
+    return res.json({ success: true, tenants });
   } catch (err: any) {
     const quotaExceeded = noteFirestoreQuota(err, 'Super Admin tenant list');
     console.error('[Tenants API] Failed:', err);
     if (quotaExceeded && superAdminTenantsCache) {
-      return res.json({ success: true, tenants: superAdminTenantsCache.tenants.map(t => ({...t, ...tenantLinks(t, _req.hostname.toLowerCase())})), cached: true, stale: true, warning: 'Firestore quota temporarily exhausted' });
+      return res.json({ success: true, tenants: superAdminTenantsCache.tenants, cached: true, stale: true, warning: 'Firestore quota temporarily exhausted' });
     }
     return res.status(quotaExceeded ? 503 : 500).json({ success: false, error: quotaExceeded ? 'Firestore quota temporarily exhausted; try again after reset' : (err?.message || 'Failed to load tenants') });
   }
@@ -1735,12 +1947,6 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
     const previousIconRef = isBusinessAdminIconId(previousAdminIcon) && previousAdminIcon !== selectedAdminIcon
       ? doc(db, 'tenantAdminIcons', previousAdminIcon) : null;
     const previousAssignment = previousIconRef ? await tx.get(previousIconRef) : null;
-    const platformDomain = await allocatePlatformDomain(tenantId, existing.data()?.platformDomain, async host => {
-      const assignment = await tx.get(doc(db, 'domains', host));
-      return assignment.exists ? String(assignment.data()?.tenantId || '') : null;
-    });
-    profile.platformDomain = platformDomain;
-    if (domain && isPlatformHost(domain) && domain !== platformDomain) throw new Error('Use the automatically assigned business domain');
     const oldDomain=existing.data()?.customDomain;
     const mapping=domain?await tx.get(doc(db,'domains',domain)):null;
     const oldMapping=oldDomain && oldDomain!==domain?await tx.get(doc(db,'domains',oldDomain)):null;
@@ -1754,37 +1960,14 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
       if(patch) tx.set(r,patch,{merge:true});
     });
     tx.set(ref,{...profile,adminIcon:selectedAdminIcon,customDomain:domain},{merge:!create});
-    tx.set(doc(db, 'domains', platformDomain), {tenantId, hostname: platformDomain, managedBy: 'platform'});
     if(selectedIconRef) tx.set(selectedIconRef,{tenantId,updatedAt:new Date().toISOString()},{merge:true});
     if(previousIconRef && previousAssignment?.data()?.tenantId===tenantId) tx.delete(previousIconRef);
     tx.set(getTenantSettingsDoc(tenantId),config,{merge:!create});
     if(domain) tx.set(doc(db,'domains',domain),{tenantId,hostname:domain});
-    if(oldMapping?.data()?.tenantId===tenantId && oldDomain !== platformDomain) tx.delete(oldMapping.ref);
+    if(oldMapping?.data()?.tenantId===tenantId) tx.delete(oldMapping.ref);
   });
   invalidateTenantCaches(tenantId);
   domainTenantCache.clear();
-}
-
-async function ensurePlatformDomain(tenantId: string): Promise<string> {
-  return db.runTransaction(async tx => {
-    const tenantRef = getTenantDoc(tenantId), tenant = await tx.get(tenantRef);
-    if (!tenant.exists || tenant.data()?.status === 'deleted') return '';
-    const hostname = await allocatePlatformDomain(tenantId, tenant.data()?.platformDomain, async host => {
-      const mapping = await tx.get(doc(db, 'domains', host));
-      return mapping.exists ? String(mapping.data()?.tenantId || '') : null;
-    });
-    const ref = doc(db, 'domains', hostname);
-    const mapping = await tx.get(ref);
-    if (!mapping.exists) tx.set(ref, {tenantId, hostname, managedBy: 'platform'});
-    if (!tenant.data()?.platformDomain) tx.set(tenantRef, {platformDomain: hostname}, {merge: true});
-    return hostname;
-  });
-}
-async function ensureExistingPlatformDomains() {
-  const tenants = await getDocs(collection(db, 'tenants'));
-  for (const tenant of tenants.docs) if (tenant.data()?.status !== 'deleted') await ensurePlatformDomain(tenant.id);
-  domainTenantCache.clear();
-  console.log(`[Domains] ready for existing and new businesses under ${PLATFORM_DOMAIN}; DNS/TLS must be configured in Render`);
 }
 
 async function ensureTenantAdminIcon(tenantId:string):Promise<string> {
@@ -1857,6 +2040,7 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
     const tenantProfile = {
       id: tenantId,
       name: sanitizedName,
+      appShortName:shortBusinessName(req.body?.appShortName),
       tagline: String(tagline || '').trim(),
       ownerName: String(ownerName || sanitizedName).trim(),
       phone: sanitizedPhone,
@@ -1889,7 +2073,9 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
 
     await saveTenant(tenantId,tenantProfile,tenantConfig,true);
 
-    const {testUrl, adminUrl, domainUrl, platformDomain} = tenantLinks(tenantProfile, req.hostname.toLowerCase());
+    const publicBase = tenantProfile.customDomain ? 'https://' + tenantProfile.customDomain : '';
+    const testUrl = publicBase ? publicBase + '/' : `/?tenant=${tenantId}`;
+    const adminUrl = publicBase ? publicBase + '/admin' : `/admin?tenant=${tenantId}`;
 
     return res.json({
       success: true,
@@ -1898,8 +2084,6 @@ app.post('/api/super-admin/tenants', requireSuperAdmin, async (req: Request, res
       config: tenantConfig,
       testUrl,
       adminUrl,
-      domainUrl,
-      platformDomain,
       message: `Tenant ${tenantId} registered successfully`,
     });
   } catch (err: any) {
@@ -1929,6 +2113,11 @@ app.get('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
   }
 });
 
+function shortBusinessName(value:unknown){
+ if(value===undefined||value===null)return '';
+ if(typeof value!=='string'||Array.from(value.trim()).length>20)throw new Error('שם קצר לאייקון חייב להכיל עד 20 תווים');
+ return value.trim();
+}
 // 9.45 Super Admin: update an existing tenant. Tenant ID stays immutable.
 app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
@@ -1944,6 +2133,7 @@ app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
     const customDomain = String(req.body?.customDomain || '').trim().toLowerCase();
     const tenantProfile = {
       name,
+      appShortName:shortBusinessName(req.body?.appShortName ?? existing.appShortName),
       tagline: String(req.body?.tagline || '').trim(),
       ownerName: String(req.body?.ownerName || name).trim(),
       phone,
@@ -1967,7 +2157,8 @@ app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
     await saveTenant(tenantId,tenantProfile,tenantConfig,false);
 
     return res.json({ success: true, tenantId, tenant: { id: tenantId, ...existing, ...tenantProfile }, config: tenantConfig,
-      ...tenantLinks({id: tenantId, ...existing, ...tenantProfile}, req.hostname.toLowerCase()) });
+      testUrl: customDomain ? 'https://' + customDomain + '/' : `/?tenant=${tenantId}`,
+      adminUrl: customDomain ? 'https://' + customDomain + '/admin' : `/admin?tenant=${tenantId}` });
   } catch (err: any) {
     console.error('[Super Admin API] Error updating tenant:', err);
     return res.status(err?.message === 'BUSINESS_ADMIN_ICON_TAKEN' ? 409 : 500).json({ success: false, error: err?.message === 'BUSINESS_ADMIN_ICON_TAKEN' ? 'האייקון כבר הוקצה לעסק אחר. יש לבחור אייקון אחר.' : err?.message === 'BUSINESS_ADMIN_ICONS_EXHAUSTED' ? 'כל שילובי האייקונים בשימוש. יש להוסיף אפשרויות נוספות.' : err?.message });
@@ -2106,13 +2297,12 @@ app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
   const quotaExceeded = noteFirestoreQuota(err, 'API request');
   console.error('[API]',err?.message || err);
   if (quotaExceeded) return res.status(503).json({success:false,error:'מכסת Firestore היומית נוצלה זמנית. השירות יישאר פעיל ויחזור לנתונים לאחר איפוס המכסה.'});
-  res.status(err.status || 500).json({success:false,error: err.status === 404 ? 'העסק בכתובת הזאת לא נמצא' : err.status === 400 ? 'כתובת העסק אינה תואמת לבקשה' : 'הפעולה נכשלה. יש לנסות שוב או לפנות למנהלת.'});
+  res.status(err.status || 500).json({success:false,error:'הפעולה נכשלה. יש לנסות שוב או לפנות למנהלת.'});
 });
 let bootstrapRetryTimer: ReturnType<typeof setTimeout> | null = null;
 async function runBootstrapMaintenance() {
   try {
     const result = await ensurePrimaryTenant();
-    await ensureExistingPlatformDomains();
     console.log(`[Tenant Bootstrap] ✅ ${PRIMARY_TENANT_ID} migration=${result.skipped ? 'already-complete' : 'completed'}`);
   } catch (bootstrapErr: any) {
     const quotaExceeded = noteFirestoreQuota(bootstrapErr, 'Tenant Bootstrap');
@@ -2162,7 +2352,7 @@ async function startServer() {
   // Bind the HTTP port first. Firestore quota exhaustion must never prevent
   // Render from seeing a healthy process and must never create a restart storm.
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`MB Torim Server v${APP_VERSION} running on http://0.0.0.0:${PORT} [Israel Time: ${getIsraelTime().timeStr}]`);
+    console.log(`Alex Beauty Server v${APP_VERSION} running on http://0.0.0.0:${PORT} [Israel Time: ${getIsraelTime().timeStr}]`);
     const timer = setTimeout(() => void runBootstrapMaintenance(), 1_000);
     (timer as any).unref?.();
     if (String(process.env.CRON_SECRET || '').trim().length >= 24) {

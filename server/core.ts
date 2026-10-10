@@ -12,7 +12,7 @@ export function phoneDigits(p: unknown) {
 }
 export const hash = (v: string) => createHash('sha256').update(v).digest('hex');
 export const reminderKey = (kind: string, phone: string, date: string) => `${kind === 'today' ? 'morning' : 'evening'}_${phoneDigits(phone)}_${date}`;
-export const overlaps = (a: any, b: any) => a.status !== 'cancelled' && a.appointment_date === b.appointment_date && a.start_time < b.end_time && a.end_time > b.start_time;
+export const overlaps = (a: any, b: any) => (!a.status || ['active','confirmed'].includes(a.status)) && !a.archivedAt && a.appointment_date === b.appointment_date && a.start_time < b.end_time && a.end_time > b.start_time;
 export function israelClock(now = new Date()) {
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Jerusalem', year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now).map(x=>[x.type,x.value]));
   const dateIso = `${p.year}-${p.month}-${p.day}`;

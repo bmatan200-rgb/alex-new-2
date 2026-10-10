@@ -152,7 +152,7 @@ export function calculateAvailableSlots({
   const openMin = timeToMinutes(effectiveOpen);
   const closeMin = timeToMinutes(effectiveClose);
   const booked = existingAppointments
-    .filter((a) => a.status === 'confirmed' && (!dateString || a.appointment_date === dateString))
+    .filter((a) => a.status === 'active' && !a.archivedAt && (!dateString || a.appointment_date === dateString))
     .map((a) => ({
       start: timeToMinutes(a.start_time),
       end: timeToMinutes(a.end_time),
@@ -222,7 +222,7 @@ export function getDailySlotsOccupancy(
   const isFriday = new Date(year, month - 1, day).getDay() === 5;
   const allSlots = getAllStandardSlots(dateString, durationMinutes, businessOpen, businessClose, fridayClose, fridayOpen);
   const dateAppointments = appointments.filter(
-    (a) => a.appointment_date === dateString && a.status === 'confirmed'
+    (a) => a.appointment_date === dateString && a.status === 'active' && !a.archivedAt
   );
 
   return allSlots.map((slotTime) => {
@@ -380,46 +380,11 @@ END:VCALENDAR`;
  * 4. Deduplicates by unique ID as well.
  */
 export function deduplicateAppointments(list: Appointment[]): Appointment[] {
-  if (!Array.isArray(list) || list.length === 0) return [];
-
-  const activeList = list.filter((a) => a.status !== 'cancelled');
-  if (activeList.length === 0) return [];
-
-  // Sort priority:
-  // First: confirmed before non-confirmed
-  // Second: newest created_at first
-  const sorted = [...activeList].sort((a, b) => {
-    if (a.status === 'confirmed' && b.status !== 'confirmed') return -1;
-    if (a.status !== 'confirmed' && b.status === 'confirmed') return 1;
-    const timeA = new Date(a.created_at || 0).getTime();
-    const timeB = new Date(b.created_at || 0).getTime();
-    return timeB - timeA;
-  });
-
-  const seenIds = new Set<string>();
-  const seenSlots = new Set<string>();
-  const result: Appointment[] = [];
-
-  for (const app of sorted) {
-    const idKey = app.id ? String(app.id) : null;
-    const slotKey = `${app.appointment_date}_${app.start_time}`;
-
-    if (idKey && seenIds.has(idKey)) {
-      continue;
-    }
-    if (seenSlots.has(slotKey)) {
-      continue;
-    }
-
-    if (idKey) seenIds.add(idKey);
-    seenSlots.add(slotKey);
-    result.push(app);
+  // Identity is the document ID. Different bookings at the same time are distinct audit records.
+  const byId = new Map<string, Appointment>();
+  for (const a of list || []) {
+    const key = String(a.id);
+    if (!byId.has(key)) byId.set(key, a);
   }
-
-  // Sort chronologically ascending for UI presentation
-  return result.sort((a, b) => {
-    const dComp = (a.appointment_date || '').localeCompare(b.appointment_date || '');
-    if (dComp !== 0) return dComp;
-    return (a.start_time || '').localeCompare(b.start_time || '');
-  });
+  return [...byId.values()].sort((a,b) => a.appointment_date.localeCompare(b.appointment_date) || a.start_time.localeCompare(b.start_time));
 }

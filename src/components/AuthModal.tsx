@@ -1,3 +1,4 @@
+import {canonicalPhone} from '../utils/phone';
 import React, { useState } from 'react';
 import {
   User,
@@ -30,6 +31,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 }) => {
   const { salonInfo: SALON_INFO } = useTenant();
   const { tenantId } = useTenant();
+  const [challenge,setChallenge]=useState('');
+  const [code,setCode]=useState('');
+  const [phoneVerified,setPhoneVerified]=useState(false);
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
@@ -48,12 +52,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     const cleanPhone = phone.replace(/\D/g, '');
     const trimmedName = name.trim();
 
-    if (!trimmedName) {
+    if (trimmedName.split(/\s+/).length<2) {
       setError('נא להזין שם מלא');
       return;
     }
 
-    if (cleanPhone.length < 9) {
+    if (!/^972[2-9]\d{7,8}$/.test(canonicalPhone(phone))) {
       setError('נא להזין מספר טלפון תקין (לפחות 9-10 ספרות)');
       return;
     }
@@ -82,6 +86,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     };
 
     try {
+      if(!phoneVerified){
+        const access=localStorage.getItem('customer_access__'+tenantId);
+        const checked=access ? await tenantApi('/api/customer/access/check',{phone,customerAccess:access},tenantId,{auth:'none'}) : {verified:false};
+        if(!checked.verified){
+          if(!challenge){const sent=await tenantApi('/api/customer/recovery/start',{phone},tenantId,{auth:'none'});setChallenge(sent.challenge);setIsSubmitting(false);return;}
+          const verified=await tenantApi('/api/customer/recovery/verify',{phone,challenge,code},tenantId,{auth:'none'});
+          localStorage.setItem('customer_access__'+tenantId,verified.customerAccess);
+        }
+        setPhoneVerified(true);
+      }
       await tenantApi('/api/customer/register', {
         full_name: trimmedName,
         phone: phone.trim(),
@@ -96,6 +110,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setIsSubmitting(false);
     onLogin(session);
+    window.dispatchEvent(new Event('appointments-changed'));
+    setChallenge('');setCode('');setPhoneVerified(false);
     if (onClose) onClose();
   };
 
@@ -174,7 +190,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   required
                   placeholder="050-1234567"
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  disabled={!!challenge}
+                  onChange={(e) => {setPhone(e.target.value);setPhoneVerified(false);}}
                   dir="ltr"
                   className="w-full pl-4 pr-11 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:border-purple-500 focus:bg-white focus:ring-2 focus:ring-purple-500/20 outline-none text-sm font-medium text-slate-900 placeholder-slate-400 text-right transition"
                 />
@@ -182,6 +199,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
             </div>
 
+            {challenge&&<div className="space-y-2 rounded-xl border border-purple-200 bg-purple-50 p-3"><p className="text-xs">שלחנו קוד SMS למספר שלכם. אימות חד־פעמי בדפדפן הזה יאפשר לראות את כל התורים שנקבעו גם ממכשיר אחר.</p><label htmlFor="auth-sms-code" className="text-xs font-bold">קוד SMS</label><input id="auth-sms-code" inputMode="numeric" autoComplete="one-time-code" required pattern="[0-9]{6}" maxLength={6} value={code} onChange={e=>setCode(e.target.value)} className="w-full border rounded-xl p-3"/><button type="button" className="text-xs underline" onClick={()=>{setChallenge('');setCode('');}}>שינוי מספר / שליחת קוד מחדש</button></div>}
             {/* Customer Terms & Signature */}
             <div className="space-y-3 pt-1 text-right">
               <div className="p-3 bg-purple-50/70 rounded-2xl border border-purple-200/90 text-xs space-y-1.5 text-slate-700">
@@ -281,7 +299,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 disabled={isSubmitting}
                 className="w-full min-h-[48px] py-3 px-4 bg-slate-950 hover:bg-black text-white rounded-2xl text-sm font-black transition flex items-center justify-center gap-2 cursor-pointer shadow-md active:scale-[0.99] disabled:opacity-50"
               >
-                <span>{isSubmitting ? 'רושם למערכת...' : 'הרשמה וכניסה למערכת'}</span>
+                <span>{isSubmitting ? 'נא להמתין…' : challenge ? 'אימות קוד וכניסה לתורים שלי' : 'הרשמה וכניסה למערכת'}</span>
                 <ArrowLeft className="w-4 h-4 text-slate-300" />
               </button>
             </div>

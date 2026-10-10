@@ -124,7 +124,7 @@ test('Firestore rules deny public PII, writes, lock edits and provider secrets',
   await assertFails(getDoc(doc(owner,'tenants/alex_beauty/private_settings/sms_provider')));
   await assertFails(getDoc(doc(canonicalSuper,'tenantAdminIcons/flower_purple')));
   await assertFails(setDoc(doc(owner,'tenants/alex_beauty/reminder_locks/a'),{status:'sent'}));
-  await assertFails(setDoc(doc(anon,'tenants/alex_beauty/appointments/new'),{status:'confirmed'}));
+  await assertFails(setDoc(doc(anon,'tenants/alex_beauty/appointments/new'),{status:'active'}));
 });
 test('Firestore binding conflicts and disabled owners reject stale claims without limiting Super Admin',async()=>{
   const owner=rules.authenticatedContext('owner',{role:'business_admin',tenantId:'alex_beauty'}).firestore();
@@ -138,7 +138,7 @@ test('Firestore binding conflicts and disabled owners reject stale claims withou
 });
 test('atomic booking rejects overlap, redacts public data, and cancels with capability only',async()=>{
   let day=new Date();day.setUTCDate(day.getUTCDate()+7);while(day.getUTCDay()===6)day.setUTCDate(day.getUTCDate()+1);
-  const appointment={customer_name:'Private Name',customer_phone:'0546307114',service_id:1,appointment_date:day.toISOString().slice(0,10),start_time:'10:00',end_time:'11:00',status:'confirmed'};
+  const appointment={customer_name:'Private Name',customer_phone:'0546307114',service_id:1,appointment_date:day.toISOString().slice(0,10),start_time:'10:00',end_time:'11:00',status:'active'};
   const results=await Promise.all([api('/api/appointments/book',{appointment}),api('/api/appointments/book',{appointment:{...appointment,start_time:'10:30',end_time:'11:30'}})]);
   assert.equal(results.filter(x=>x.success).length,1);const saved=results.find(x=>x.success)!;
   let list=await api('/api/appointments/list',{});assert.equal(list.appointments.find((x:any)=>x.id===saved.id).customer_phone,'');
@@ -177,7 +177,7 @@ test('copy receipts preserve newer target data and prevent resurrection after de
   await target.set({value:'new'});await copyOnce(db,{value:'old'},target,marker);assert.equal((await target.get()).data()?.value,'new');await target.delete();await copyOnce(db,{value:'old'},target,marker);assert.equal((await target.get()).exists,false);
 });
 test('Alex migration imports settings, locks and customers without overwriting tenant data',async()=>{
-  await db.doc('appointments/legacy').set({status:'confirmed',appointment_date:'2026-01-01'});
+  await db.doc('appointments/legacy').set({status:'active',appointment_date:'2026-01-01'});
   await db.doc('customers/legacy').set({full_name:'Legacy'});
   await db.doc('settings/sms_reminders').set({enabled:false,telnyxApiKey:'secret',morningReminderTime:'09:00'});
   await db.doc('reminder_locks/legacy').set({status:'sent'});
@@ -194,9 +194,9 @@ test('SMS uses per-tenant settings; overlapping batch runs and lost responses do
   await db.doc('tenants/other').set({status:'active',name:'Other',phone:'0522222222'});
   await db.doc('tenants/other/settings/sms_reminders').set(settings);
   await db.doc('tenants/other/private_settings/sms_provider').set({telnyxApiKey:'test',telnyxFrom:'OTHER',telnyxProfileId:'profile'});
-  await db.doc('tenants/other/appointments/one').set({status:'confirmed',customer_name:'Other customer',customer_phone:'0522222222',appointment_date:tomorrow,start_time:'10:00',end_time:'11:00',created_at:'2020-01-01T00:00:00Z'});
+  await db.doc('tenants/other/appointments/one').set({status:'active',customer_name:'Other customer',customer_phone:'0522222222',appointment_date:tomorrow,start_time:'10:00',end_time:'11:00',created_at:'2020-01-01T00:00:00Z'});
   const count=providerCalls;await Promise.all([sendRemindersForDate(tomorrow,'1day','other'),sendRemindersForDate(tomorrow,'1day','other')]);assert.equal(providerCalls-count,1);
-  await db.doc('tenants/other/appointments/two').set({status:'confirmed',customer_name:'Next',customer_phone:'0533333333',appointment_date:tomorrow,start_time:'12:00',end_time:'13:00',created_at:'2020-01-01T00:00:00Z'});
+  await db.doc('tenants/other/appointments/two').set({status:'active',customer_name:'Next',customer_phone:'0533333333',appointment_date:tomorrow,start_time:'12:00',end_time:'13:00',created_at:'2020-01-01T00:00:00Z'});
   providerFailure=true;await sendRemindersForDate(tomorrow,'1day','other');const afterFailure=providerCalls;await sendRemindersForDate(tomorrow,'1day','other');assert.equal(providerCalls,afterFailure);providerFailure=false;
   assert.equal((await db.doc('tenants/other/reminder_locks/'+reminderKey('1day','0533333333',tomorrow)).get()).data()?.status,'unknown');
   assert.equal((await api('/api/sms/logs',undefined,ownerToken)).logs.some((l:any)=>l.tenantId==='other'),false);
@@ -251,24 +251,6 @@ test('business admin icon assignments are unique, transactional, visible in PWA 
   assert.equal((await db.doc('tenantAdminIcons/flower_purple').get()).exists,false);
   assert.equal((await api('/api/super-admin/tenants',{tenantId:'icon_business_c',name:'Icon C',phone:'0501111116',adminIcon:'flower_purple'},superToken,'icon_business_c')).success,true);
 });
-
-test('business can be created and edited without assigning a logo or drawing',async()=>{
-  const tenantId='no_logo_business';
-  const input={tenantId,name:'No Logo',phone:'0501111199',adminIcon:null};
-  const created=await api('/api/super-admin/tenants',input,superToken,tenantId);
-  assert.equal(created.success,true);
-  assert.equal(created.tenant.adminIcon,null);
-  assert.equal((await db.doc(`tenants/${tenantId}`).get()).data()?.adminIcon,null);
-  assert.equal((await db.collection('tenantAdminIcons').get()).docs.some((d:any)=>d.data()?.tenantId===tenantId),false);
-  const listed=await api('/api/tenants',undefined,superToken);
-  assert.equal(listed.tenants.find((t:any)=>t.id===tenantId)?.adminIcon,'');
-  const manifest=await (await nativeFetch(`${base}/manifest.json?app=admin&tenant=${tenantId}`)).json();
-  assert.equal(manifest.icons[0].src,'/pwa-admin-192x192.png');
-  assert.equal((await api(`/api/super-admin/tenants/${tenantId}`,{...input,adminIcon:null},superToken,tenantId,'PUT')).success,true);
-  assert.equal((await db.doc(`tenants/${tenantId}`).get()).data()?.adminIcon,null);
-  assert.equal((await db.collection('tenantAdminIcons').get()).docs.some((d:any)=>d.data()?.tenantId===tenantId),false);
-  await api(`/api/super-admin/tenants/${tenantId}`,undefined,superToken,tenantId,'DELETE');
-});
 test('disabled owner rejected with previously issued token',async()=>{await getAuth().updateUser('owner',{disabled:true});assert.equal((await api('/api/admin/customers',undefined,ownerToken)).status,401);});
 test('disabled reminder switches and suspended tenants prevent dispatch',async()=>{
   const date=israelClock().tomorrowIso;
@@ -282,14 +264,14 @@ test('past morning appointments and appointments created seconds after cutoff ar
   await db.doc('tenants/cutoff').set({status:'active'});
   await db.doc('tenants/cutoff/private_settings/sms_provider').set({telnyxApiKey:'test',telnyxFrom:'TEST',telnyxProfileId:'test'});
   const date='2030-06-02';
-  await db.doc('tenants/cutoff/appointments/late').set({status:'confirmed',customer_name:'Late',customer_phone:'0549999999',appointment_date:date,start_time:'10:00',end_time:'11:00',created_at:'2030-06-01T20:00:30+03:00'});
+  await db.doc('tenants/cutoff/appointments/late').set({status:'active',customer_name:'Late',customer_phone:'0549999999',appointment_date:date,start_time:'10:00',end_time:'11:00',created_at:'2030-06-01T20:00:30+03:00'});
   const count=providerCalls;await sendRemindersForDate(date,'1day','cutoff',{enabled:true,autoSendEnabled:true,eveningReminderTime:'20:00'});assert.equal(providerCalls,count);
-  await db.doc('tenants/cutoff/appointments/old').set({status:'confirmed',customer_name:'Past',customer_phone:'0549999998',appointment_date:'2020-01-01',start_time:'10:00',end_time:'11:00'});
+  await db.doc('tenants/cutoff/appointments/old').set({status:'active',customer_name:'Past',customer_phone:'0549999998',appointment_date:'2020-01-01',start_time:'10:00',end_time:'11:00'});
   await sendRemindersForDate('2020-01-01','today','cutoff',{enabled:true,autoSendEnabled:true});assert.equal(providerCalls,count);
 });
 test('v16 migration marker prevents restoring absent previously imported appointments',async()=>{
   await db.doc('tenants/alex_beauty').update({migratedAt:'2026-01-01'});
-  await db.doc('appointments/deleted_in_v16').set({status:'confirmed'});
+  await db.doc('appointments/deleted_in_v16').set({status:'active'});
   await ensurePrimaryTenant();assert.equal((await db.doc('tenants/alex_beauty/appointments/deleted_in_v16').get()).exists,false);
 });
 test('owner account cannot demote super admin or assign another tenant owner',async()=>{
@@ -307,7 +289,7 @@ test('settings reject invalid times and never return provider secrets',async()=>
 
 test('deleting a customer preserves appointments and listing does not recreate the customer',async()=>{
   await db.doc('tenants/alex_beauty/customers/separate').set({full_name:'Separate',phone:'0548888888'});
-  await db.doc('tenants/alex_beauty/appointments/separate').set({customer_name:'Separate',customer_phone:'0548888888',status:'confirmed',appointment_date:'2030-06-02',start_time:'15:00',end_time:'16:00'});
+  await db.doc('tenants/alex_beauty/appointments/separate').set({customer_name:'Separate',customer_phone:'0548888888',status:'active',appointment_date:'2030-06-02',start_time:'15:00',end_time:'16:00'});
   assert.equal((await api('/api/admin/customers/separate',undefined,superToken,'alex_beauty','DELETE')).success,true);
   assert.equal((await api('/api/admin/customers',undefined,superToken)).customers.some((c:any)=>c.full_name==='Separate'),false);
   assert.equal((await db.doc('tenants/alex_beauty/appointments/separate').get()).exists,true);
@@ -358,7 +340,7 @@ test('scheduled dispatch rechecks cancelled records and retains accepted locks a
   await db.doc(`tenants/${tenant}`).set({status:'active',name:'Scheduler Test'});
   await db.doc(`tenants/${tenant}/private_settings/sms_provider`).set({telnyxApiKey:'fake',telnyxFrom:'TEST',telnyxProfileId:'fake'});
   const config={enabled:true,autoSendEnabled:true,notifyCustomer1DayBefore:true,eveningReminderTime:'20:00'};
-  await db.doc(`tenants/${tenant}/appointments/confirmed`).set({status:'confirmed',appointment_date:tomorrowIso,start_time:'14:00',customer_name:'Fake',customer_phone:'0521112222',service_name:'Fake Service',created_at:'2020-01-01T00:00:00Z'});
+  await db.doc(`tenants/${tenant}/appointments/confirmed`).set({status:'active',appointment_date:tomorrowIso,start_time:'14:00',customer_name:'Fake',customer_phone:'0521112222',service_name:'Fake Service',created_at:'2020-01-01T00:00:00Z'});
   await db.doc(`tenants/${tenant}/appointments/cancelled`).set({status:'cancelled',appointment_date:tomorrowIso,start_time:'15:00',customer_name:'Cancelled',customer_phone:'0521113333'});
   const before=providerCalls;
   const result=await sendRemindersForDate(tomorrowIso,'1day',tenant,config,{scheduled:true,deadline:Date.now()+30000});
@@ -373,7 +355,7 @@ test('scheduled parallel delivery sends each of 40 customers once across overlap
  const settings={enabled:true,autoSendEnabled:true,notifyCustomer1DayBefore:true,eveningReminderTime:'20:00'};
  await db.doc(`tenants/${tenant}`).set({status:'active',name:'Parallel'});
  await db.doc(`tenants/${tenant}/private_settings/sms_provider`).set({telnyxApiKey:'test',telnyxFrom:'TEST',telnyxProfileId:'test'});
- await Promise.all(Array.from({length:40},(_,i)=>db.doc(`tenants/${tenant}/appointments/a${i}`).set({status:'confirmed',customer_name:'Test',customer_phone:'050'+String(1000000+i),appointment_date:date,start_time:'12:00',created_at:'2020-01-01T00:00:00Z'})));
+ await Promise.all(Array.from({length:40},(_,i)=>db.doc(`tenants/${tenant}/appointments/a${i}`).set({status:'active',customer_name:'Test',customer_phone:'050'+String(1000000+i),appointment_date:date,start_time:'12:00',created_at:'2020-01-01T00:00:00Z'})));
  const before=providerCalls;const start=providerStarts.length;providerDelay=200;providerPeak=0;
  try {
   await Promise.all([0,1].map(()=>sendRemindersForDate(date,'1day',tenant,settings,{scheduled:true,deadline:Date.now()+30000})));

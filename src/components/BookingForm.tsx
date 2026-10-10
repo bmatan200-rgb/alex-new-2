@@ -135,7 +135,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
     const name = customerName.trim();
     const phone = customerPhone.trim();
 
-    if (!name) {
+    if (name.split(/\s+/).length < 2) {
       setFormError('נא להזין שם מלא');
       return;
     }
@@ -168,7 +168,7 @@ export const BookingForm: React.FC<BookingFormProps> = ({
         appointment_date: selectedDate,
         start_time: selectedSlot,
         end_time: endTime,
-        status: 'confirmed',
+        status: 'active',
         notes: notes.trim() || undefined,
         created_at: new Date().toISOString(),
       };

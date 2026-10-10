@@ -1,3 +1,4 @@
+import {availableInstallPrompt,clearInstallPrompt,installBrowser} from '../utils/pwaInstall';
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Download, Home, Share2, X } from 'lucide-react';
@@ -56,27 +57,28 @@ export function AddToHomePrompt({ tenantId, tenantName, primaryColor }: AddToHom
   };
 
   useEffect(() => {
-    setDeferredPrompt(null);
+    setDeferredPrompt(availableInstallPrompt());
     // Let management pages use the browser's own install action. Their installs
     // must never mark the customer app as installed or reuse a customer event.
     if (!customerHome) return;
     const onBeforeInstall = (event: Event) => {
-      event.preventDefault();
-      setDeferredPrompt(event as BeforeInstallPromptEvent);
+      setDeferredPrompt(availableInstallPrompt());
     };
     const onInstalled = () => {
-      setDeferredPrompt(null);
+      clearInstallPrompt();setDeferredPrompt(null);
       markInstalled();
     };
     const standalone = window.matchMedia('(display-mode: standalone)');
     const onDisplayModeChange = () => { if (isInstalled()) onInstalled(); };
-    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    window.addEventListener('pwa-install-ready', onBeforeInstall);
     window.addEventListener('appinstalled', onInstalled);
-    standalone.addEventListener?.('change', onDisplayModeChange);
+    if(standalone.addEventListener) standalone.addEventListener('change',onDisplayModeChange);
+    else standalone.addListener?.(onDisplayModeChange);
     return () => {
-      window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('pwa-install-ready', onBeforeInstall);
       window.removeEventListener('appinstalled', onInstalled);
-      standalone.removeEventListener?.('change', onDisplayModeChange);
+      if(standalone.removeEventListener) standalone.removeEventListener('change',onDisplayModeChange);
+      else standalone.removeListener?.(onDisplayModeChange);
     };
   }, [customerHome, installedKey]);
 
@@ -94,6 +96,7 @@ export function AddToHomePrompt({ tenantId, tenantName, primaryColor }: AddToHom
       return;
     }
     try {
+      clearInstallPrompt();
       await deferredPrompt.prompt();
       const choice = await deferredPrompt.userChoice;
       setDeferredPrompt(null);
@@ -110,16 +113,16 @@ export function AddToHomePrompt({ tenantId, tenantName, primaryColor }: AddToHom
 
   if (!open || !customerHome || isInstalled()) return null;
 
-  const isIPhoneOrIPad = /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const browser=installBrowser(navigator.userAgent,navigator.platform,navigator.maxTouchPoints);
+  const isIPhoneOrIPad=browser==='ios';
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-slate-950/45 p-3 sm:p-5" dir="rtl">
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-slate-950/45 p-3 sm:p-5 overflow-y-auto" dir="rtl">
       <section
         role="dialog"
         aria-modal="true"
         aria-labelledby="add-to-home-title"
-        className="relative w-full max-w-md overflow-hidden rounded-[28px] border border-white/70 bg-white p-5 shadow-2xl sm:p-6"
+        className="relative w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-[28px] border border-white/70 bg-white p-5 shadow-2xl sm:p-6"
       >
         <button
           type="button"
@@ -153,7 +156,7 @@ export function AddToHomePrompt({ tenantId, tenantName, primaryColor }: AddToHom
             ) : (
               <>
                 <div className="mb-1 flex items-center gap-2 font-bold text-slate-900"><Download className="h-4 w-4" /> דרך תפריט הדפדפן</div>
-                פתחו את תפריט הדפדפן ⋮ ובחרו <strong>התקנת אפליקציה</strong> או <strong>הוסף למסך הבית</strong>.
+                {browser==='samsung'?<ol className="list-decimal pr-5 space-y-1"><li>בדפדפן Samsung Internet פתחו את התפריט ☰.</li><li>בחרו <strong>הוסף דף ל־</strong>, ואז <strong>מסך הבית</strong>, או <strong>התקנת אפליקציה</strong> אם האפשרות מופיעה.</li><li>אשרו את ההוספה.</li></ol>:browser==='in-app'?<p>פתחו את הקישור בדפדפן Chrome או Samsung Internet דרך תפריט העמוד, ואז הוסיפו אותו למסך הבית.</p>:browser==='android'?<ol className="list-decimal pr-5 space-y-1"><li>ב־Chrome פתחו את התפריט ⋮ למעלה.</li><li>בחרו <strong>הוסף למסך הבית</strong> או <strong>התקנת אפליקציה</strong>.</li><li>אשרו את ההתקנה או יצירת הקיצור.</li></ol>:<p>ב־Chrome או Edge במחשב לחצו על סמל ההתקנה בשורת הכתובת, או פתחו את תפריט הדפדפן ובחרו התקנה / שמירה ושיתוף / התקנת הדף כאפליקציה.</p>}
               </>
             )}
           </div>

@@ -14,7 +14,7 @@ const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
 const manifestRoute = server.slice(server.indexOf("app.get('/manifest.json'"), server.indexOf("app.param(['tenantId','id']"));
 const serviceWorker = readFileSync(new URL('../public/service-worker.js', import.meta.url), 'utf8');
 
-assert.equal(pkg.version, '41.0.0');
+assert.equal(pkg.version, '43.0.0');
 assert.match(server, /const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail\.com'/);
 assert.match(server, /if \(email === PRIMARY_SUPER_ADMIN_EMAIL\) \{/);
 assert.doesNotMatch(server, /email === PRIMARY_SUPER_ADMIN_EMAIL && currentUser\.emailVerified/);
@@ -47,11 +47,11 @@ assert.match(installPrompt, /localStorage\.setItem\(optOutKey, '1'\)/, 'permanen
 assert.match(installPrompt, /pwa-install-complete:\$\{tenantId\}/, 'completed installation is not business-scoped');
 assert.doesNotMatch(installPrompt, /הוספתי למסך הבית/, 'manual confirmation button must not be shown');
 assert.match(installPrompt, /type="checkbox"/, 'dismissal must use a checkbox');
-assert.match(installPrompt, /beforeinstallprompt/);
+assert.match(readFileSync(new URL('../src/utils/pwaInstall.ts',import.meta.url),'utf8'), /beforeinstallprompt/);
 assert.match(installPrompt, /standalone\?: boolean/);
 assert.match(installPrompt, /Share.* באייפון|באייפון או באייפד/);
 assert.match(main, /serviceWorker\.register\('\/service-worker\.js'/);
-assert.match(manifestRoute, /buildPwaManifest\(role, tenantId, tenantName, adminIcon, isPlatformHost\(/);
+assert.match(manifestRoute, /buildPwaManifest\(role, tenantId, tenantName, adminIcon, appShortName\)/);
 assert.match(manifestRoute, /role === 'super-admin'/);
 assert.match(manifestRoute, /adminIcon = await ensureTenantAdminIcon\(tenantId\)/, 'customer and admin manifests must share the tenant icon');
 assert.match(server, /tenant-admin-icons\/:iconId\.svg/);
@@ -76,4 +76,4 @@ assert.doesNotMatch(torFlow, /executeBookingSubmission\(cleanName, cleanPhone, i
 
 assert.match(readFileSync(new URL('../src/components/Header.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
 assert.match(readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
-console.log('V41 source verification passed');
+console.log('V43 source verification passed');

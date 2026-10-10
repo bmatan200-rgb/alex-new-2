@@ -1,3 +1,4 @@
+import { canonicalPhone } from '../utils/phone';
 import { CALENDAR_BLOCK_LABEL } from '../utils/calendarBlocks';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
@@ -146,10 +147,10 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
 
   const userActiveBookingsCount = useMemo(() => {
     const rawPhone = customerPhone || currentUser?.phone || '';
-    const cleanPhone = rawPhone.replace(/\D/g, '');
+    const cleanPhone = canonicalPhone(rawPhone);
     if (!cleanPhone || cleanPhone.length < 7) return 0;
     return appointments.filter(
-      (a) => a.status === 'confirmed' && !isAppointmentInPast(a) && a.customer_phone.replace(/\D/g, '') === cleanPhone
+      (a) => a.status === 'active' && !a.archivedAt && !isAppointmentInPast(a) && canonicalPhone(a.customer_phone) === cleanPhone
     ).length;
   }, [customerPhone, currentUser, appointments]);
 
@@ -310,7 +311,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         start_time: selectedSlot,
         end_time: endTimeStr,
         price: selectedService.price,
-        status: 'confirmed',
+        status: 'active',
         created_at: new Date().toISOString(),
         notes: notes.trim() || undefined,
       };
@@ -339,7 +340,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
         setErrorMessage('השעה הזו כבר נתפסה, נא לבחור שעה אחרת');
         setStep('slot'); // חזרה לבחירת שעה
       } else {
-        setErrorMessage('אירעה שגיאה בקביעת התור. אנא נסו שנית.');
+        setErrorMessage(err.message || 'אירעה שגיאה בקביעת התור. אנא נסו שנית.');
       }
       setIsSubmitting(false);
     }
@@ -355,14 +356,14 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
     }
 
     const cleanName = customerName.trim();
-    const cleanPhone = customerPhone.replace(/\D/g, '');
+    const cleanPhone = canonicalPhone(customerPhone);
 
-    if (!cleanName || cleanName.length < 2) {
-      setErrorMessage('נא להזין שם מלא תקין (לפחות 2 אותיות)');
+    if (!cleanName || cleanName.split(/\s+/).length < 2) {
+      setErrorMessage('נא להזין שם מלא תקין (שם פרטי ושם משפחה)');
       return;
     }
 
-    if (!cleanPhone || cleanPhone.length < 9 || cleanPhone.length > 11) {
+    if (!cleanPhone || cleanPhone.length < 9 || cleanPhone.length > 12) {
       setErrorMessage('נא להזין מספר טלפון נייד תקין (9-11 ספרות)');
       return;
     }
@@ -372,9 +373,9 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
 
     const existingActive = appointments.filter(
       (a) =>
-        a.status === 'confirmed' &&
+        a.status === 'active' && !a.archivedAt &&
         !isAppointmentInPast(a) &&
-        a.customer_phone.replace(/\D/g, '') === cleanPhone
+        canonicalPhone(a.customer_phone) === cleanPhone
     );
 
     // הגבלה של עד 3 תורים עצמאיים במקביל (מעבר ל-3 תורים יש לפנות למנהלת אלכס ביטון)
@@ -1106,7 +1107,7 @@ export const TorModalFlow: React.FC<TorModalFlowProps> = ({
           setShowExistingChoiceModal(false);
           setConfirmedAdditionalBooking(true);
           const cleanName = customerName.trim();
-          const cleanPhone = customerPhone.replace(/\D/g, '');
+          const cleanPhone = canonicalPhone(customerPhone);
           executeBookingSubmission(cleanName, cleanPhone);
         }}
         onCancelExisting={(appt) => {

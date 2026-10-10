@@ -1,3 +1,4 @@
+import { CalendarInspector } from './CalendarInspector';
 import { isCalendarBlock, CALENDAR_BLOCK_LABEL } from '../utils/calendarBlocks';
 import React, { useState, useEffect } from 'react';
 import {
@@ -79,7 +80,7 @@ interface AdminDashboardProps {
   appointments: Appointment[];
   services: Service[];
   onAddAppointment: (appointment: Omit<Appointment, 'id'>) => void;
-  onCancelAppointment: (id: number | string) => void;
+  onCancelAppointment: (id: number | string, reason?:string) => void | Promise<void>;
   onDeleteAppointment: (id: number | string) => void;
   onLogout?: () => void;
   onUpdateServices?: (services: Service[]) => void;
@@ -88,7 +89,7 @@ interface AdminDashboardProps {
 }
 
 const STATUS_LABELS: Record<string, { text: string; className: string }> = {
-  confirmed: {
+  active: {
     text: 'מאושר',
     className: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
   },
@@ -148,6 +149,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
   const [whatsAppModalTab, setWhatsAppModalTab] = useState<'how_it_works' | 'templates' | 'automation'>('how_it_works');
   const [isDurationModalOpen, setIsDurationModalOpen] = useState(false);
+  const [cancellationReason,setCancellationReason]=useState('');
+  const [cancellationBusy,setCancellationBusy]=useState(false);
   const [appointmentToCancel, setAppointmentToCancel] = useState<Appointment | null>(null);
   const [sendingApptId, setSendingApptId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -307,7 +310,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const clientApptsOnBlockDate = appointments.filter(
     (a) =>
       a.appointment_date === blockDate &&
-      a.status === 'confirmed' &&
+      a.status === 'active' && !a.archivedAt &&
       !isBlockedAppointment(a)
   );
 
@@ -353,7 +356,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       appointment_date: blockDate,
       start_time: start,
       end_time: end,
-      status: 'confirmed',
+      status: 'active',
       notes: blockReason.trim() || undefined,
       created_at: new Date().toISOString(),
     };
@@ -385,7 +388,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       appointment_date: targetDate,
       start_time: slotTime,
       end_time: endTime,
-      status: 'confirmed',
+      status: 'active',
       notes: 'נחסם ישירות מלוח הניהול',
       created_at: new Date().toISOString(),
     };
@@ -419,7 +422,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       appointment_date: manualDate,
       start_time: manualTime,
       end_time: endTime,
-      status: 'confirmed',
+      status: 'active',
       notes: manualNotes.trim() || undefined,
       created_at: new Date().toISOString(),
     };
@@ -449,7 +452,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
 
   const activeDayAppointments = dayAppointments.filter(
-    (a) => a.status === 'confirmed' && !isBlockedAppointment(a)
+    (a) => a.status === 'active' && !a.archivedAt && !isBlockedAppointment(a)
   );
 
   const dailyRevenue = activeDayAppointments.reduce((sum, a) => {
@@ -474,12 +477,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         }
       }
 
-      if (filter === 'blocked') return isBlock && app.status === 'confirmed';
-      if (filter === 'today') return app.appointment_date === todayIso && app.status === 'confirmed';
+      if (filter === 'blocked') return isBlock && app.status === 'active' && !app.archivedAt;
+      if (filter === 'today') return app.appointment_date === todayIso && app.status === 'active' && !app.archivedAt;
       if (filter === 'upcoming') {
         return (
           app.appointment_date >= todayIso &&
-          app.status === 'confirmed' &&
+          app.status === 'active' && !app.archivedAt &&
           !isBlock
         );
       }
@@ -543,11 +546,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       <div className="hidden grid-cols-2 xl:grid-cols-4 gap-3">
         <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
           <div className="text-[11px] font-bold text-slate-500">תורים היום</div>
-          <div className="text-2xl font-black text-slate-900 mt-1">{appointments.filter(a => a.appointment_date === todayIso && a.status === 'confirmed').length}</div>
+          <div className="text-2xl font-black text-slate-900 mt-1">{appointments.filter(a => a.appointment_date === todayIso && a.status === 'active' && !a.archivedAt).length}</div>
         </div>
         <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
           <div className="text-[11px] font-bold text-slate-500">תורים קרובים</div>
-          <div className="text-2xl font-black text-slate-900 mt-1">{appointments.filter(a => a.appointment_date >= todayIso && a.status === 'confirmed').length}</div>
+          <div className="text-2xl font-black text-slate-900 mt-1">{appointments.filter(a => a.appointment_date >= todayIso && a.status === 'active' && !a.archivedAt).length}</div>
         </div>
         <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
           <div className="text-[11px] font-bold text-slate-500">שירותים פעילים</div>
@@ -659,7 +662,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               adminTab === 'calendar' ? 'bg-purple-600 text-white' : 'bg-slate-300 text-slate-700'
             }`}
           >
-            {appointments.filter((a) => a.appointment_date >= todayIso && a.status === 'confirmed').length}
+            {appointments.filter((a) => a.appointment_date >= todayIso && a.status === 'active' && !a.archivedAt).length}
           </span>
         </button>
 
@@ -719,7 +722,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             {dailySlotsOccupancy.map((slot) => {
               const appt = slot.appointment;
               const isBlock = appt ? isBlockedAppointment(appt) : false;
-              const isBusy = !!appt && appt.status === 'confirmed';
+              const isBusy = !!appt && appt.status === 'active';
               return (
                 <div key={slot.time} className="grid grid-cols-[64px_minmax(0,1fr)] gap-3 items-stretch">
                   <div className="text-xs font-black text-slate-500 pt-4 text-left" dir="ltr">{slot.time}</div>
@@ -739,7 +742,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <button
                             type="button"
                             onClick={() => {
-                              onCancelAppointment(appt.id);
+                              onCancelAppointment(appt.id,'שחרור חסימת יומן');
                               showToast('תפיסת התור שוחררה והשעה חזרה להיות פנויה', 'success');
                             }}
                             className="h-9 px-3 rounded-xl bg-purple-600 hover:bg-purple-700 text-white border border-purple-600 text-xs font-black flex items-center gap-1.5"
@@ -749,7 +752,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             שחרור תפיסה
                           </button>
                         ) : (
-                          <button type="button" onClick={() => setAppointmentToCancel(appt)} className="h-9 px-3 rounded-xl bg-white border border-red-200 text-red-600 text-xs font-bold">ביטול</button>
+                          <button type="button" onClick={() => {setCancellationReason(''); setAppointmentToCancel(appt);}} className="h-9 px-3 rounded-xl bg-white border border-red-200 text-red-600 text-xs font-bold">ביטול</button>
                         )}
                       </div>
                     </div>
@@ -878,6 +881,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         }}
       />
 
+      {adminTab==='calendar' && <CalendarInspector appointments={appointments} date={selectedDate} tenantId={tenant.id} onSelectDate={setSelectedDate} />}
+
       {/* Admin Interactive Client Booking Modal */}
       <AdminBookingModal
         isOpen={isAdminBookingOpen}
@@ -886,7 +891,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         appointments={appointments}
         scheduleSettings={scheduleSettings}
         onAddAppointment={onAddAppointment}
-        onReleaseBlockedAppointment={(appointmentId) => onCancelAppointment(appointmentId)}
+        onReleaseBlockedAppointment={(appointmentId) => onCancelAppointment(appointmentId,'שחרור חסימת יומן')}
         initialDate={adminBookingPrefill.date}
         initialSlot={adminBookingPrefill.slot}
         initialCustomerName={adminBookingPrefill.customerName}
@@ -950,37 +955,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-xs text-amber-900 flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
               <p>
-                ביטול התור ימחק את התור מהיומן וישחרר את השעה <strong>{appointmentToCancel.start_time}</strong> באופן מיידי לקביעה מחודשת.
+                ביטול התור יישמר ביומן הביקורת וישחרר את השעה <strong>{appointmentToCancel.start_time}</strong> באופן מיידי לקביעה מחודשת.
               </p>
             </div>
 
+            <label className="block text-sm font-bold">סיבת הביטול (חובה)<textarea required value={cancellationReason} onChange={e=>setCancellationReason(e.target.value)} maxLength={2000} className="block border rounded-xl p-3 w-full mt-2" /></label>
             {/* Actions */}
             <div className="space-y-2 pt-1">
               <button
                 type="button"
-                onClick={() => {
-                  onCancelAppointment(appointmentToCancel.id);
-                  showToast(`התור של ${appointmentToCancel.customer_name} בוטל ונמחק בהצלחה והשעה ${appointmentToCancel.start_time} שוחררה לקביעה! 🌸`, 'success');
-                  setAppointmentToCancel(null);
+                onClick={async () => {
+                  if(!cancellationReason.trim()) return;
+                  setCancellationBusy(true);
+                  try { await onCancelAppointment(appointmentToCancel.id,cancellationReason); setAppointmentToCancel(null); }
+                  catch(e:any) { showToast(e.message,'error'); }
+                  finally {setCancellationBusy(false);}
                 }}
-                className="w-full py-3 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl text-xs sm:text-sm transition flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-red-600/20"
+                disabled={cancellationBusy || !cancellationReason.trim()}
+                className="w-full py-3 px-4 disabled:opacity-40 bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl text-xs sm:text-sm transition flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-red-600/20"
               >
                 <XCircle className="w-4 h-4" />
-                <span>כן, ביטול ומחיקת התור ושחרור השעה ביומן</span>
+                <span>ביטול מתועד ושחרור השעה ביומן</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  onDeleteAppointment(appointmentToCancel.id);
-                  showToast(`התור של ${appointmentToCancel.customer_name} נמחק לצמיתות מהמערכת`, 'success');
-                  setAppointmentToCancel(null);
-                }}
-                className="w-full py-2 px-3 bg-white hover:bg-red-50 text-red-700 font-bold rounded-xl text-xs border border-red-200 transition flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>מחיקה מוחלטת של התור מהמערכת</span>
-              </button>
+
 
               <button
                 type="button"
@@ -1600,7 +1598,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               >
                 <span>עתידיים (מהקרוב לרחוק)</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'upcoming' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>
-                  {appointments.filter((a) => a.appointment_date >= todayIso && a.status === 'confirmed' && !isBlockedAppointment(a)).length}
+                  {appointments.filter((a) => a.appointment_date >= todayIso && a.status === 'active' && !a.archivedAt && !isBlockedAppointment(a)).length}
                 </span>
               </button>
 
@@ -1615,7 +1613,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               >
                 <span>היום</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'today' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>
-                  {appointments.filter((a) => a.appointment_date === todayIso && a.status === 'confirmed').length}
+                  {appointments.filter((a) => a.appointment_date === todayIso && a.status === 'active' && !a.archivedAt).length}
                 </span>
               </button>
 
@@ -1646,7 +1644,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <Lock className="w-3 h-3 text-purple-400" />
                 <span>חסומים</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${filter === 'blocked' ? 'bg-purple-950 text-purple-200' : 'bg-slate-200 text-slate-700'}`}>
-                  {appointments.filter((a) => isBlockedAppointment(a) && a.status === 'confirmed').length}
+                  {appointments.filter((a) => isBlockedAppointment(a) && a.status === 'active' && !a.archivedAt).length}
                 </span>
               </button>
 
@@ -1747,7 +1745,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               const isBlock = isBlockedAppointment(appt);
               const statusInfo = isBlock
                 ? { text: 'חסום ביומן', className: 'bg-purple-100 text-purple-900 border border-purple-300 font-bold' }
-                : STATUS_LABELS[appt.status] || STATUS_LABELS.confirmed;
+                : STATUS_LABELS[appt.status] || STATUS_LABELS.active;
               const isCancelled = appt.status === 'cancelled';
               const isToday = appt.appointment_date === todayIso && !isCancelled;
               const isTomorrow = appt.appointment_date === tomorrowIso && !isCancelled;
@@ -1880,7 +1878,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <button
                           type="button"
                           onClick={() => {
-                            onCancelAppointment(appt.id);
+                            onCancelAppointment(appt.id,'שחרור חסימת יומן');
                             showToast('החסימה שוחררה בהצלחה והשעה נפתחה להזמנות', 'success');
                           }}
                           className="text-xs px-3 py-1.5 rounded-xl font-bold transition cursor-pointer border flex items-center gap-1 bg-purple-100 text-purple-900 border-purple-300 hover:bg-purple-200"
@@ -1892,7 +1890,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <>
                           <button
                             type="button"
-                            onClick={() => setAppointmentToCancel(appt)}
+                            onClick={() => {setCancellationReason(''); setAppointmentToCancel(appt);}}
                             className="text-xs px-2.5 py-1.5 rounded-xl font-bold transition cursor-pointer border flex items-center gap-1 text-amber-800 bg-amber-50 border-amber-200 hover:bg-amber-100"
                             title="ביטול תור ושחרור השעה ביומן"
                           >

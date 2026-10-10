@@ -1,3 +1,4 @@
+import {canonicalPhone} from '../utils/phone';
 import { useTenant } from '../context/TenantContext';
 import React, { useState, useEffect } from 'react';
 import {
@@ -62,18 +63,18 @@ export const MyBookingModal: React.FC<MyBookingModalProps> = ({
 
   if (!isOpen) return null;
 
-  const cleanQuery = searchPhone.replace(/\D/g, '');
+  const cleanQuery = canonicalPhone(searchPhone);
 
   const matchedAppointments = hasSearched
     ? appointments.filter((app) => {
-        const cleanAppPhone = app.customer_phone.replace(/\D/g, '');
+        const cleanAppPhone = canonicalPhone(app.customer_phone);
         return cleanAppPhone.includes(cleanQuery) && cleanQuery.length >= 4;
       })
     : [];
 
   // 1. תורים עתידיים פעילים (שלא בוטלו וטרם עברו)
   const activeFutureAppointments = matchedAppointments.filter(
-    (app) => app.status === 'confirmed' && !isAppointmentInPast(app)
+    (app) => app.status === 'active' && !app.archivedAt && !isAppointmentInPast(app)
   );
 
   // 2. היסטוריית תורים שעברו או בוטלו

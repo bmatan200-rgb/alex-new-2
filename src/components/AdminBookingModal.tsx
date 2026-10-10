@@ -1,3 +1,4 @@
+import {canonicalPhone} from '../utils/phone';
 import { CALENDAR_BLOCK_LABEL, blocksForDay, releaseDayBlocks } from '../utils/calendarBlocks';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
@@ -426,7 +427,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
               start_time: s.time,
               end_time: endTimeStr,
               price: 0,
-              status: 'confirmed',
+              status: 'active',
               created_at: new Date().toISOString(),
               notes: notes.trim() || reasonText,
             };
@@ -456,11 +457,12 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
       const cleanName = customerName.trim();
       const cleanPhone = customerPhone.trim();
 
-      if (!cleanName || cleanName.length < 2) {
-        setErrorMessage('נא להזין שם לקוח/ה תקין (לפחות 2 אותיות)');
+      if (!cleanName || cleanName.split(/\s+/).length < 2) {
+        setErrorMessage('נא להזין שם לקוח/ה תקין (שם פרטי ושם משפחה)');
         return;
       }
 
+      if (!/^972[2-9]\d{7,8}$/.test(canonicalPhone(cleanPhone))) { setErrorMessage('חובה להזין מספר טלפון תקין'); return; }
       if (!selectedSlot) {
         setErrorMessage('נא לבחור שעה לתור');
         return;
@@ -474,14 +476,14 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
         const newAppt: Omit<Appointment, 'id'> = {
           customer_name: cleanName,
-          customer_phone: cleanPhone || 'שריון יזום',
+          customer_phone: cleanPhone,
           service_id: selectedService.id,
           service_name: selectedService.name,
           appointment_date: selectedDate,
           start_time: selectedSlot,
           end_time: endTimeStr,
           price: selectedService.price,
-          status: 'confirmed',
+          status: 'active',
           created_at: new Date().toISOString(),
           notes: notes.trim() || undefined,
         };
@@ -531,7 +533,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
               start_time: s.time,
               end_time: endTimeStr,
               price: 0,
-              status: 'confirmed',
+              status: 'active',
               created_at: new Date().toISOString(),
               notes: notes.trim() || reasonText,
             };
@@ -568,7 +570,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
             start_time: selectedSlot,
             end_time: endTimeStr,
             price: 0,
-            status: 'confirmed',
+            status: 'active',
             created_at: new Date().toISOString(),
             notes: notes.trim() || reasonText,
           };

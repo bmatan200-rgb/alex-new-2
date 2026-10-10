@@ -146,7 +146,7 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const stats = useMemo(() => {
     const totalTenantsCount = tenants.length;
     const activeTenantsCount = tenants.filter((t) => t.status === 'active').length;
-    const alexConfirmedAppts = appointments.filter((a) => a.status === 'confirmed');
+    const alexConfirmedAppts = appointments.filter((a) => a.status === 'active' && !a.archivedAt);
     const alexTotalRevenue = alexConfirmedAppts.reduce((acc, curr) => acc + (curr.price || 150), 0);
 
     // Multiplied estimates across system for demonstration

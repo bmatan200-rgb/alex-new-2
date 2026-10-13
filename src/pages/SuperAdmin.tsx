@@ -1,4 +1,5 @@
 import { activityCsv } from '../utils/activityCsv';
+import { businessBackupSheets, createXlsx, openPrintReport } from '../utils/reportFiles';
 import {CalendarExports} from '../components/CalendarExports';
 import React, { useState, useEffect, useMemo } from 'react';
 import { EmailAuthProvider, onAuthStateChanged, reauthenticateWithCredential } from 'firebase/auth';
@@ -125,6 +126,9 @@ export const SuperAdminPage: React.FC = () => {
 
   // Delete Tenant Modal State
   const [tenantToDelete, setTenantToDelete] = useState<TenantInfo | null>(null);
+  const [tenantToStatusChange,setTenantToStatusChange]=useState<TenantInfo|null>(null);
+  const [statusPassword,setStatusPassword]=useState('');
+  const [statusChangeError,setStatusChangeError]=useState('');
   const [verificationPhone, setVerificationPhone] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -136,31 +140,51 @@ export const SuperAdminPage: React.FC = () => {
   const [activityTenantId,setActivityTenantId]=useState('');
 
   const isPhoneMatch=!!tenantToDelete && verificationPhone.trim()===tenantToDelete.id && !!deletePassword && !!deleteExportId && backupSaved;
-  const downloadFile=(name:string,text:string,type:string)=>{
-    const url=URL.createObjectURL(new Blob([text],{type}));
+  const downloadFile=(name:string,text:string|Blob,type:string)=>{
+    const url=URL.createObjectURL(text instanceof Blob?text:new Blob([text],{type}));
     const link=document.createElement('a');link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),60_000);
   };
-  const changeTenantStatus=async(t:TenantInfo,suspended:boolean)=>{
-    const response=await fetch(`/api/super-admin/tenants/${encodeURIComponent(t.id)}/status`,{method:'POST',headers:await authHeaders(true),body:JSON.stringify({suspended})});
+  const changeTenantStatus=async(t:TenantInfo,suspended:boolean,password:string)=>{
+    const user=auth.currentUser;if(!user?.email)throw new Error('יש להתחבר מחדש לחשבון הסופר אדמין');
+    await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email,password));
+    const token=await user.getIdToken(true);
+    const response=await fetch(`/api/super-admin/tenants/${encodeURIComponent(t.id)}/status`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify({suspended})});
     const data=await response.json();if(!response.ok)throw new Error(data.error||'שינוי מצב העסק נכשל');
   };
   const toggleTenant=async(t:TenantInfo)=>{
-    setBusyTenant(t.id);setLifecycleError('');
-    try{await changeTenantStatus(t,t.status!=='suspended');await fetchTenants();}catch(err:any){setLifecycleError(err.message);}finally{setBusyTenant('');}
+    setTenantToStatusChange(t);setStatusPassword('');setStatusChangeError('');
   };
-  const downloadTenant=async(t:TenantInfo,forDelete=false)=>{
+  const confirmStatusChange=async()=>{
+    if(!tenantToStatusChange||!statusPassword||busyTenant)return;
+    setBusyTenant(tenantToStatusChange.id);setStatusChangeError('');
+    try{await changeTenantStatus(tenantToStatusChange,tenantToStatusChange.status!=='suspended',statusPassword);setTenantToStatusChange(null);setStatusPassword('');await fetchTenants();}
+    catch(err:any){setStatusChangeError(err.message||'האימות נכשל');}finally{setBusyTenant('');}
+  };
+  const downloadTenant=async(t:TenantInfo,forDelete=false,format:'json'|'xlsx'|'pdf'='json')=>{
     setBusyTenant(t.id);setLifecycleError('');setDeleteError(null);
+    const printTab=format==='pdf'?window.open('about:blank','_blank'):null;
+    if(format==='pdf'&&!printTab){setBusyTenant('');setLifecycleError('יש לאפשר פתיחת חלון כדי להפיק PDF');return;}
     try {
-      if(forDelete)await changeTenantStatus(t,true);
+      if(forDelete)await changeTenantStatus(t,true,deletePassword);
       const response=await fetch(`/api/super-admin/tenants/${encodeURIComponent(t.id)}/export`,{method:'POST',headers:await authHeaders(true)});
       const data=await response.json();if(!response.ok)throw new Error(data.error||'ההורדה נכשלה');
       const base=`${t.id}-full-backup-${new Date().toISOString().slice(0,10)}`;
-      downloadFile(base+'.json',JSON.stringify(data.backup,null,2),'application/json');
+      if(format==='json')downloadFile(base+'.json',JSON.stringify(data.backup,null,2),'application/json');
+      if(format==='xlsx')downloadFile(base+'.xlsx',createXlsx(businessBackupSheets(data.backup)),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       const tree=data.backup.tenant;
       const appointments=(tree.collections.appointments||[]).map((a:any)=>({...a.data,id:a.id,archivedAt:(a.data.calendarGeneration||'initial')!==(tree.data.calendarGeneration||'initial')?'archived':null,audit:(a.collections.audit||[]).map((e:any)=>({...e.data,id:e.id}))}));
-      downloadFile(base+'-activity.csv',activityCsv(t.name,appointments),'text/csv;charset=utf-8');
+      if(format==='pdf'){
+        const sections=businessBackupSheets(data.backup).map(s=>({title:s.name,headers:(s.rows[0]||[]).map(String),rows:s.rows.slice(1)}));
+        openPrintReport(`${t.name} — ייצוא נתוני עסק`,sections,printTab);
+      }
+      if(forDelete)downloadFile(base+'-activity.csv',activityCsv(t.name,appointments),'text/csv;charset=utf-8');
       if(forDelete){setDeleteExportId(data.exportId);setBackupSaved(false);await fetchTenants();}
     }catch(err:any){if(forDelete)setDeleteError(err.message);else setLifecycleError(err.message);}finally{setBusyTenant('');}
+  };
+  const downloadAllCustomerCsv=async()=>{
+    setBusyTenant('all-customers');setLifecycleError('');
+    try{const response=await fetch('/api/super-admin/customers/export.csv',{headers:await authHeaders()});if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||'ייצוא הלקוחות נכשל');}downloadFile(`all-business-customers-${new Date().toISOString().slice(0,10)}.csv`,await response.blob(),'text/csv;charset=utf-8');}
+    catch(err:any){setLifecycleError(err.message||'ייצוא הלקוחות נכשל');}finally{setBusyTenant('');}
   };
 
   const handleConfirmDelete = async () => {
@@ -1296,7 +1320,9 @@ export const SuperAdminPage: React.FC = () => {
                         </button>
 
                         <button type="button" disabled={!!busyTenant || t.status==='deleting'} onClick={()=>toggleTenant(t)} className="px-3 py-1.5 bg-amber-950 text-amber-200 border border-amber-800 rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50"><Power className="w-3 h-3"/>{t.status==='suspended'?'הפעלת עסק מחדש':'השבתת עסק'}</button>
-                        <button type="button" disabled={!!busyTenant || t.status==='deleting'} onClick={()=>downloadTenant(t)} className="px-3 py-1.5 bg-emerald-950 text-emerald-200 border border-emerald-800 rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50"><Download className="w-3 h-3"/>{busyTenant===t.id?'מעבד…':'הורדת נתונים ויומן מלא'}</button>
+                        <button type="button" disabled={!!busyTenant || t.status==='deleting'} onClick={()=>downloadTenant(t)} className="px-3 py-1.5 bg-emerald-950 text-emerald-200 border border-emerald-800 rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50"><Download className="w-3 h-3"/>{busyTenant===t.id?'מעבד…':'גיבוי עסק JSON'}</button>
+                        <button type="button" disabled={!!busyTenant || t.status==='deleting'} onClick={()=>downloadTenant(t,false,'xlsx')} className="px-3 py-1.5 bg-green-950 text-green-200 border border-green-800 rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50">Excel</button>
+                        <button type="button" disabled={!!busyTenant || t.status==='deleting'} onClick={()=>downloadTenant(t,false,'pdf')} className="px-3 py-1.5 bg-slate-800 text-slate-100 border border-slate-700 rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50">PDF עסק</button>
 
                         <button
                           type="button"
@@ -1335,6 +1361,10 @@ export const SuperAdminPage: React.FC = () => {
 
         {activeTab==='reports'&&<section className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-5" dir="rtl">
           <h2 className="text-xl font-black text-white">דוחות פעילות</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-700 bg-slate-950 p-4">
+            <div><h3 className="font-bold text-white">ייצוא לקוחות מכל העסקים</h3><p className="mt-1 text-xs text-slate-400">קובץ CSV אחד עם שם העסק, פרטי הלקוח והערות שנשמרו.</p></div>
+            <button type="button" disabled={!!busyTenant} onClick={downloadAllCustomerCsv} className="rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{busyTenant==='all-customers'?'מייצא…':'הורדת כל הלקוחות — CSV'}</button>
+          </div>
           <label className="block text-sm font-bold text-slate-300">עסק
             <select value={activityTenantId} onChange={e=>setActivityTenantId(e.target.value)} className="mt-2 w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white">
               <option value="">בחר עסק</option>{tenants.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
@@ -1380,6 +1410,16 @@ export const SuperAdminPage: React.FC = () => {
           </div>
         )}
       </main>
+
+      {tenantToStatusChange&&<div className="fixed inset-0 z-[55] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-3xl border border-amber-700 bg-slate-900 p-6 text-right shadow-2xl space-y-4" dir="rtl">
+          <div className="flex items-center gap-3"><div className="rounded-xl bg-amber-950 p-3 text-amber-300"><Power className="h-5 w-5"/></div><div><h3 className="text-lg font-black text-white">{tenantToStatusChange.status==='suspended'?'הפעלת העסק מחדש':'השבתת העסק'}</h3><p className="text-sm text-amber-200">{tenantToStatusChange.name}</p></div></div>
+          <p className="text-sm leading-6 text-slate-300">השינוי יבוצע רק לאחר אימות סיסמת הסופר אדמין.</p>
+          <label className="block text-sm font-bold text-slate-200">סיסמת הסופר אדמין<input type="password" autoComplete="current-password" value={statusPassword} onChange={e=>setStatusPassword(e.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white"/></label>
+          {statusChangeError&&<div role="alert" className="rounded-xl border border-red-700 bg-red-950 p-3 text-sm text-red-200">{statusChangeError}</div>}
+          <div className="flex gap-3"><button type="button" disabled={!!busyTenant} onClick={()=>setTenantToStatusChange(null)} className="flex-1 rounded-xl bg-slate-800 p-3 text-sm font-bold text-slate-200 disabled:opacity-50">ביטול</button><button type="button" disabled={!statusPassword||!!busyTenant} onClick={confirmStatusChange} className="flex-1 rounded-xl bg-amber-700 p-3 text-sm font-black text-white disabled:opacity-50">{busyTenant===tenantToStatusChange.id?'מאמת…':'אימות וביצוע'}</button></div>
+        </div>
+      </div>}
 
       {/* CONFIRMATION MODAL FOR TENANT DELETION (Requirements 3, 4, 5, 6) */}
       {tenantToDelete && (
@@ -1437,7 +1477,7 @@ export const SuperAdminPage: React.FC = () => {
 
             <div className="space-y-3">
               <p className="text-sm text-slate-300">אין ארכיון פנימי. הגיבוי יישמר אצלך בלבד. להחזרה קלה בעתיד השתמש בהשבתה. המחיקה מסירה גם את חשבון בעל העסק.</p>
-              {tenantToDelete.status!=='deleting' && <button type="button" disabled={!!busyTenant||isDeleting} onClick={()=>downloadTenant(tenantToDelete,true)} className="w-full bg-emerald-800 rounded-xl p-3 text-white disabled:opacity-50">{busyTenant?'מייצא…':'1. השבתת העסק והורדת גיבוי ויומן פעילות'}</button>}
+              {tenantToDelete.status!=='deleting' && <button type="button" disabled={!!busyTenant||isDeleting||!deletePassword} onClick={()=>downloadTenant(tenantToDelete,true)} className="w-full bg-emerald-800 rounded-xl p-3 text-white disabled:opacity-50">{busyTenant?'מאמת ומייצא…':'1. אימות סיסמה, השבתה והורדת גיבוי'}</button>}
               {!!deleteExportId && <label className="flex gap-2 text-sm text-slate-200"><input type="checkbox" checked={backupSaved} onChange={e=>setBackupSaved(e.target.checked)}/>שמרתי את קובצי הגיבוי במכשיר</label>}
               <label className="block text-sm text-slate-200">הקלד את מזהה העסק לאישור: <b dir="ltr">{tenantToDelete.id}</b>
               <input value={verificationPhone} onChange={e=>setVerificationPhone(e.target.value)} dir="ltr" className="mt-2 w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white"/></label>

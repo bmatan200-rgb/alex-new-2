@@ -1,7 +1,7 @@
 {
   "name": "alex-multi-tenant",
   "private": true,
-  "version": "50.0.0",
+  "version": "51.0.0",
   "type": "module",
   "scripts": {
     "dev": "node --import tsx server.ts",
@@ -10,11 +10,11 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "node --import tsx --test tests/core.test.ts tests/calendar-blocks.test.ts tests/account-security.test.ts tests/pwa.test.ts tests/session-isolation.test.ts tests/business-admin-icons.test.ts tests/reminder-scheduler.test.ts tests/sms-delivery-policy.test.ts tests/sms-provider.test.ts tests/sms-delivery-tracker.test.ts tests/appointment-routes.test.ts tests/activity-export.test.mjs",
+    "test": "node --import tsx --test tests/core.test.ts tests/calendar-blocks.test.ts tests/account-security.test.ts tests/pwa.test.ts tests/session-isolation.test.ts tests/business-admin-icons.test.ts tests/reminder-scheduler.test.ts tests/sms-delivery-policy.test.ts tests/sms-provider.test.ts tests/sms-delivery-tracker.test.ts tests/appointment-routes.test.ts tests/activity-export.test.mjs tests/report-files.test.ts",
     "test:integration": "firebase emulators:exec --project gen-lang-client-0382531831 --only auth,firestore \"node --import tsx --test tests/integration.test.ts\"",
     "verify:source": "node scripts/verify-v27.mjs",
     "test:smoke": "node scripts/smoke-dist.mjs",
-    "test:reports": "node --import tsx --test tests/activity-export.test.mjs"
+    "test:reports": "node --import tsx --test tests/activity-export.test.mjs tests/report-files.test.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

@@ -636,7 +636,50 @@ async function exportTenantActivity(req:Request,res:Response) {
 app.post('/api/admin/tenant-activity/export',requireAdmin,exportTenantActivity);
 app.post('/api/super-admin/tenant-activity/export',requireSuperAdmin,requireAdmin,exportTenantActivity);
 
-// V50: complete per-business exports and reversible suspension.
+// Owners can download a complete working copy of their own business data.
+app.post('/api/admin/business-export',requireAdmin,async(req,res)=>{
+  try {
+    const tenantId=req.tenantId!,{start,end,period}=activityRange(req.body);
+    const tenantRef=getTenantDoc(tenantId),[tenant,config,customersSnap,appointmentsSnap,logsSnap]=await Promise.all([
+      tenantRef.get(),getTenantSettingsDoc(tenantId).get(),collection(db,'tenants',tenantId,'customers').get(),
+      getTenantAppointmentsRef(tenantId).where('appointment_date','>=',start).where('appointment_date','<',end).get(),
+      collection(db,'tenants',tenantId,'sms_logs').where('appointmentDate','>=',start).where('appointmentDate','<',end).get(),
+    ]);
+    if(!tenant.exists)throw new Error('העסק לא נמצא');
+    const appointments:any[]=new Array(appointmentsSnap.docs.length);
+    await runBounded(appointmentsSnap.docs.map((d:any,index:number)=>({d,index})),20,async({d,index}:any)=>{
+      const audit=await d.ref.collection('audit').orderBy('at').get();
+      const {accessTokenHash,...data}=normalizeAppointment({...d.data(),id:d.id});
+      appointments[index]={...data,audit:audit.docs.map((e:any)=>({id:e.id,...e.data()}))};
+    });
+    const publicTenant:any={};
+    for(const key of ['id','name','appShortName','tagline','ownerName','phone','email','city','address','primaryColor','secondaryColor','plan','status','customDomain'])if(tenant.data()?.[key]!==undefined)publicTenant[key]=tenant.data()[key];
+    const settings=safeExport({config:config.data()||{},smsSettings:(await getTenantSettingsDoc(tenantId,'sms_reminders').get()).data()||{}});
+    res.setHeader('Cache-Control','no-store');
+    res.json({success:true,period,start,end,tenant:publicTenant,settings,customers:customersSnap.docs.map((d:any)=>({id:d.id,...d.data()})),appointments,smsLogs:logsSnap.docs.map((d:any)=>({id:d.id,...d.data()}))});
+  }catch(err:any){res.status(400).json({success:false,error:err?.message||'לא ניתן להכין את קובץ העסק'});}
+});
+
+function csvValue(value:any){let text=String(value??'');if(/^[\s]*[=+@-]/.test(text))text="'"+text;return '"'+text.replace(/"/g,'""')+'"';}
+app.get('/api/super-admin/customers/export.csv',requireSuperAdmin,async(_req,res)=>{
+  try {
+    const tenants=await collection(db,'tenants').get(),usable=tenants.docs.filter((d:any)=>!['deleted','deleting'].includes(d.data()?.status));
+    const rows:any[][]=[['מזהה עסק','שם עסק','שם לקוח/ה','טלפון','הערות','נוצר בתאריך','כניסה אחרונה','מספר תורים','תור אחרון']];
+    await runBounded(usable,8,async(t:any)=>{
+      const tenantData=t.data(),[customers,appointments]=await Promise.all([collection(db,'tenants',t.id,'customers').get(),getTenantAppointmentsRef(t.id).get()]);
+      const byPhone=new Map<string,any>();
+      for(const a of appointments.docs){const data=a.data(),phone=normalizePhone(data.customer_phone);if(!phone||['חסימת יומן','שריון יזום'].includes(data.customer_phone))continue;const prior=byPhone.get(phone)||{count:0,lastDate:'',name:data.customer_name||''};if(data.status!=='cancelled')prior.count++;if(data.appointment_date>prior.lastDate)prior.lastDate=data.appointment_date;byPhone.set(phone,prior);}
+      const customerMap=new Map<string,any>();
+      for(const c of customers.docs){const data=c.data(),phone=normalizePhone(data.phone)||c.id.replace('cust_',''),activity=byPhone.get(phone);customerMap.set(phone,{full_name:data.full_name||activity?.name||'',phone:data.phone||phone,notes:data.notes||'',created_at:data.created_at||'',last_login_at:data.last_login_at||'',count:activity?.count||0,lastDate:activity?.lastDate||''});}
+      for(const [phone,activity] of byPhone)if(!customerMap.has(phone))customerMap.set(phone,{full_name:activity.name,phone,notes:'',created_at:'',last_login_at:'',count:activity.count,lastDate:activity.lastDate});
+      for(const c of customerMap.values())rows.push([t.id,tenantData.name||t.id,c.full_name,c.phone,c.notes,c.created_at,c.last_login_at,c.count,c.lastDate]);
+    });
+    const body='\uFEFF'+rows.map(row=>row.map(csvValue).join(',')).join('\r\n');
+    res.setHeader('Cache-Control','no-store');res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition','attachment; filename="all-business-customers.csv"');res.send(body);
+  }catch(err:any){const quota=noteFirestoreQuota(err,'Super Admin all-customer export');res.status(quota?503:500).json({success:false,error:quota?'מכסת מסד הנתונים מלאה זמנית':'ייצוא הלקוחות נכשל'});}
+});
+
+// V51: complete per-business exports and reversible suspension.
 async function tenantExportTree(ref:any):Promise<any> {
   const snap=await ref.get(), children=await ref.listCollections();
   const collections:any={};
@@ -674,7 +717,7 @@ app.post('/api/super-admin/tenants/:tenantId/export',requireSuperAdmin,async(req
     }
     const appointments=(tree.collections.appointments||[]).map((a:any)=>({...a.data,id:a.id,archivedAt:(a.data.calendarGeneration||'initial')!==(tree.data.calendarGeneration||'initial')?'archived':null,audit:(a.collections.audit||[]).map((e:any)=>({...e.data,id:e.id}))}));
     related.legacy=await Promise.all((await legacyBusinessRows(tenantId)).map(async d=>({path:d.ref.path,...await tenantExportTree(d.ref)})));
-    const backup=safeExport({activityCsv:activityCsv(tree.data.name||tenantId,appointments),schemaVersion:50,tenantId,exportedAt:new Date().toISOString(),tenant:tree,related});
+    const backup=safeExport({activityCsv:activityCsv(tree.data.name||tenantId,appointments),schemaVersion:51,tenantId,exportedAt:new Date().toISOString(),tenant:tree,related});
     // Small receipt only; the backup itself is downloaded, never stored internally.
     const exportId=randomUUID();
     await ref.collection('lifecycle_exports').doc(exportId).create({uid:(req as any).adminPayload.uid,createdAt:Date.now(),tenantId,stateUpdatedAt:tenant.data()?.updatedAt||null});
@@ -683,6 +726,7 @@ app.post('/api/super-admin/tenants/:tenantId/export',requireSuperAdmin,async(req
 });
 app.post('/api/super-admin/tenants/:tenantId/status',requireSuperAdmin,async(req,res)=>{
   try {
+    await recentPasswordAuth(req);
     const tenantId=req.params.tenantId,suspended=req.body?.suspended;
     if(typeof suspended!=='boolean')throw new Error('יש לבחור השבתה או הפעלה');
     await db.runTransaction(async tx=>{
@@ -959,7 +1003,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '50.0.0';
+const APP_VERSION = '51.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];
@@ -2307,7 +2351,7 @@ app.post('/api/super-admin/tenants/:tenantId/owner-account/disable', requireSupe
   } catch (err: any) { return res.status(500).json({ success: false, error: err?.message }); }
 });
 
-// V50: suspension must precede an export and permanent deletion.
+// V51: suspension must precede an export and permanent deletion.
 app.delete('/api/super-admin/tenants/:tenantId',requireSuperAdmin,async(req,res)=>{
   const tenantId=req.params.tenantId;
   try {

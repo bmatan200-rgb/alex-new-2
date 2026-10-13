@@ -18,7 +18,7 @@ const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
 const manifestRoute = server.slice(server.indexOf("app.get('/manifest.json'"), server.indexOf("app.param(['tenantId','id']"));
 const serviceWorker = readFileSync(new URL('../public/service-worker.js', import.meta.url), 'utf8');
 
-assert.equal(pkg.version, '50.0.0');
+assert.equal(pkg.version, '51.0.0');
 assert.match(server, /persistent===true/, 'customer access sessions must persist after phone verification');
 assert.match(server, /persistent:true,createdAt:new Date\(\)\.toISOString\(\)/, 'new customer access records must not expire');
 assert.match(server, /app\.post\('\/api\/super-admin\/calendar\/export',requireSuperAdmin/, 'calendar export must be Super Admin only');
@@ -55,12 +55,19 @@ assert.match(termsModal, /הסכם שירות ומנוי לבעל העסק/);
 assert.match(adminDashboard, /הסכם שירות למנויים/);
 assert.doesNotMatch(calendarInspector, /ייצוא ואיפוס בטוח|איפוס היומן/, 'business dashboard must not expose calendar reset');
 assert.doesNotMatch(superAdminPage, /איפוס יומן|ניקוי נתוני ניסיון/);
-assert.match(superAdminPage, /הורדת נתונים ויומן מלא/);
+assert.match(superAdminPage, /גיבוי עסק JSON/);
+assert.match(superAdminPage, /downloadTenant\(t,false,'xlsx'\)/);
+assert.match(superAdminPage, /downloadTenant\(t,false,'pdf'\)/);
+assert.match(superAdminPage, /הורדת כל הלקוחות — CSV/);
+assert.match(superAdminPage, /סיסמת הסופר אדמין/);
 assert.match(superAdminPage, /השבתת עסק/);
 assert.match(superAdminPage, /דוחות פעילות/);
 assert.match(readFileSync(new URL('../src/components/CalendarExports.tsx', import.meta.url),'utf8'), /מתאריך עד תאריך/);
 assert.match(server, /app\.post\('\/api\/admin\/calendar\/export',requireAdmin,exportCalendar/);
 assert.match(server, /app\.post\('\/api\/admin\/tenant-activity\/export',requireAdmin,exportTenantActivity/);
+assert.match(server, /app\.post\('\/api\/admin\/business-export',requireAdmin/);
+assert.match(server, /app\.get\('\/api\/super-admin\/customers\/export\.csv',requireSuperAdmin/);
+assert.match(server, /await recentPasswordAuth\(req\);[\s\S]*const tenantId=req\.params\.tenantId,suspended=req\.body\?\.suspended/);
 assert.match(calendarInspector, /CalendarExports/);
 assert.match(server, /version: '2026-10-12-v1', acceptedAt: now/);
 assert.doesNotMatch(torFlow, /upsertCustomerToFirestore/);
@@ -101,5 +108,5 @@ assert.doesNotMatch(torFlow, /executeBookingSubmission\(cleanName, cleanPhone, i
 
 assert.match(readFileSync(new URL('../src/components/Header.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
 assert.match(readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
-console.log('V50 source verification passed');
+console.log('V51 source verification passed');
 assert.doesNotMatch(server, /app\.post\('\/api\/super-admin\/(calendar\/reset|tenant-data-wipe\/execute)'/);

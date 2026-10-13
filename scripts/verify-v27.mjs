@@ -18,11 +18,10 @@ const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
 const manifestRoute = server.slice(server.indexOf("app.get('/manifest.json'"), server.indexOf("app.param(['tenantId','id']"));
 const serviceWorker = readFileSync(new URL('../public/service-worker.js', import.meta.url), 'utf8');
 
-assert.equal(pkg.version, '49.0.0');
+assert.equal(pkg.version, '50.0.0');
 assert.match(server, /persistent===true/, 'customer access sessions must persist after phone verification');
 assert.match(server, /persistent:true,createdAt:new Date\(\)\.toISOString\(\)/, 'new customer access records must not expire');
 assert.match(server, /app\.post\('\/api\/super-admin\/calendar\/export',requireSuperAdmin/, 'calendar export must be Super Admin only');
-assert.match(server, /app\.post\('\/api\/super-admin\/calendar\/reset',requireSuperAdmin/, 'calendar reset must be Super Admin only');
 assert.match(server, /app\.post\('\/api\/super-admin\/tenant-activity\/export',requireSuperAdmin,requireAdmin/, 'activity report export must be Super Admin only');
 assert.match(server, /where\('appointment_date','>=',start\)\.where\('appointment_date','<',end\)/, 'activity report must be range-filtered');
 assert.match(server, /const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail\.com'/);
@@ -55,7 +54,9 @@ assert.match(termsModal, /תנאי העסק והתור/);
 assert.match(termsModal, /הסכם שירות ומנוי לבעל העסק/);
 assert.match(adminDashboard, /הסכם שירות למנויים/);
 assert.doesNotMatch(calendarInspector, /ייצוא ואיפוס בטוח|איפוס היומן/, 'business dashboard must not expose calendar reset');
-assert.match(superAdminPage, /איפוס יומן/);
+assert.doesNotMatch(superAdminPage, /איפוס יומן|ניקוי נתוני ניסיון/);
+assert.match(superAdminPage, /הורדת נתונים ויומן מלא/);
+assert.match(superAdminPage, /השבתת עסק/);
 assert.match(superAdminPage, /דוחות פעילות/);
 assert.match(readFileSync(new URL('../src/components/CalendarExports.tsx', import.meta.url),'utf8'), /מתאריך עד תאריך/);
 assert.match(server, /app\.post\('\/api\/admin\/calendar\/export',requireAdmin,exportCalendar/);
@@ -100,4 +101,5 @@ assert.doesNotMatch(torFlow, /executeBookingSubmission\(cleanName, cleanPhone, i
 
 assert.match(readFileSync(new URL('../src/components/Header.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
 assert.match(readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
-console.log('V49 source verification passed');
+console.log('V50 source verification passed');
+assert.doesNotMatch(server, /app\.post\('\/api\/super-admin\/(calendar\/reset|tenant-data-wipe\/execute)'/);

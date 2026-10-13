@@ -1,3 +1,4 @@
+import { activityCsv } from '../utils/activityCsv';
 import {CalendarExports} from '../components/CalendarExports';
 import React, { useState, useEffect, useMemo } from 'react';
 import { EmailAuthProvider, onAuthStateChanged, reauthenticateWithCredential } from 'firebase/auth';
@@ -33,6 +34,8 @@ import {
   Copy,
   Check,
   Trash2,
+  Download,
+  Power,
   Palette,
   Globe,
   X,
@@ -125,77 +128,39 @@ export const SuperAdminPage: React.FC = () => {
   const [verificationPhone, setVerificationPhone] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [tenantToWipe,setTenantToWipe]=useState<TenantInfo|null>(null);
-  const [wipePassword,setWipePassword]=useState('');
-  const [wipeError,setWipeError]=useState('');
-  const [isWiping,setIsWiping]=useState(false);
-  const [tenantToCalendarReset,setTenantToCalendarReset]=useState<TenantInfo|null>(null);
-  const [calendarResetPassword,setCalendarResetPassword]=useState('');
-  const [calendarResetError,setCalendarResetError]=useState('');
-  const [calendarResetBackup,setCalendarResetBackup]=useState<any>(null);
-  const [calendarBackupSaved,setCalendarBackupSaved]=useState(false);
-  const [isCalendarResetting,setIsCalendarResetting]=useState(false);
+  const [deletePassword,setDeletePassword]=useState('');
+  const [deleteExportId,setDeleteExportId]=useState('');
+  const [backupSaved,setBackupSaved]=useState(false);
+  const [busyTenant,setBusyTenant]=useState('');
+  const [lifecycleError,setLifecycleError]=useState('');
   const [activityTenantId,setActivityTenantId]=useState('');
 
-  const REQUIRED_DELETE_PHONE = '0543111408';
-  const isPhoneMatch = verificationPhone.trim().replace(/[-\s]/g, '') === REQUIRED_DELETE_PHONE;
-
-  const runFinalTenantWipe = async () => {
-    if(!tenantToWipe || !auth.currentUser?.email || !wipePassword || isWiping) return;
-    setIsWiping(true);setWipeError('');
-    try {
-      const user=auth.currentUser;
-      await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email!,wipePassword));
-      const token=await user.getIdToken(true),headers={'Content-Type':'application/json',Authorization:`Bearer ${token}`};
-      const exported=await fetch('/api/super-admin/tenant-data-wipe/export',{method:'POST',headers,body:JSON.stringify({tenantId:tenantToWipe.id})});
-      const exportData=await exported.json().catch(()=>({}));
-      if(!exported.ok || !exportData.success) throw new Error(exportData.error||'ייצוא הגיבוי נכשל');
-      const fileName=`${tenantToWipe.id}-test-data-backup-${new Date().toISOString().slice(0,10)}.json`;
-      const url=URL.createObjectURL(new Blob([JSON.stringify(exportData.backup,null,2)],{type:'application/json'}));
-      const link=document.createElement('a');link.href=url;link.download=fileName;document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),60_000);
-      const wiped=await fetch('/api/super-admin/tenant-data-wipe/execute',{method:'POST',headers,body:JSON.stringify({tenantId:tenantToWipe.id,exportId:exportData.exportId,digest:exportData.digest})});
-      const wipeData=await wiped.json().catch(()=>({}));
-      if(!wiped.ok || !wipeData.success) throw new Error(wipeData.error||'ניקוי הנתונים נכשל');
-      for(const key of [`alex_beauty_appointments_v5__${tenantToWipe.id}`,`booking_access__${tenantToWipe.id}`,`customer_access__${tenantToWipe.id}`]) { try { localStorage.removeItem(key); } catch {} }
-      window.dispatchEvent(new Event('appointments-changed'));
-      setTenantToWipe(null);setWipePassword('');setWipeError('');
-      await fetchTenants();
-    } catch(err:any) { setWipeError(err?.message||'הניקוי נכשל'); }
-    finally { setIsWiping(false); }
+  const isPhoneMatch=!!tenantToDelete && verificationPhone.trim()===tenantToDelete.id && !!deletePassword && !!deleteExportId && backupSaved;
+  const downloadFile=(name:string,text:string,type:string)=>{
+    const url=URL.createObjectURL(new Blob([text],{type}));
+    const link=document.createElement('a');link.href=url;link.download=name;document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),60_000);
   };
-
-  const exportCalendarBeforeReset = async () => {
-    if(!tenantToCalendarReset||!auth.currentUser?.email||!calendarResetPassword||isCalendarResetting)return;
-    setIsCalendarResetting(true);setCalendarResetError('');setCalendarResetBackup(null);setCalendarBackupSaved(false);
-    try {
-      const user=auth.currentUser;
-      await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email!,calendarResetPassword));
-      const headers={'Content-Type':'application/json',Authorization:`Bearer ${await user.getIdToken(true)}`};
-      const response=await fetch('/api/super-admin/calendar/export',{method:'POST',headers,body:JSON.stringify({tenantId:tenantToCalendarReset.id})});
-      const data=await response.json().catch(()=>({}));
-      if(!response.ok||!data.success)throw new Error(data.error||'ייצוא הגיבוי נכשל');
-      const fileName=`${tenantToCalendarReset.id}-calendar-backup-${new Date().toISOString().slice(0,10)}.json`;
-      const url=URL.createObjectURL(new Blob([JSON.stringify(data.backup,null,2)],{type:'application/json'}));
-      const link=document.createElement('a');link.href=url;link.download=fileName;document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),60_000);
-      setCalendarResetBackup(data);
-    }catch(err:any){setCalendarResetError(err?.message||'ייצוא הגיבוי נכשל');}
-    finally{setIsCalendarResetting(false);}
+  const changeTenantStatus=async(t:TenantInfo,suspended:boolean)=>{
+    const response=await fetch(`/api/super-admin/tenants/${encodeURIComponent(t.id)}/status`,{method:'POST',headers:await authHeaders(true),body:JSON.stringify({suspended})});
+    const data=await response.json();if(!response.ok)throw new Error(data.error||'שינוי מצב העסק נכשל');
   };
-
-  const runCalendarReset = async () => {
-    if(!tenantToCalendarReset||!calendarResetBackup||!calendarBackupSaved||!auth.currentUser?.email||!calendarResetPassword||isCalendarResetting)return;
-    setIsCalendarResetting(true);setCalendarResetError('');
+  const toggleTenant=async(t:TenantInfo)=>{
+    setBusyTenant(t.id);setLifecycleError('');
+    try{await changeTenantStatus(t,t.status!=='suspended');await fetchTenants();}catch(err:any){setLifecycleError(err.message);}finally{setBusyTenant('');}
+  };
+  const downloadTenant=async(t:TenantInfo,forDelete=false)=>{
+    setBusyTenant(t.id);setLifecycleError('');setDeleteError(null);
     try {
-      const user=auth.currentUser;
-      await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email!,calendarResetPassword));
-      const headers={'Content-Type':'application/json',Authorization:`Bearer ${await user.getIdToken(true)}`};
-      const response=await fetch('/api/super-admin/calendar/reset',{method:'POST',headers,body:JSON.stringify({tenantId:tenantToCalendarReset.id,exportId:calendarResetBackup.exportId,digest:calendarResetBackup.digest,downloadConfirmed:true})});
-      const data=await response.json().catch(()=>({}));
-      if(!response.ok||!data.success)throw new Error(data.error||'איפוס היומן נכשל');
-      window.dispatchEvent(new Event('appointments-changed'));
-      setTenantToCalendarReset(null);setCalendarResetPassword('');setCalendarResetBackup(null);setCalendarBackupSaved(false);
-    }catch(err:any){setCalendarResetError(err?.message||'איפוס היומן נכשל');}
-    finally{setIsCalendarResetting(false);}
+      if(forDelete)await changeTenantStatus(t,true);
+      const response=await fetch(`/api/super-admin/tenants/${encodeURIComponent(t.id)}/export`,{method:'POST',headers:await authHeaders(true)});
+      const data=await response.json();if(!response.ok)throw new Error(data.error||'ההורדה נכשלה');
+      const base=`${t.id}-full-backup-${new Date().toISOString().slice(0,10)}`;
+      downloadFile(base+'.json',JSON.stringify(data.backup,null,2),'application/json');
+      const tree=data.backup.tenant;
+      const appointments=(tree.collections.appointments||[]).map((a:any)=>({...a.data,id:a.id,archivedAt:(a.data.calendarGeneration||'initial')!==(tree.data.calendarGeneration||'initial')?'archived':null,audit:(a.collections.audit||[]).map((e:any)=>({...e.data,id:e.id}))}));
+      downloadFile(base+'-activity.csv',activityCsv(t.name,appointments),'text/csv;charset=utf-8');
+      if(forDelete){setDeleteExportId(data.exportId);setBackupSaved(false);await fetchTenants();}
+    }catch(err:any){if(forDelete)setDeleteError(err.message);else setLifecycleError(err.message);}finally{setBusyTenant('');}
   };
 
   const handleConfirmDelete = async () => {
@@ -205,10 +170,14 @@ export const SuperAdminPage: React.FC = () => {
     setDeleteError(null);
 
     try {
+      const user=auth.currentUser;
+      if(!user?.email)throw new Error('נדרשת התחברות מחדש');
+      await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email,deletePassword));
+      await user.getIdToken(true);
       const targetId = tenantToDelete.id;
 
       // Delete only through the protected Super Admin API
-      const deleteRes = await fetch(`/api/super-admin/tenants/${targetId}`, { method: 'DELETE', headers: await authHeaders() });
+      const deleteRes = await fetch(`/api/super-admin/tenants/${targetId}`, { method: 'DELETE', headers: await authHeaders(true), body:JSON.stringify({confirmation:verificationPhone.trim(),downloadConfirmed:backupSaved,exportId:deleteExportId}) });
       const deleteData = await deleteRes.json().catch(() => ({}));
       if (!deleteRes.ok || !deleteData.success) throw new Error(deleteData.error || 'מחיקת העסק נכשלה');
 
@@ -591,6 +560,7 @@ export const SuperAdminPage: React.FC = () => {
       </header>
 
       {/* Main Container */}
+      {lifecycleError&&<div role="alert" className="mx-6 mt-4 rounded-xl bg-red-950 text-red-200 p-4">{lifecycleError}</div>}
       <main className="max-w-7xl mx-auto px-4 sm:px-8 py-6 sm:py-8 space-y-6">
         
         <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -1261,6 +1231,8 @@ export const SuperAdminPage: React.FC = () => {
                           <h3 className="text-lg font-black text-white font-['Rubik',sans-serif]">
                             {t.name}
                           </h3>
+                          {t.status==='suspended' && <span className="text-xs text-amber-200 bg-amber-950 px-2 py-1 rounded-lg">העסק מושבת — הנתונים שמורים</span>}
+                          {t.status==='deleting' && <span className="text-xs text-red-200 bg-red-950 px-2 py-1 rounded-lg">מחיקה לא הושלמה — יש לנסות שוב</span>}
                           {t.id === 'alex_beauty' && (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-600 text-white">
                               ברירת מחדל 👑
@@ -1323,25 +1295,8 @@ export const SuperAdminPage: React.FC = () => {
                           <span>עריכת עסק</span>
                         </button>
 
-                        <button
-                          type="button"
-                          onClick={() => { setTenantToWipe(t); setWipePassword(''); setWipeError(''); }}
-                          className="px-3 py-1.5 bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-800 rounded-lg text-xs font-bold flex items-center gap-1 transition"
-                          title={`ניקוי נתוני ניסיון של ${t.name}`}
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          <span>ניקוי נתוני ניסיון</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => { setTenantToCalendarReset(t); setCalendarResetPassword(''); setCalendarResetError(''); setCalendarResetBackup(null); setCalendarBackupSaved(false); }}
-                          className="px-3 py-1.5 bg-red-950/70 hover:bg-red-900 text-red-200 border border-red-800 rounded-lg text-xs font-bold flex items-center gap-1 transition"
-                          title={`איפוס יומן והעברה לארכיון עבור ${t.name}`}
-                        >
-                          <Calendar className="w-3 h-3" />
-                          <span>איפוס יומן</span>
-                        </button>
+                        <button type="button" disabled={!!busyTenant || t.status==='deleting'} onClick={()=>toggleTenant(t)} className="px-3 py-1.5 bg-amber-950 text-amber-200 border border-amber-800 rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50"><Power className="w-3 h-3"/>{t.status==='suspended'?'הפעלת עסק מחדש':'השבתת עסק'}</button>
+                        <button type="button" disabled={!!busyTenant || t.status==='deleting'} onClick={()=>downloadTenant(t)} className="px-3 py-1.5 bg-emerald-950 text-emerald-200 border border-emerald-800 rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50"><Download className="w-3 h-3"/>{busyTenant===t.id?'מעבד…':'הורדת נתונים ויומן מלא'}</button>
 
                         <button
                           type="button"
@@ -1355,19 +1310,19 @@ export const SuperAdminPage: React.FC = () => {
                       </div>
 
                       {/* Delete Salon Button (Requirement 1 & 2: Hidden/disabled for default core tenant alex_beauty) */}
-                      {t.id !== 'alex_beauty' && !(t as any).isDefault && !(t as any).isPrimary && (
+                      {(
                         <button
                           type="button"
                           onClick={() => {
                             setTenantToDelete(t);
-                            setVerificationPhone('');
+                            setVerificationPhone('');setDeletePassword('');setDeleteExportId(t.status==='deleting'?'retry':'');setBackupSaved(t.status==='deleting');
                             setDeleteError(null);
                           }}
                           className="px-3 py-1.5 bg-red-950/70 hover:bg-red-600 text-red-300 hover:text-white border border-red-800/80 hover:border-red-500 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer active:scale-95"
                           title={`מחיקת ${t.name}`}
                         >
                           <Trash2 className="w-3.5 h-3.5 text-red-400" />
-                          <span>מחיקת סלון</span>
+                          <span>מחיקה לצמיתות</span>
                         </button>
                       )}
                     </div>
@@ -1426,47 +1381,6 @@ export const SuperAdminPage: React.FC = () => {
         )}
       </main>
 
-      {tenantToCalendarReset&&(
-        <div className="fixed inset-0 z-[65] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-lg rounded-3xl border border-red-800 bg-slate-900 p-6 sm:p-8 text-right shadow-2xl space-y-5" dir="rtl">
-            <div className="flex items-center gap-3 border-b border-slate-700 pb-4"><div className="h-12 w-12 rounded-2xl bg-red-950 text-red-300 flex items-center justify-center"><Calendar className="h-6 w-6"/></div><div><h3 className="text-xl font-black text-white">איפוס יומן והעברה לארכיון</h3><p className="text-sm text-red-200">{tenantToCalendarReset.name}</p></div></div>
-            <p className="text-sm leading-6 text-slate-300">האיפוס מעביר את התורים הקיימים לארכיון ומשחרר את השעות ביומן. הרשומות והיסטוריית השינויים נשמרות; זו לא מחיקה לצמיתות.</p>
-            <label className="block text-sm font-bold text-slate-200">סיסמת הסופר־אדמין
-              <input type="password" autoComplete="current-password" value={calendarResetPassword} onChange={e=>setCalendarResetPassword(e.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-base text-white focus:border-red-500 focus:outline-none" />
-            </label>
-            {calendarResetError&&<div role="alert" className="rounded-xl border border-red-700 bg-red-950 p-3 text-sm text-red-200">{calendarResetError}</div>}
-            <button type="button" disabled={!calendarResetPassword||isCalendarResetting} onClick={exportCalendarBeforeReset} className="w-full rounded-xl bg-slate-700 px-4 py-3 text-sm font-bold text-white disabled:opacity-50">{isCalendarResetting?'מייצא…':'1. אימות סיסמה והורדת גיבוי מלא'}</button>
-            {calendarResetBackup&&<div className="space-y-3 rounded-xl border border-slate-700 p-4">
-              <p className="text-sm text-slate-200">הקובץ כולל {calendarResetBackup.backup.appointments.length} תורים והיסטוריית שינויים.</p>
-              <label className="flex items-start gap-2 text-sm text-slate-300"><input type="checkbox" checked={calendarBackupSaved} onChange={e=>setCalendarBackupSaved(e.target.checked)} className="mt-1"/>שמרתי את קובץ הגיבוי במכשיר</label>
-              <button type="button" disabled={!calendarBackupSaved||isCalendarResetting} onClick={runCalendarReset} className="w-full rounded-xl bg-red-700 hover:bg-red-600 px-4 py-3 text-sm font-black text-white disabled:opacity-50">{isCalendarResetting?'מאפס…':'2. איפוס היומן והעברה לארכיון'}</button>
-            </div>}
-            <button type="button" disabled={isCalendarResetting} onClick={()=>{setTenantToCalendarReset(null);setCalendarResetPassword('');setCalendarResetError('');setCalendarResetBackup(null);setCalendarBackupSaved(false);}} className="w-full rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-bold text-slate-200 disabled:opacity-50">ביטול</button>
-          </div>
-        </div>
-      )}
-
-      {tenantToWipe && (
-        <div className="fixed inset-0 z-[60] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-lg rounded-3xl border border-amber-700 bg-slate-900 p-6 sm:p-8 text-right shadow-2xl space-y-5">
-            <div className="flex items-center gap-3 border-b border-slate-700 pb-4">
-              <div className="h-12 w-12 rounded-2xl bg-amber-950 text-amber-300 flex items-center justify-center"><Trash2 className="h-6 w-6" /></div>
-              <div><h3 className="text-xl font-black text-white">ניקוי נתוני ניסיון</h3><p className="text-sm text-amber-200">{tenantToWipe.name}</p></div>
-            </div>
-            <p className="text-sm leading-6 text-slate-300">הפעולה מורידה קובץ גיבוי למכשיר ואז מוחקת לצמיתות את התורים, הביטולים, יומן הלקוחות, קודי הגישה והיסטוריית ה-SMS של העסק. פרטי העסק, חשבון המנהל וההגדרות נשארים.</p>
-            <div className="space-y-2">
-              <label className="block text-sm font-bold text-slate-200">סיסמת הסופר אדמין להפעלה</label>
-              <input type="password" autoComplete="current-password" value={wipePassword} onChange={e=>setWipePassword(e.target.value)} placeholder="סיסמת החשבון שלך" className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-base text-white focus:border-amber-500 focus:outline-none" />
-            </div>
-            {wipeError && <div role="alert" className="rounded-xl border border-red-700 bg-red-950 p-3 text-sm text-red-200">{wipeError}</div>}
-            <div className="flex justify-between gap-3 pt-1">
-              <button type="button" disabled={isWiping} onClick={()=>{setTenantToWipe(null);setWipePassword('');setWipeError('');}} className="rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-bold text-slate-200 disabled:opacity-50">סגירה</button>
-              <button type="button" disabled={!wipePassword || isWiping} onClick={runFinalTenantWipe} className="rounded-xl bg-amber-600 px-5 py-2.5 text-sm font-black text-white hover:bg-amber-500 disabled:opacity-50">{isWiping?'מגבה ומנקה…':'גבה ונקה עכשיו'}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* CONFIRMATION MODAL FOR TENANT DELETION (Requirements 3, 4, 5, 6) */}
       {tenantToDelete && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
@@ -1479,7 +1393,7 @@ export const SuperAdminPage: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-lg sm:text-xl font-black text-white font-['Rubik',sans-serif]">
-                    מחיקת סלון: {tenantToDelete.name}
+                    מחיקה לצמיתות: {tenantToDelete.name}
                   </h3>
                   <span className="text-xs font-mono text-purple-300">
                     מזהה מערכת: {tenantToDelete.id}
@@ -1521,29 +1435,14 @@ export const SuperAdminPage: React.FC = () => {
               </div>
             )}
 
-            {/* Phone Verification Input (Requirement 4) */}
-            <div className="space-y-2">
-              <label className="block text-xs sm:text-sm font-bold text-slate-200">
-                הקלידו את מספר הטלפון המאמת (<span className="text-emerald-400 font-mono" dir="ltr">0543111408</span>) לאישור המחיקה:
-              </label>
-              <input
-                type="tel"
-                value={verificationPhone}
-                onChange={(e) => setVerificationPhone(e.target.value)}
-                placeholder="0543111408"
-                dir="ltr"
-                className="w-full bg-slate-950 border border-slate-700 focus:border-red-500 rounded-xl px-4 py-3 text-white font-mono text-center text-base tracking-widest font-bold focus:outline-none shadow-inner"
-              />
-              <p className="text-[11px] text-slate-400 text-right">
-                {isPhoneMatch ? (
-                  <span className="text-emerald-400 font-bold flex items-center gap-1 justify-end">
-                    <span>מספר טלפון אומת בהצלחה</span>
-                    <Check className="w-3.5 h-3.5" />
-                  </span>
-                ) : (
-                  <span>הכפתור יופעל רק לאחר הקלדת מספר הטלפון המדויק: 0543111408</span>
-                )}
-              </p>
+            <div className="space-y-3">
+              <p className="text-sm text-slate-300">אין ארכיון פנימי. הגיבוי יישמר אצלך בלבד. להחזרה קלה בעתיד השתמש בהשבתה. המחיקה מסירה גם את חשבון בעל העסק.</p>
+              {tenantToDelete.status!=='deleting' && <button type="button" disabled={!!busyTenant||isDeleting} onClick={()=>downloadTenant(tenantToDelete,true)} className="w-full bg-emerald-800 rounded-xl p-3 text-white disabled:opacity-50">{busyTenant?'מייצא…':'1. השבתת העסק והורדת גיבוי ויומן פעילות'}</button>}
+              {!!deleteExportId && <label className="flex gap-2 text-sm text-slate-200"><input type="checkbox" checked={backupSaved} onChange={e=>setBackupSaved(e.target.checked)}/>שמרתי את קובצי הגיבוי במכשיר</label>}
+              <label className="block text-sm text-slate-200">הקלד את מזהה העסק לאישור: <b dir="ltr">{tenantToDelete.id}</b>
+              <input value={verificationPhone} onChange={e=>setVerificationPhone(e.target.value)} dir="ltr" className="mt-2 w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white"/></label>
+              <label className="block text-sm text-slate-200">סיסמת הסופר אדמין
+              <input type="password" autoComplete="current-password" value={deletePassword} onChange={e=>setDeletePassword(e.target.value)} className="mt-2 w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white"/></label>
             </div>
 
             {/* Action Buttons */}
@@ -1564,7 +1463,7 @@ export const SuperAdminPage: React.FC = () => {
               <button
                 type="button"
                 onClick={handleConfirmDelete}
-                disabled={!isPhoneMatch || isDeleting}
+                disabled={!isPhoneMatch || isDeleting || !!busyTenant}
                 className={`px-6 py-2.5 rounded-xl font-black text-xs sm:text-sm flex items-center gap-2 transition ${
                   isPhoneMatch && !isDeleting
                     ? 'bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-600/30 cursor-pointer active:scale-95'

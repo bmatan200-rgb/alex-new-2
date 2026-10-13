@@ -1,3 +1,4 @@
+import { activityCsv } from './src/utils/activityCsv';
 import { activityRange } from './server/activityRange';
 import sharp from 'sharp';
 import { normalizeAppointment, cancellationPatch, validateBookingDetails, scheduleSnapshot } from './server/appointmentAudit';
@@ -612,25 +613,6 @@ async function exportCalendar(req:Request,res:Response) {
 }
 app.post('/api/admin/calendar/export',requireAdmin,exportCalendar);
 app.post('/api/super-admin/calendar/export',requireSuperAdmin,exportCalendar);
-app.post('/api/super-admin/calendar/reset',requireSuperAdmin,async(req,res)=>{
-  try {
-    await recentPasswordAuth(req);
-    const tenantId=String(req.body?.tenantId||'').trim(),id=req.body.exportId;
-    if(!validId(tenantId)||!validId(id)||req.body.downloadConfirmed!==true) throw new Error('נדרש לבחור עסק, לייצא גיבוי ולאשר את שמירתו');
-    await db.runTransaction(async tx=>{
-      const tenantRef=getTenantDoc(tenantId),exportRef=doc(db,'tenants',tenantId,'calendar_exports',id);
-      const [tenant,exported]=await tx.getAll(tenantRef,exportRef),e=exported.data();
-      if(!e||e.used||e.uid!==(req as any).adminPayload.uid||e.createdAt<Date.now()-10*60_000||e.digest!==req.body.digest) throw new Error('הייצוא אינו תקף; יש לייצא מחדש');
-      if(e.revision!==Number(tenant.data()?.calendarRevision||0)) throw new Error('היומן השתנה מאז הגיבוי; יש לייצא מחדש');
-      const now=new Date().toISOString(),generation=randomUUID();
-      // One atomic generation switch archives every existing row; no appointment is deleted.
-      tx.update(tenantRef,{calendarGeneration:generation,calendarResetAt:now,calendarRevision:e.revision+1});
-      tx.update(exportRef,{used:true,resetAt:now,newGeneration:generation});
-      tx.create(doc(db,'tenants',tenantId,'calendar_resets',id),{at:now,by:'admin',uid:e.uid,previousGeneration:tenant.data()?.calendarGeneration||'initial',newGeneration:generation,backupDigest:e.digest,count:e.count});
-    });
-    invalidateTenantCaches(tenantId);res.json({success:true});
-  }catch(err:any){res.status(400).json({success:false,error:err.message});}
-});
 async function exportTenantActivity(req:Request,res:Response) {
   try {
     const tenantId=req.tenantId!;
@@ -654,102 +636,66 @@ async function exportTenantActivity(req:Request,res:Response) {
 app.post('/api/admin/tenant-activity/export',requireAdmin,exportTenantActivity);
 app.post('/api/super-admin/tenant-activity/export',requireSuperAdmin,requireAdmin,exportTenantActivity);
 
-// Super Admin only: create a full local backup, then permanently clear test
-// appointment/customer history for one selected tenant. Business settings and
-// its owner account are intentionally retained.
-const FINAL_WIPE_COLLECTIONS = ['customers','customer_access','customer_recovery','calendar_exports','calendar_resets','sms_logs','reminder_locks','booking_days'] as const;
-async function readCollectionRows(ref:any) {
-  const rows:any[]=[];
-  let cursor:any=null;
-  for (;;) {
-    let query=ref.orderBy(FieldPath.documentId()).limit(400);
-    if(cursor) query=query.startAfter(cursor);
-    const page=await query.get();
-    if(!page.docs.length) break;
-    rows.push(...page.docs.map((d:any)=>({...d.data(),id:d.id})));
-    cursor=page.docs[page.docs.length-1];
-    if(page.docs.length<400) break;
+// V50: complete per-business exports and reversible suspension.
+async function tenantExportTree(ref:any):Promise<any> {
+  const snap=await ref.get(), children=await ref.listCollections();
+  const collections:any={};
+  for(const child of children) {
+    const docs:any[]=[];
+    // listDocuments also returns missing parent documents with live subcollections.
+    for(const childRef of await child.listDocuments())docs.push({id:childRef.id,...await tenantExportTree(childRef)});
+    collections[child.id]=docs;
   }
-  return rows;
+  return {data:snap.data()||{},collections};
 }
-async function finalWipeSnapshot(tenantId:string) {
-  const appointmentsRef=getTenantAppointmentsRef(tenantId);
-  const [appointmentRows,...collections]=await Promise.all([
-    readCollectionRows(appointmentsRef),
-    ...FINAL_WIPE_COLLECTIONS.map(name=>readCollectionRows(collection(db,'tenants',tenantId,name))),
-  ]);
-  const appointments:any[]=new Array(appointmentRows.length);
-  await runBounded(appointmentRows.map((a:any,index:number)=>({a,index})),20,async({a,index}:any)=>{
-    const {accessTokenHash,...safe}=a;
-    const audit=await readCollectionRows(getTenantAppointmentDoc(tenantId,a.id).collection('audit'));
-    appointments[index]={...safe,audit};
-  });
-  const related:any={}; FINAL_WIPE_COLLECTIONS.forEach((name,index)=>related[name]=collections[index]);
-  const legacySms=(await readCollectionRows(collection(db,'sms_logs'))).filter((x:any)=>x.tenantId===tenantId || (tenantId===PRIMARY_TENANT_ID && String(x.id).startsWith('sms_alex_beauty_')));
-  const legacyLocks=tenantId===PRIMARY_TENANT_ID ? (await readCollectionRows(collection(db,'reminder_locks'))).filter((x:any)=>!x.tenantId || x.tenantId===tenantId) : (await readCollectionRows(collection(db,'reminder_locks'))).filter((x:any)=>x.tenantId===tenantId);
-  const [scheduledMessages,deliveryJobs]=await Promise.all([
-    readCollectionRows(collection(db,SCHEDULE_COLLECTION)),
-    readCollectionRows(collection(db,DELIVERY_JOBS)),
-  ]);
-  related.legacySmsLogs=legacySms;
-  related.legacyReminderLocks=legacyLocks;
-  related.smsSchedules=scheduledMessages.filter((x:any)=>x.tenantId===tenantId);
-  related.smsDeliveryJobs=deliveryJobs.filter((x:any)=>x.tenantId===tenantId);
-  return {schemaVersion:44,tenantId,exportedAt:new Date().toISOString(),appointments,related};
+function safeExport(value:any):any {
+  return JSON.parse(JSON.stringify(value,(key,v)=>/password|secret|token|apiKey|credential|recoveryCode|codeHash/i.test(key)?undefined:v));
 }
-function finalWipeDigest(snapshot:any) { const {exportedAt:_exportedAt,...stable}=snapshot; return hash(JSON.stringify(stable)); }
-async function deleteCollectionContents(ref:any) {
-  for (;;) {
-    const page=await ref.limit(400).get();
-    if(!page.docs.length) break;
-    const batch=db.batch(); page.docs.forEach((d:any)=>batch.delete(d.ref));
-    await batch.commit();
-    if(page.docs.length<400) break;
+async function legacyBusinessRows(tenantId:string) {
+  const result:any[]=[];
+  for(const name of ['appointments','customers','reminder_locks','sms_logs','whatsapp_logs','settings']) {
+    const rows=await collection(db,name).get();
+    for(const d of rows.docs) {
+      const data=d.data(),matches=data?.tenantId===tenantId || (tenantId===PRIMARY_TENANT_ID && !data?.tenantId && (['appointments','customers','reminder_locks','settings','whatsapp_logs'].includes(name) || d.id.startsWith('sms_alex_beauty_')));
+      if(matches)result.push(d);
+    }
   }
+  return result;
 }
-app.post('/api/super-admin/tenant-data-wipe/export',requireSuperAdmin,async(req,res)=>{
+app.post('/api/super-admin/tenants/:tenantId/export',requireSuperAdmin,async(req,res)=>{
   try {
-    await recentPasswordAuth(req);
-    const tenantId=String(req.body?.tenantId||'').trim();
-    if(!validId(tenantId)) throw new Error('יש לבחור עסק תקין לניקוי');
-    const tenant=await getTenantDoc(tenantId).get();
-    if(!tenant.exists) return res.status(404).json({success:false,error:'העסק לא נמצא'});
-    const backup=await finalWipeSnapshot(tenantId),digest=finalWipeDigest(backup),exportId=randomUUID();
-    await doc(db,'super_admin_data_wipe_exports',exportId).create({tenantId,digest,uid:(req as any).adminPayload.uid,createdAt:Date.now(),used:false});
-    res.json({success:true,exportId,digest,backup});
+    const tenantId=req.params.tenantId, ref=getTenantDoc(tenantId),tenant=await ref.get();
+    if(!tenant.exists)return res.status(404).json({success:false,error:'העסק לא נמצא'});
+    if(tenant.data()?.status==='deleting')throw new Error('המחיקה כבר החלה; לא ניתן לייצא גיבוי חדש');
+    const tree=await tenantExportTree(ref),related:any={};
+    for(const name of [SCHEDULE_COLLECTION,DELIVERY_JOBS,'domains','sms_logs','reminder_locks','super_admin_data_wipe_exports','adminUsers','tenantAdminIcons']) {
+      const rows=await collection(db,name).where('tenantId','==',tenantId).get();
+      related[name]=await Promise.all(rows.docs.map(async d=>({id:d.id,...await tenantExportTree(d.ref)})));
+    }
+    const appointments=(tree.collections.appointments||[]).map((a:any)=>({...a.data,id:a.id,archivedAt:(a.data.calendarGeneration||'initial')!==(tree.data.calendarGeneration||'initial')?'archived':null,audit:(a.collections.audit||[]).map((e:any)=>({...e.data,id:e.id}))}));
+    related.legacy=await Promise.all((await legacyBusinessRows(tenantId)).map(async d=>({path:d.ref.path,...await tenantExportTree(d.ref)})));
+    const backup=safeExport({activityCsv:activityCsv(tree.data.name||tenantId,appointments),schemaVersion:50,tenantId,exportedAt:new Date().toISOString(),tenant:tree,related});
+    // Small receipt only; the backup itself is downloaded, never stored internally.
+    const exportId=randomUUID();
+    await ref.collection('lifecycle_exports').doc(exportId).create({uid:(req as any).adminPayload.uid,createdAt:Date.now(),tenantId,stateUpdatedAt:tenant.data()?.updatedAt||null});
+    res.setHeader('Cache-Control','no-store');res.json({success:true,backup,exportId});
   }catch(err:any){res.status(400).json({success:false,error:err.message});}
 });
-app.post('/api/super-admin/tenant-data-wipe/execute',requireSuperAdmin,async(req,res)=>{
+app.post('/api/super-admin/tenants/:tenantId/status',requireSuperAdmin,async(req,res)=>{
   try {
-    await recentPasswordAuth(req);
-    const tenantId=String(req.body?.tenantId||'').trim(),id=String(req.body?.exportId||''),digest=String(req.body?.digest||'');
-    if(!validId(tenantId)||!validId(id)||!digest) throw new Error('פרטי הגיבוי אינם תקינים');
-    const exportRef=doc(db,'super_admin_data_wipe_exports',id),exported=await exportRef.get(),e=exported.data();
-    if(!e||e.used||e.tenantId!==tenantId||e.uid!==(req as any).adminPayload.uid||e.createdAt<Date.now()-10*60_000||e.digest!==digest) throw new Error('הגיבוי פג או אינו תואם; יש לנסות שוב');
-    await db.runTransaction(async(tx:any)=>{const snap=await tx.get(exportRef),current=snap.data();if(!current||current.used||current.tenantId!==tenantId||current.uid!==(req as any).adminPayload.uid) throw new Error('הגיבוי כבר נוצל');tx.update(exportRef,{used:true});});
-    const fresh=await finalWipeSnapshot(tenantId);
-    if(finalWipeDigest(fresh)!==digest) throw new Error('נוספו או השתנו נתונים אחרי הגיבוי; יש לייצא מחדש');
-    const appointmentsRef=getTenantAppointmentsRef(tenantId);
-    for (;;) {
-      const page=await appointmentsRef.limit(200).get();
-      if(!page.docs.length) break;
-      await runBounded(page.docs,20,async(d:any)=>deleteCollectionContents(d.ref.collection('audit')));
-      const batch=db.batch(); page.docs.forEach((d:any)=>batch.delete(d.ref)); await batch.commit();
-      if(page.docs.length<200) break;
-    }
-    for(const name of FINAL_WIPE_COLLECTIONS) await deleteCollectionContents(collection(db,'tenants',tenantId,name));
-    for(const name of ['sms_logs','reminder_locks']) {
-      const snap=await collection(db,name).get();
-      const matches=snap.docs.filter((d:any)=>d.data()?.tenantId===tenantId || (tenantId===PRIMARY_TENANT_ID && name==='sms_logs' && d.id.startsWith('sms_alex_beauty_')) || (tenantId===PRIMARY_TENANT_ID && name==='reminder_locks' && !d.data()?.tenantId));
-      for(let i=0;i<matches.length;i+=400){const batch=db.batch();matches.slice(i,i+400).forEach((d:any)=>batch.delete(d.ref));await batch.commit();}
-    }
-    for(const name of [SCHEDULE_COLLECTION,DELIVERY_JOBS]) {
-      const snap=await collection(db,name).get(),matches=snap.docs.filter((d:any)=>d.data()?.tenantId===tenantId);
-      for(let i=0;i<matches.length;i+=400){const batch=db.batch();matches.slice(i,i+400).forEach((d:any)=>batch.delete(d.ref));await batch.commit();}
-    }
-    await exportRef.delete();
-    invalidateTenantCaches(tenantId);
-    res.json({success:true,tenantId});
+    const tenantId=req.params.tenantId,suspended=req.body?.suspended;
+    if(typeof suspended!=='boolean')throw new Error('יש לבחור השבתה או הפעלה');
+    await db.runTransaction(async tx=>{
+      const ref=getTenantDoc(tenantId),snap=await tx.get(ref),data=snap.data();
+      if(!snap.exists||['deleted','deleting'].includes(data?.status))throw new Error('לא ניתן לשנות עסק שנמחק');
+      if(suspended && data?.status==='suspended')return;
+      if(!suspended && data?.status!=='suspended')return;
+      const refs=(['today','1day'] as const).map(t=>doc(db,SCHEDULE_COLLECTION,scheduleId(tenantId,t)));
+      const schedules=await Promise.all(refs.map(r=>tx.get(r)));
+      refs.forEach((r,i)=>{const patch=schedulePatch(tenantId,i===0?'today':'1day',schedules[i].data()?.settings||{},!suspended,schedules[i].data(),Date.now());if(patch)tx.set(r,patch,{merge:true});});
+      tx.update(ref,{status:suspended?'suspended':data?.statusBeforeSuspension==='trial'?'trial':'active',...(suspended?{statusBeforeSuspension:data?.status,suspendedAt:Date.now()}:{}),updatedAt:new Date().toISOString()});
+    });
+    invalidateTenantCaches(tenantId);res.json({success:true});
   }catch(err:any){res.status(400).json({success:false,error:err.message});}
 });
 
@@ -1013,7 +959,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '49.0.0';
+const APP_VERSION = '50.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];
@@ -1079,6 +1025,8 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
     if (!admin) return res.status(403).json({ success: false, error: 'לחשבון אין הרשאת ניהול' });
 
     req.tenantId = authorizeTenant(admin,[req.body?.tenantId,req.query.tenant,req.headers['x-tenant-id']],req.tenantId || 'alex_beauty');
+    const tenant=await getTenantDoc(req.tenantId).get();
+    if(!tenant.exists || !['active','trial'].includes(tenant.data()?.status))return res.status(403).json({success:false,error:'העסק מושבת או לא נמצא'});
     (req as any).adminPayload = admin;
     return next();
   } catch (err: any) {
@@ -1451,7 +1399,9 @@ async function sendRemindersForDate(targetDate: string, reminderType: 'today' | 
       if(acceptedPhones.has(phoneKey)) return;
       // Recheck current records before dispatch so a cancellation or reschedule
       // while a batch is draining cannot send the stale appointment text.
-      const currentGeneration=(await getTenantDoc(tenantId).get()).data()?.calendarGeneration||'initial';
+      const currentTenant=await getTenantDoc(tenantId).get();
+      if(!currentTenant.exists||!['active','trial'].includes(currentTenant.data()?.status))return;
+      const currentGeneration=currentTenant.data()?.calendarGeneration||'initial';
       const fresh = options.scheduled ? (await db.getAll(...appts.map(a => getTenantAppointmentDoc(tenantId, String(a.id)))))
         .filter(s => s.exists).map(s => ({ ...s.data(), id: s.id } as ServerAppointment))
         .filter(a => normalizeAppointment(a).status === 'active' && ((a as any).calendarGeneration||'initial')===currentGeneration && a.appointment_date === targetDate && cleanPhoneDigits(a.customer_phone) === phoneKey
@@ -1910,6 +1860,8 @@ async function ensurePrimaryTenant(options: { force?: boolean } = {}): Promise<{
     return { skipped: true, migrated: false };
   }
 
+  if (markerBefore.data()?.permanentlyDeleted) return { skipped: true, migrated: false };
+
   // Per-document migration receipts survive cancellation/deletion and interrupted runs.
   const previousImport = !!primaryBefore.data()?.migratedAt;
   const migrate = async (sourceCollection:string,targetCollection:string,transform=(x:any)=>x) => {
@@ -1995,7 +1947,7 @@ app.get('/api/tenants', requireSuperAdmin, async (_req: Request, res: Response) 
     const baseTenants = snap.docs
       .map((d) => ({ id: d.id, ...d.data() } as any))
       .filter((t: any) => t.status !== 'deleted');
-    const assignedIcons = await Promise.all(baseTenants.map((tenant: any) => ensureTenantAdminIcon(tenant.id)));
+    const assignedIcons = await Promise.all(baseTenants.map((tenant: any) => tenant.status==='deleting'?Promise.resolve(tenant.adminIcon||''):ensureTenantAdminIcon(tenant.id)));
     baseTenants.forEach((tenant: any, index: number) => { tenant.adminIcon = assignedIcons[index]; });
 
     // Aggregation count avoids downloading every appointment/customer document.
@@ -2257,6 +2209,7 @@ app.put('/api/super-admin/tenants/:tenantId', requireSuperAdmin, async (req: Req
     const tenantId = String(req.params.tenantId || '').trim();
     if (!tenantId) return res.status(400).json({ success: false, error: 'Tenant ID is required' });
     const existingSnap = await getDoc(getTenantDoc(tenantId));
+    if (existingSnap.data()?.status==='deleting') return res.status(409).json({success:false,error:'העסק בתהליך מחיקה'});
     if (!existingSnap.exists) return res.status(404).json({ success: false, error: 'Tenant not found' });
     const existing: any = existingSnap.data();
     const name = String(req.body?.name || '').trim();
@@ -2310,7 +2263,7 @@ app.post('/api/super-admin/tenants/:tenantId/owner-account', requireSuperAdmin, 
     const tenantSnap = await getDoc(getTenantDoc(tenantId));
     if (!tenantSnap.exists) return res.status(404).json({ success: false, error: 'העסק לא נמצא' });
 
-    if(tenantSnap.data()?.status==='deleted') return res.status(409).json({success:false,error:'Tenant is deleted'});
+    if(['deleted','deleting'].includes(tenantSnap.data()?.status)) return res.status(409).json({success:false,error:'Tenant is deleted'});
     if(tenantSnap.data()?.ownerAuthEmail && tenantSnap.data()?.ownerAuthEmail!==email) return res.status(409).json({success:false,error:'Use the existing owner email; reassignment requires an explicit migration'});
     let user;
     try { user = await getAuth().getUserByEmail(email); }
@@ -2354,39 +2307,48 @@ app.post('/api/super-admin/tenants/:tenantId/owner-account/disable', requireSupe
   } catch (err: any) { return res.status(500).json({ success: false, error: err?.message }); }
 });
 
-// 9.5 Delete Tenant Endpoint
-app.delete('/api/super-admin/tenants/:tenantId',requireSuperAdmin,async(req,res,next)=>{
+// V50: suspension must precede an export and permanent deletion.
+app.delete('/api/super-admin/tenants/:tenantId',requireSuperAdmin,async(req,res)=>{
+  const tenantId=req.params.tenantId;
   try {
-    const tenantId=req.params.tenantId;
-    if(!validId(tenantId) || tenantId===PRIMARY_TENANT_ID) return res.status(400).json({success:false,error:'Cannot delete primary tenant'});
-    const tenant=await getDoc(getTenantDoc(tenantId));
-    if(!tenant.exists) return res.status(404).json({success:false,error:'Tenant not found'});
-    // Persistent tombstone immediately denies access on every server and stops reminders.
-    const iconId=tenant.data()?.adminIcon;
+    await recentPasswordAuth(req);
+    if(req.body?.confirmation!==tenantId || req.body?.downloadConfirmed!==true)throw new Error('נדרש לאשר שמירת גיבוי ולהקליד את מזהה העסק');
+    const ref=getTenantDoc(tenantId),tenant=await ref.get();
+    if(!tenant.exists)return res.status(404).json({success:false,error:'העסק לא נמצא'});
     await db.runTransaction(async tx=>{
-      const tenantRef=getTenantDoc(tenantId);
-      const current=await tx.get(tenantRef);
-      const iconRef=isBusinessAdminIconId(iconId)?doc(db,'tenantAdminIcons',iconId):null;
-      const assignment=iconRef?await tx.get(iconRef):null;
-      const refs=(['today','1day'] as const).map(type=>doc(db,SCHEDULE_COLLECTION,scheduleId(tenantId,type)));
-      const schedules=await Promise.all(refs.map(r=>tx.get(r)));
-      refs.forEach((r,index)=>{
-        const patch=schedulePatch(tenantId,index===0?'today':'1day',schedules[index].data()?.settings || {},false,schedules[index].data(),Date.now());
-        if(patch) tx.set(r,patch,{merge:true});
-      });
-      tx.update(tenantRef,{status:'deleted',deletedAt:new Date().toISOString()});
-      if(iconRef && assignment?.data()?.tenantId===tenantId) tx.delete(iconRef);
+      const current=await tx.get(ref);
+      if(current.data()?.status==='deleting')return; // Retry after an interrupted cleanup.
+      const exportId=String(req.body?.exportId||'');
+      if(!validId(exportId))throw new Error('יש להוריד גיבוי קודם');
+      const exported=await tx.get(ref.collection('lifecycle_exports').doc(exportId));
+      if(current.data()?.status!=='suspended'||exported.data()?.uid!==(req as any).adminPayload.uid||exported.data()?.stateUpdatedAt!==(current.data()?.updatedAt||null)||!exported.exists||!Number.isFinite(exported.data()?.createdAt)||exported.data()!.createdAt<Number(current.data()?.suspendedAt||0)||exported.data()!.createdAt<Date.now()-24*60*60_000)throw new Error('יש להשבית את העסק ולהוריד גיבוי לפני המחיקה');
+      tx.update(ref,{status:'deleting'});
     });
-    if(tenant.data()?.ownerAuthUid) {
-      await getAuth().updateUser(tenant.data()!.ownerAuthUid,{disabled:true});
-      await getAuth().revokeRefreshTokens(tenant.data()!.ownerAuthUid);
-    }
-    const mappings=await collection(db,'domains').where('tenantId','==',tenantId).get();
-    for(const mapping of mappings.docs) await mapping.ref.delete();
     invalidateTenantCaches(tenantId);
-    domainTenantCache.clear();
-    res.json({success:true,message:'Tenant deactivated; records retained for recovery'});
-  }catch(err){next(err);}
+    // Prevent primary-tenant bootstrap from recreating a deliberately removed business.
+    if(tenantId===PRIMARY_TENANT_ID)await doc(db,'system_migrations',PRIMARY_MIGRATION_MARKER_ID).set({permanentlyDeleted:true},{merge:true});
+    const uid=tenant.data()?.ownerAuthUid;
+    if(uid){
+      try {
+        const user=await getAuth().getUser(uid),binding=await doc(db,'adminUsers',uid).get();
+        if(!getSuperAdminEmails().includes(String(user.email||'').toLowerCase()) && binding.data()?.tenantId===tenantId){
+          await getAuth().deleteUser(uid);await db.recursiveDelete(binding.ref);
+        }
+      }catch(err:any){if(err.code!=='auth/user-not-found')throw err;const binding=await doc(db,'adminUsers',uid).get();if(binding.data()?.tenantId===tenantId)await binding.ref.delete();}
+    }
+    for(const name of [SCHEDULE_COLLECTION,DELIVERY_JOBS,'domains','sms_logs','reminder_locks','super_admin_data_wipe_exports','adminUsers','tenantAdminIcons']) {
+      const rows=await collection(db,name).where('tenantId','==',tenantId).get();
+      for(const d of rows.docs)await db.recursiveDelete(d.ref);
+    }
+    for(const d of await legacyBusinessRows(tenantId)){
+      await db.recursiveDelete(d.ref);
+      await doc(db,'migration_receipts',hash(d.ref.path)).delete();
+    }
+    if(tenantId===PRIMARY_TENANT_ID)await doc(db,'migration_receipts','alex_sms_settings').delete();
+    await db.recursiveDelete(ref);
+    invalidateTenantCaches(tenantId);domainTenantCache.clear();
+    res.json({success:true});
+  }catch(err:any){invalidateTenantCaches(tenantId);res.status(400).json({success:false,error:err.message||'המחיקה נכשלה; ניתן לנסות שוב'});}
 });
 
 // 10. Protected tenant admin data

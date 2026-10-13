@@ -143,7 +143,7 @@ export interface TenantInfo {
   secondaryColor?: string;
   adminIcon?: string | null;
   coverImage?: string; // tenant-specific hero/cover image (URL or compressed data URL)
-  status: 'active' | 'trial' | 'suspended';
+  status: 'active' | 'trial' | 'suspended' | 'deleting';
   plan: 'starter' | 'pro' | 'enterprise';
   createdAt: string;
   totalAppointments?: number;

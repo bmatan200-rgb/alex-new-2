@@ -115,7 +115,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [showExistingAppointments, setShowExistingAppointments] = useState(false);
+  const [showExistingAppointments, setShowExistingAppointments] = useState(true);
 
   // 90 days for admin booking calendar (allows booking up to 3 months forward)
   const days: DayInfo[] = useMemo(() => buildNextDays(90), []);
@@ -666,7 +666,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
         {/* Modal Scrollable Body */}
         <div ref={modalBodyRef} className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-4">
           {onRequestCancelAppointment && <section className="rounded-2xl border border-rose-200 bg-rose-50 p-3 space-y-3">
-            <button type="button" aria-expanded={showExistingAppointments} onClick={()=>setShowExistingAppointments(!showExistingAppointments)} className="w-full text-right text-sm font-bold text-rose-800">ביטול תור קיים</button>
+            <button type="button" aria-expanded={showExistingAppointments} onClick={()=>setShowExistingAppointments(!showExistingAppointments)} className="w-full text-right text-sm font-bold text-rose-800">{showExistingAppointments ? 'תורים קיימים — לביטול תור הקישו כאן' : 'הצגת תורים קיימים וביטול תור'}</button>
             {showExistingAppointments && <>
               <label className="block text-sm font-bold text-slate-700">תאריך התור
                 <input type="date" value={selectedDate||initialDate||todayIso} onChange={e=>setSelectedDate(e.target.value)} className="mt-1 w-full min-w-0 rounded-xl border border-slate-200 bg-white p-2 text-base" />

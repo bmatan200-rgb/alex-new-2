@@ -19,7 +19,10 @@ const manifestRoute = server.slice(server.indexOf("app.get('/manifest.json'"), s
 const serviceWorker = readFileSync(new URL('../public/service-worker.js', import.meta.url), 'utf8');
 const tenantContext = readFileSync(new URL('../src/context/TenantContext.tsx', import.meta.url), 'utf8');
 
-assert.equal(pkg.version, '55.0.0');
+assert.equal(pkg.version, '56.0.0');
+const adminBooking = readFileSync(new URL('../src/components/AdminBookingModal.tsx', import.meta.url), 'utf8');
+assert.match(adminBooking, /showExistingAppointments, setShowExistingAppointments\] = useState\(true\)/, 'existing appointments should be visible when opening new appointment');
+assert.match(adminBooking, /תורים קיימים/);
 assert.match(tenantContext, /const isSuperAdminPath = location\.pathname === '\/super-admin'/, 'Super Admin must remain accessible while a tenant is suspended');
 assert.match(tenantContext, /loadError&&!isSuperAdminPath/, 'tenant load errors must not block the Super Admin route');
 assert.match(server, /readCleanupRemainders/, 'activity cleanup must verify appointment/customer deletion before success');
@@ -114,5 +117,5 @@ assert.doesNotMatch(torFlow, /executeBookingSubmission\(cleanName, cleanPhone, i
 
 assert.match(readFileSync(new URL('../src/components/Header.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
 assert.match(readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
-console.log('V55 source verification passed');
+console.log('V56 source verification passed');
 assert.doesNotMatch(server, /app\.post\('\/api\/super-admin\/(calendar\/reset|tenant-data-wipe\/execute)'/);

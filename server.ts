@@ -1,5 +1,6 @@
 import { activityCsv } from './src/utils/activityCsv';
 import { activityRange } from './server/activityRange';
+import { createBusinessTreeExporter } from './server/businessExport';
 import sharp from 'sharp';
 import { normalizeAppointment, cancellationPatch, validateBookingDetails, scheduleSnapshot } from './server/appointmentAudit';
 import { DeliveryTracker, DELIVERY_JOBS } from './server/sms/deliveryTracker';
@@ -679,48 +680,51 @@ app.get('/api/super-admin/customers/export.csv',requireSuperAdmin,async(_req,res
   }catch(err:any){const quota=noteFirestoreQuota(err,'Super Admin all-customer export');res.status(quota?503:500).json({success:false,error:quota?'מכסת מסד הנתונים מלאה זמנית':'ייצוא הלקוחות נכשל'});}
 });
 
-// V51: complete per-business exports and reversible suspension.
-async function tenantExportTree(ref:any):Promise<any> {
-  const snap=await ref.get(), children=await ref.listCollections();
-  const collections:any={};
-  for(const child of children) {
-    const docs:any[]=[];
-    // listDocuments also returns missing parent documents with live subcollections.
-    for(const childRef of await child.listDocuments())docs.push({id:childRef.id,...await tenantExportTree(childRef)});
-    collections[child.id]=docs;
-  }
-  return {data:snap.data()||{},collections};
-}
+// V52: bounded parallel traversal and batched document reads for full exports.
 function safeExport(value:any):any {
   return JSON.parse(JSON.stringify(value,(key,v)=>/password|secret|token|apiKey|credential|recoveryCode|codeHash/i.test(key)?undefined:v));
 }
-async function legacyBusinessRows(tenantId:string) {
-  const result:any[]=[];
-  for(const name of ['appointments','customers','reminder_locks','sms_logs','whatsapp_logs','settings']) {
-    const rows=await collection(db,name).get();
-    for(const d of rows.docs) {
+async function legacyBusinessRows(tenantId:string,read:(operation:()=>Promise<any>)=>Promise<any>=operation=>operation()) {
+  const names=['appointments','customers','reminder_locks','sms_logs','whatsapp_logs','settings'];
+  const results:any[][]=new Array(names.length);
+  await runBounded(names.map((name,index)=>({name,index})),6,async({name,index})=>{
+    // Only the primary business can own untagged legacy records. Other
+    // businesses must not scan unrelated legacy customers and appointments.
+    const ref=collection(db,name);
+    const rows=await read(()=>(tenantId===PRIMARY_TENANT_ID?ref:ref.where('tenantId','==',tenantId)).get());
+    results[index]=rows.docs.filter(d=>{
       const data=d.data(),matches=data?.tenantId===tenantId || (tenantId===PRIMARY_TENANT_ID && !data?.tenantId && (['appointments','customers','reminder_locks','settings','whatsapp_logs'].includes(name) || d.id.startsWith('sms_alex_beauty_')));
-      if(matches)result.push(d);
-    }
-  }
-  return result;
+      return matches;
+    });
+  });
+  return results.flat();
 }
 app.post('/api/super-admin/tenants/:tenantId/export',requireSuperAdmin,async(req,res)=>{
   try {
     const tenantId=req.params.tenantId, ref=getTenantDoc(tenantId),tenant=await ref.get();
     if(!tenant.exists)return res.status(404).json({success:false,error:'העסק לא נמצא'});
-    if(tenant.data()?.status==='deleting')throw new Error('המחיקה כבר החלה; לא ניתן לייצא גיבוי חדש');
-    const tree=await tenantExportTree(ref),related:any={};
-    for(const name of [SCHEDULE_COLLECTION,DELIVERY_JOBS,'domains','sms_logs','reminder_locks','super_admin_data_wipe_exports','adminUsers','tenantAdminIcons']) {
-      const rows=await collection(db,name).where('tenantId','==',tenantId).get();
-      related[name]=await Promise.all(rows.docs.map(async d=>({id:d.id,...await tenantExportTree(d.ref)})));
-    }
+    if(tenant.data()?.status==='deleting'||tenant.data()?.dataCleanupPending)throw new Error('מחיקה או ניקוי כבר החלו; יש להשלים את הפעולה לפני ייצוא חדש');
+    const exporter=createBusinessTreeExporter(db),related:any={};
+    const relatedNames=[SCHEDULE_COLLECTION,DELIVERY_JOBS,'domains','sms_logs','reminder_locks','super_admin_data_wipe_exports','adminUsers','tenantAdminIcons'];
+    const [tree]=await Promise.all([
+      exporter.tree(ref,tenant),
+      runBounded(relatedNames,6,async name=>{
+        const rows=await exporter.read(()=>collection(db,name).where('tenantId','==',tenantId).get());
+        const docs:any[]=new Array(rows.docs.length);
+        await runBounded(rows.docs.map((d,index)=>({d,index})),6,async({d,index})=>{docs[index]={id:d.id,...await exporter.tree(d.ref,d)};});
+        related[name]=docs;
+      }),
+      (async()=>{
+        const rows=await legacyBusinessRows(tenantId,exporter.read),docs:any[]=new Array(rows.length);
+        await runBounded(rows.map((d,index)=>({d,index})),6,async({d,index})=>{docs[index]={path:d.ref.path,...await exporter.tree(d.ref,d)};});
+        related.legacy=docs;
+      })(),
+    ]);
     const appointments=(tree.collections.appointments||[]).map((a:any)=>({...a.data,id:a.id,archivedAt:(a.data.calendarGeneration||'initial')!==(tree.data.calendarGeneration||'initial')?'archived':null,audit:(a.collections.audit||[]).map((e:any)=>({...e.data,id:e.id}))}));
-    related.legacy=await Promise.all((await legacyBusinessRows(tenantId)).map(async d=>({path:d.ref.path,...await tenantExportTree(d.ref)})));
     const backup=safeExport({activityCsv:activityCsv(tree.data.name||tenantId,appointments),schemaVersion:51,tenantId,exportedAt:new Date().toISOString(),tenant:tree,related});
     // Small receipt only; the backup itself is downloaded, never stored internally.
     const exportId=randomUUID();
-    await ref.collection('lifecycle_exports').doc(exportId).create({uid:(req as any).adminPayload.uid,createdAt:Date.now(),tenantId,stateUpdatedAt:tenant.data()?.updatedAt||null});
+    await ref.collection('lifecycle_exports').doc(exportId).create({uid:(req as any).adminPayload.uid,createdAt:Date.now(),tenantId,stateUpdatedAt:tenant.data()?.updatedAt||null,calendarRevision:Number(tenant.data()?.calendarRevision||0),purpose:req.body?.purpose==='cleanup'?'cleanup':'backup'});
     res.setHeader('Cache-Control','no-store');res.json({success:true,backup,exportId});
   }catch(err:any){res.status(400).json({success:false,error:err.message});}
 });
@@ -732,6 +736,7 @@ app.post('/api/super-admin/tenants/:tenantId/status',requireSuperAdmin,async(req
     await db.runTransaction(async tx=>{
       const ref=getTenantDoc(tenantId),snap=await tx.get(ref),data=snap.data();
       if(!snap.exists||['deleted','deleting'].includes(data?.status))throw new Error('לא ניתן לשנות עסק שנמחק');
+      if(data?.dataCleanupPending)throw new Error('יש להשלים את ניקוי היומן והלקוחות לפני שינוי מצב העסק');
       if(suspended && data?.status==='suspended')return;
       if(!suspended && data?.status!=='suspended')return;
       const refs=(['today','1day'] as const).map(t=>doc(db,SCHEDULE_COLLECTION,scheduleId(tenantId,t)));
@@ -741,6 +746,57 @@ app.post('/api/super-admin/tenants/:tenantId/status',requireSuperAdmin,async(req
     });
     invalidateTenantCaches(tenantId);res.json({success:true});
   }catch(err:any){res.status(400).json({success:false,error:err.message});}
+});
+
+// Clear business activity only; profile, services, settings and owner account
+// remain intact. Suspension + a downloaded snapshot precede the first delete.
+app.post('/api/super-admin/tenants/:tenantId/activity/clear',requireSuperAdmin,async(req,res)=>{
+  const tenantId=req.params.tenantId,ref=getTenantDoc(tenantId),token=randomUUID();
+  let started=false;
+  try{
+    await recentPasswordAuth(req);
+    if(req.body?.confirmation!==tenantId||req.body?.downloadConfirmed!==true)throw new Error('נדרש לשמור גיבוי ולהקליד את מזהה העסק לאישור');
+    await db.runTransaction(async tx=>{
+      const current=await tx.get(ref),data=current.data();
+      if(!current.exists||data?.status!=='suspended')throw new Error('יש להשבית את העסק ולהוריד גיבוי לפני הניקוי');
+      if(data.dataCleanupPending){
+        if(data.dataCleanupRequestedBy!==(req as any).adminPayload.uid)throw new Error('הניקוי שייך למנהל אחר');
+        if(Number(data.dataCleanupLeaseUntil||0)>Date.now())throw new Error('פעולת הניקוי כבר מתבצעת; יש להמתין');
+      }else{
+        const exportId=String(req.body?.exportId||'');
+        if(!validId(exportId))throw new Error('יש להוריד גיבוי לפני הניקוי');
+        const exported=await tx.get(ref.collection('lifecycle_exports').doc(exportId)),backup=exported.data();
+        if(!exported.exists||backup?.purpose!=='cleanup'||backup.uid!==(req as any).adminPayload.uid||backup.stateUpdatedAt!==(data.updatedAt||null)||backup.calendarRevision!==Number(data.calendarRevision||0)||!Number.isFinite(backup.createdAt)||backup.createdAt<Number(data.suspendedAt||0)||backup.createdAt<Date.now()-24*60*60_000)throw new Error('הגיבוי חסר או אינו עדכני; יש להוריד גיבוי חדש');
+      }
+      tx.update(ref,{dataCleanupPending:true,dataCleanupRequestedBy:(req as any).adminPayload.uid,dataCleanupToken:token,dataCleanupLeaseUntil:Date.now()+10*60_000});
+    });
+    started=true;invalidateTenantCaches(tenantId);
+    const [locks,jobs]=await Promise.all([ref.collection('reminder_locks').get(),collection(db,DELIVERY_JOBS).where('tenantId','==',tenantId).get()]);
+    const inFlight=locks.docs.some(d=>{const v=d.data();return (['prepared','sending'].includes(v.status)&&Number(v.leaseUntil)>Date.now())||(v.status==='in_progress'&&Date.parse(v.claimedAt)>Date.now()-120_000);})||jobs.docs.some(d=>d.data().token&&Number(d.data().nextCheckAt)>Date.now());
+    if(inFlight)throw new Error('יש הודעת SMS בתהליך שליחה או בדיקת מסירה. יש להמתין שתי דקות ולנסות שוב');
+    const activityCollections=['appointments','customers','sms_logs','whatsapp_logs','reminder_locks','booking_days','customer_access','customer_recovery','calendar_resets','calendar_exports','lifecycle_exports'];
+    await runBounded(activityCollections,3,async name=>{await db.recursiveDelete(ref.collection(name));});
+    for(const name of [DELIVERY_JOBS,'sms_logs','reminder_locks','super_admin_data_wipe_exports']){
+      const rows=await collection(db,name).where('tenantId','==',tenantId).get();
+      await runBounded(rows.docs,3,async d=>{await db.recursiveDelete(d.ref);});
+    }
+    // Preserve legacy configuration documents and migration receipts; removed
+    // source rows cannot be imported again on a later server restart.
+    const legacy=(await legacyBusinessRows(tenantId)).filter(d=>d.ref.path.split('/')[0]!=='settings');
+    await runBounded(legacy,3,async d=>{await db.recursiveDelete(d.ref);});
+    const schedules=await collection(db,SCHEDULE_COLLECTION).where('tenantId','==',tenantId).get();
+    await runBounded(schedules.docs,3,async d=>{await d.ref.update({enabled:false,nextRunAt:null,processingToken:null,revision:randomUUID(),attempts:0,lastRun:null,lastAttention:null,attention:false,lastCompletedRunDate:null});});
+    await db.runTransaction(async tx=>{
+      const current=await tx.get(ref);
+      if(current.data()?.dataCleanupToken!==token)throw new Error('פעולת הניקוי הוחלפה; יש לרענן');
+      tx.update(ref,{dataCleanupPending:false,dataCleanupToken:null,dataCleanupLeaseUntil:0,lastDataCleanupAt:new Date().toISOString(),calendarGeneration:randomUUID(),calendarResetAt:null,calendarRevision:Number(current.data()?.calendarRevision||0)+1,totalAppointments:0,totalCustomers:0,totalRevenue:0,updatedAt:new Date().toISOString()});
+    });
+    recentSmsLogs=recentSmsLogs.filter((entry:any)=>entry.tenantId!==tenantId);
+    invalidateTenantCaches(tenantId);res.json({success:true,status:'suspended'});
+  }catch(err:any){
+    if(started)await db.runTransaction(async tx=>{const current=await tx.get(ref);if(current.data()?.dataCleanupToken===token)tx.update(ref,{dataCleanupLeaseUntil:0});}).catch(()=>{});
+    invalidateTenantCaches(tenantId);res.status(400).json({success:false,cleanupPending:started,error:err.message||'הניקוי נקטע; ניתן להשלים אותו בלחיצה נוספת'});
+  }
 });
 
 app.post('/api/admin/settings/services', requireAdmin, async (req, res) => {
@@ -1003,7 +1059,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '51.0.0';
+const APP_VERSION = '52.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];
@@ -2051,6 +2107,7 @@ async function saveTenant(tenantId:string,profile:any,config:any,create:boolean)
     const ref=getTenantDoc(tenantId), existing=await tx.get(ref);
     if(create && existing.exists) throw new Error('Tenant ID already exists');
     if(!create && !existing.exists) throw new Error('Tenant not found');
+    if(existing.data()?.dataCleanupPending)throw new Error('יש להשלים את הניקוי לפני עריכת העסק');
     if(existing.data()?.status==='deleted') throw new Error('Deleted tenant ID cannot be reused');
     const previousAdminIcon = existing.data()?.adminIcon;
     const explicitlyNoIcon = profile.adminIcon === null;
@@ -2361,6 +2418,7 @@ app.delete('/api/super-admin/tenants/:tenantId',requireSuperAdmin,async(req,res)
     if(!tenant.exists)return res.status(404).json({success:false,error:'העסק לא נמצא'});
     await db.runTransaction(async tx=>{
       const current=await tx.get(ref);
+      if(current.data()?.dataCleanupPending)throw new Error('יש להשלים את ניקוי היומן והלקוחות לפני מחיקת העסק');
       if(current.data()?.status==='deleting')return; // Retry after an interrupted cleanup.
       const exportId=String(req.body?.exportId||'');
       if(!validId(exportId))throw new Error('יש להוריד גיבוי קודם');

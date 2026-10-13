@@ -119,13 +119,15 @@ routeTest('owner full export is tenant-scoped, honors date range, includes all c
  memory.put('adminUsers/owner',{disabled:false,role:'business_admin',tenantId:'audit_test'});
  memory.put('tenants/audit_test/settings/config',{services:[{id:1,name:'לק ג׳ל',duration_minutes:60,price:100}],scheduleSettings:{businessOpen:'08:00',businessClose:'22:00'}});
  memory.put('tenants/audit_test/customers/cust_0541234567',{full_name:'מיכל ישראלי',phone:'0541234567',notes:'regular',created_at:'2029-01-01'});
+ memory.put('tenants/audit_test/appointments/export_example',{...appointment,status:'active'});
+ memory.put('tenants/audit_test/appointments/export_example/audit/created',{type:'created',at:'2030-06-01',after:appointment});
  memory.put('tenants/other/customers/cust_1',{full_name:'Other',phone:'1'});
  memory.put('tenants/audit_test/sms_logs/log1',{tenantId:'audit_test',appointmentDate:'2030-06-02',recipientPhone:'0541234567',status:'sent',message:'reminder'});
  memory.put('tenants/audit_test/sms_logs/log2',{tenantId:'audit_test',appointmentDate:'2030-05-02',recipientPhone:'0541234567',status:'sent'});
  memory.put('tenants/audit_test/private_settings/sms_provider',{telnyxApiKey:'secret-key'});
   const data=await api('/api/admin/business-export',{period:'range',startDate:'2030-06-01',endDate:'2030-06-30'},'owner');
   assert.equal(data.success,true);assert.equal(data.customers.length,1);assert.equal(data.appointments.every((a:any)=>a.appointment_date>='2030-06-01'&&a.appointment_date<='2030-06-30'),true);
- assert.equal(data.smsLogs.length,1);assert.ok(data.appointments.some((a:any)=>a.id==='after_reset'&&a.audit.length));
+ assert.equal(data.smsLogs.length,1);assert.ok(data.appointments.some((a:any)=>a.id==='export_example'&&a.audit.length));
  assert.ok(!JSON.stringify(data).includes('accessTokenHash'));assert.ok(!JSON.stringify(data).includes('secret-key'));
  assert.equal((await api('/api/admin/business-export',{period:'range',startDate:'2030-06-01',endDate:'2030-06-30'},'owner','other')).success,false);
 });
@@ -153,4 +155,77 @@ routeTest('interrupted deletion stays blocked and can be retried without a new e
  (db as any).recursiveDelete=memory.recursiveDelete;
  assert.equal((await remove()).success,true);
  assert.ok(![...memory.values.keys()].some(k=>k.startsWith('tenants/retry_test')));
+});
+
+routeTest('activity cleanup requires fresh auth and a current backup; removes full history and customers while preserving business configuration and other tenants',async()=>{
+ const id='cleanup_test',root='tenants/'+id,path=`/api/super-admin/tenants/${id}`;
+ memory.put(root,{status:'active',name:'Cleanup',ownerAuthUid:'cleanup_owner',calendarRevision:7,totalRevenue:100});
+ const config={services:[{id:1,name:'Service',price:100}],scheduleSettings:{businessOpen:'08:00',businessClose:'20:00'}};
+ memory.put(root+'/settings/config',config);memory.put(root+'/private_settings/sms_provider',{key:'preserve'});
+ memory.put('adminUsers/cleanup_owner',{tenantId:id,role:'business_admin'});memory.put('domains/cleanup.example.com',{tenantId:id});
+ for(const name of ['appointments','customers','sms_logs','whatsapp_logs','customer_access','customer_recovery','booking_days','reminder_locks','calendar_resets','calendar_exports'])memory.put(`${root}/${name}/one`,{tenantId:id,value:'test'});
+ memory.put(root+'/appointments/one/audit/cancelled',{type:'cancelled'});
+ memory.put(root+'/appointments/missing/audit/orphan',{type:'edited'});
+ memory.put('appointments/old_cleanup',{tenantId:id,customer_name:'Legacy'});
+ memory.put('customers/old_cleanup',{tenantId:id,full_name:'Legacy'});
+ memory.put('sms_delivery_jobs/cleanup',{tenantId:id});memory.put('sms_delivery_jobs/other_cleanup',{tenantId:'keep'});
+ memory.put('tenants/keep/appointments/keep_cleanup',{value:'keep'});
+ const body={confirmation:id,downloadConfirmed:true,exportId:'missing'};
+ assert.equal((await api(path+'/activity/clear',body,'owner')).http,403);
+ assert.equal((await api(path+'/activity/clear',body,'stale-super')).success,false);
+ assert.equal((await api(path+'/activity/clear',body,'super')).success,false);
+ await api(path+'/status',{suspended:true},'super');
+ const ordinary=await api(path+'/export',{},'super');assert.equal((await api(path+'/activity/clear',{...body,exportId:ordinary.exportId},'super')).success,false);
+ const exported=await api(path+'/export',{purpose:'cleanup'},'super');assert.equal(exported.success,true);
+ body.exportId=exported.exportId;
+ assert.equal((await api(path+'/activity/clear',{...body,confirmation:'keep'},'super')).success,false);
+ assert.equal((await api(path+'/activity/clear',{...body,downloadConfirmed:false},'super')).success,false);
+ memory.put(root,{calendarRevision:8},true);
+ assert.equal((await api(path+'/activity/clear',body,'super')).success,false);
+ body.exportId=(await api(path+'/export',{purpose:'cleanup'},'super')).exportId;
+ assert.equal((await api(path+'/activity/clear',body,'super')).success,true);
+ for(const name of ['appointments','customers','sms_logs','whatsapp_logs','customer_access','customer_recovery','booking_days','reminder_locks','calendar_resets','calendar_exports','lifecycle_exports'])assert.ok(![...memory.values.keys()].some(p=>p.startsWith(`${root}/${name}/`)),name);
+ assert.deepEqual(memory.values.get(root+'/settings/config'),config);
+ assert.ok(memory.values.has(root+'/private_settings/sms_provider'));assert.ok(memory.values.has('adminUsers/cleanup_owner'));assert.ok(memory.values.has('domains/cleanup.example.com'));
+ assert.ok(memory.values.has('tenants/keep/appointments/keep_cleanup'));assert.ok(memory.values.has('sms_delivery_jobs/other_cleanup'));
+ assert.ok(!memory.values.has('sms_delivery_jobs/cleanup'));assert.ok(!memory.values.has('appointments/old_cleanup'));assert.ok(!memory.values.has('customers/old_cleanup'));
+ assert.equal(memory.values.get(root).status,'suspended');assert.equal(memory.values.get(root).dataCleanupPending,false);assert.equal(memory.values.get(root).totalRevenue,0);
+ assert.equal((await api(path+'/status',{suspended:false},'super')).success,true);
+});
+
+routeTest('interrupted activity cleanup stays suspended, blocks reactivation and deletion, and resumes using the original backup',async()=>{
+ const id='cleanup_retry',root='tenants/'+id,path=`/api/super-admin/tenants/${id}`;
+ memory.put(root,{status:'active',name:'Retry'});memory.put(root+'/appointments/one',{value:'trial'});memory.put(root+'/customers/one',{value:'trial'});
+ await api(path+'/status',{suspended:true},'super');
+ const exported=await api(path+'/export',{purpose:'cleanup'},'super');
+ const body={confirmation:id,downloadConfirmed:true,exportId:exported.exportId};
+ const remove=(db as any).recursiveDelete;
+ try{(db as any).recursiveDelete=async(ref:any)=>{if(ref.path.endsWith('/customers'))throw Error('storage interrupted');return remove(ref);};
+  const result=await api(path+'/activity/clear',body,'super');assert.equal(result.success,false);assert.equal(result.cleanupPending,true);
+ }finally{(db as any).recursiveDelete=remove;}
+ assert.equal(memory.values.get(root).dataCleanupPending,true);
+ assert.equal((await api(path+'/status',{suspended:false},'super')).success,false);
+ assert.equal((await api(path+'/export',{},'super')).success,false);
+ const response=await fetch(base+path,{method:'DELETE',headers:{'Content-Type':'application/json',authorization:'Bearer super'},body:JSON.stringify(body)});assert.equal((await response.json()).success,false);
+ assert.equal((await api(path+'/activity/clear',body,'super')).success,true);
+ assert.ok(!memory.values.has(root+'/customers/one'));assert.equal(memory.values.get(root).dataCleanupPending,false);
+});
+
+routeTest('Alex cleanup includes untagged legacy activity, preserves settings and waits for in-flight SMS',async()=>{
+ const id='alex_beauty',root='tenants/'+id,path=`/api/super-admin/tenants/${id}`;
+ memory.put(root,{status:'active',name:'Alex'});memory.put(root+'/appointments/trial',{status:'cancelled'});
+ memory.put(root+'/settings/config',{services:[{id:1,name:'Keep'}]});
+ memory.put('settings/services_config',{services:[{id:1,name:'Keep legacy'}]});
+ memory.put('appointments/untagged_trial',{customer_name:'Trial'});memory.put('customers/untagged_trial',{full_name:'Trial'});
+ memory.put('sms_logs/sms_alex_beauty_old',{message:'Trial'});memory.put('appointments/other_tenant_trial',{tenantId:'keep'});
+ await api(path+'/status',{suspended:true},'super');
+ const exported=await api(path+'/export',{purpose:'cleanup'},'super');assert.equal(exported.success,true);
+ memory.put(root+'/reminder_locks/sending',{status:'sending',leaseUntil:Date.now()+120_000});
+ const body={confirmation:id,downloadConfirmed:true,exportId:exported.exportId};
+ assert.equal((await api(path+'/activity/clear',body,'super')).success,false);
+ assert.ok(memory.values.has(root+'/appointments/trial'));assert.ok(memory.values.has('appointments/untagged_trial'));
+ memory.put(root+'/reminder_locks/sending',{status:'sent'});
+ assert.equal((await api(path+'/activity/clear',body,'super')).success,true);
+ assert.ok(!memory.values.has('appointments/untagged_trial'));assert.ok(!memory.values.has('customers/untagged_trial'));assert.ok(!memory.values.has('sms_logs/sms_alex_beauty_old'));
+ assert.ok(memory.values.has('appointments/other_tenant_trial'));assert.ok(memory.values.has('settings/services_config'));assert.ok(memory.values.has(root+'/settings/config'));
 });

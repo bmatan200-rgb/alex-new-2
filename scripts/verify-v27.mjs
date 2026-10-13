@@ -18,7 +18,7 @@ const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
 const manifestRoute = server.slice(server.indexOf("app.get('/manifest.json'"), server.indexOf("app.param(['tenantId','id']"));
 const serviceWorker = readFileSync(new URL('../public/service-worker.js', import.meta.url), 'utf8');
 
-assert.equal(pkg.version, '51.0.0');
+assert.equal(pkg.version, '52.0.0');
 assert.match(server, /persistent===true/, 'customer access sessions must persist after phone verification');
 assert.match(server, /persistent:true,createdAt:new Date\(\)\.toISOString\(\)/, 'new customer access records must not expire');
 assert.match(server, /app\.post\('\/api\/super-admin\/calendar\/export',requireSuperAdmin/, 'calendar export must be Super Admin only');
@@ -60,6 +60,8 @@ assert.match(superAdminPage, /downloadTenant\(t,false,'xlsx'\)/);
 assert.match(superAdminPage, /downloadTenant\(t,false,'pdf'\)/);
 assert.match(superAdminPage, /הורדת כל הלקוחות — CSV/);
 assert.match(superAdminPage, /סיסמת הסופר אדמין/);
+assert.match(superAdminPage, /ניקוי יומן ולקוחות/);
+assert.match(server, /app\.post\('\/api\/super-admin\/tenants\/:tenantId\/activity\/clear',requireSuperAdmin/);
 assert.match(superAdminPage, /השבתת עסק/);
 assert.match(superAdminPage, /דוחות פעילות/);
 assert.match(readFileSync(new URL('../src/components/CalendarExports.tsx', import.meta.url),'utf8'), /מתאריך עד תאריך/);
@@ -108,5 +110,5 @@ assert.doesNotMatch(torFlow, /executeBookingSubmission\(cleanName, cleanPhone, i
 
 assert.match(readFileSync(new URL('../src/components/Header.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
 assert.match(readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
-console.log('V51 source verification passed');
+console.log('V52 source verification passed');
 assert.doesNotMatch(server, /app\.post\('\/api\/super-admin\/(calendar\/reset|tenant-data-wipe\/execute)'/);

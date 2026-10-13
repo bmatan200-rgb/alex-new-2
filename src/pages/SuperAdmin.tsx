@@ -137,6 +137,14 @@ export const SuperAdminPage: React.FC = () => {
   const [backupSaved,setBackupSaved]=useState(false);
   const [busyTenant,setBusyTenant]=useState('');
   const [lifecycleError,setLifecycleError]=useState('');
+  const [lifecycleMessage,setLifecycleMessage]=useState('');
+  const [tenantToCleanup,setTenantToCleanup]=useState<TenantInfo|null>(null);
+  const [cleanupPassword,setCleanupPassword]=useState('');
+  const [cleanupConfirmation,setCleanupConfirmation]=useState('');
+  const [cleanupExportId,setCleanupExportId]=useState('');
+  const [cleanupBackupSaved,setCleanupBackupSaved]=useState(false);
+  const [cleanupError,setCleanupError]=useState('');
+  const [cleanupCounts,setCleanupCounts]=useState<{appointments:number;customers:number}|null>(null);
   const [activityTenantId,setActivityTenantId]=useState('');
 
   const isPhoneMatch=!!tenantToDelete && verificationPhone.trim()===tenantToDelete.id && !!deletePassword && !!deleteExportId && backupSaved;
@@ -215,6 +223,37 @@ export const SuperAdminPage: React.FC = () => {
     } finally {
       setIsDeleting(false);
     }
+  };
+
+  const openCleanup=(tenant:TenantInfo)=>{
+    setTenantToCleanup(tenant);setCleanupPassword('');setCleanupConfirmation('');setCleanupExportId('');setCleanupBackupSaved(false);setCleanupError('');setCleanupCounts(null);setLifecycleMessage('');
+  };
+  const prepareCleanup=async()=>{
+    if(!tenantToCleanup||!cleanupPassword||busyTenant)return;
+    const t=tenantToCleanup;setBusyTenant(t.id);setCleanupError('');setCleanupExportId('');setCleanupBackupSaved(false);
+    try{
+      await changeTenantStatus(t,true,cleanupPassword);
+      setTenantToCleanup({...t,status:'suspended'});
+      const response=await fetch(`/api/super-admin/tenants/${encodeURIComponent(t.id)}/export`,{method:'POST',headers:await authHeaders(true),body:JSON.stringify({purpose:'cleanup'})});
+      const data=await response.json();if(!response.ok||!data.success)throw new Error(data.error||'הגיבוי נכשל');
+      downloadFile(`${t.id}-before-cleanup-${Date.now()}.json`,JSON.stringify(data.backup,null,2),'application/json');
+      const sheets=businessBackupSheets(data.backup);
+      setCleanupCounts({appointments:Math.max(0,(sheets.find(s=>s.name==='כל התורים')?.rows.length||1)-1),customers:Math.max(0,(sheets.find(s=>s.name==='לקוחות')?.rows.length||1)-1)});
+      setCleanupExportId(data.exportId);
+    }catch(err:any){setCleanupError(err.message||'הכנת הניקוי נכשלה');}
+    finally{setBusyTenant('');await fetchTenants();}
+  };
+  const confirmCleanup=async()=>{
+    if(!tenantToCleanup||busyTenant||!cleanupPassword||cleanupConfirmation.trim()!==tenantToCleanup.id||(!tenantToCleanup.dataCleanupPending&&(!cleanupExportId||!cleanupBackupSaved)))return;
+    const t=tenantToCleanup;setBusyTenant(t.id);setCleanupError('');
+    try{
+      const user=auth.currentUser;if(!user?.email)throw new Error('נדרשת התחברות מחדש');
+      await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email,cleanupPassword));await user.getIdToken(true);
+      const response=await fetch(`/api/super-admin/tenants/${encodeURIComponent(t.id)}/activity/clear`,{method:'POST',headers:await authHeaders(true),body:JSON.stringify({confirmation:cleanupConfirmation.trim(),downloadConfirmed:cleanupBackupSaved||t.dataCleanupPending===true,exportId:cleanupExportId})});
+      const data=await response.json();if(!response.ok||!data.success){if(data.cleanupPending)setTenantToCleanup({...t,dataCleanupPending:true});throw new Error(data.error||'הניקוי נכשל');}
+      setTenantToCleanup(null);setCleanupPassword('');setLifecycleMessage(`היומן והלקוחות של ${t.name} נוקו. להפעלה לחץ על ״הפעלת עסק מחדש״.`);
+    }catch(err:any){setCleanupError(err.message||'הניקוי נכשל; ניתן לנסות שוב');}
+    finally{setBusyTenant('');await fetchTenants();}
   };
 
   // V23: verify the server-side role before showing or loading any Super Admin data.
@@ -585,6 +624,7 @@ export const SuperAdminPage: React.FC = () => {
 
       {/* Main Container */}
       {lifecycleError&&<div role="alert" className="mx-6 mt-4 rounded-xl bg-red-950 text-red-200 p-4">{lifecycleError}</div>}
+      {lifecycleMessage&&<div role="status" className="mx-6 mt-4 rounded-xl bg-emerald-950 text-emerald-200 p-4">{lifecycleMessage}</div>}
       <main className="max-w-7xl mx-auto px-4 sm:px-8 py-6 sm:py-8 space-y-6">
         
         <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -1323,6 +1363,7 @@ export const SuperAdminPage: React.FC = () => {
                         <button type="button" disabled={!!busyTenant || t.status==='deleting'} onClick={()=>downloadTenant(t)} className="px-3 py-1.5 bg-emerald-950 text-emerald-200 border border-emerald-800 rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50"><Download className="w-3 h-3"/>{busyTenant===t.id?'מעבד…':'גיבוי עסק JSON'}</button>
                         <button type="button" disabled={!!busyTenant || t.status==='deleting'} onClick={()=>downloadTenant(t,false,'xlsx')} className="px-3 py-1.5 bg-green-950 text-green-200 border border-green-800 rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50">Excel</button>
                         <button type="button" disabled={!!busyTenant || t.status==='deleting'} onClick={()=>downloadTenant(t,false,'pdf')} className="px-3 py-1.5 bg-slate-800 text-slate-100 border border-slate-700 rounded-lg text-xs font-bold flex items-center gap-1 disabled:opacity-50">PDF עסק</button>
+                        <button type="button" disabled={!!busyTenant||t.status==='deleting'} onClick={()=>openCleanup(t)} className="px-3 py-1.5 bg-red-950 text-red-200 border border-red-800 rounded-lg text-xs font-bold disabled:opacity-50">{t.dataCleanupPending?'השלמת ניקוי יומן ולקוחות':'ניקוי יומן ולקוחות'}</button>
 
                         <button
                           type="button"
@@ -1410,6 +1451,22 @@ export const SuperAdminPage: React.FC = () => {
           </div>
         )}
       </main>
+
+      {tenantToCleanup&&<div className="fixed inset-0 z-[60] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="cleanup-title" dir="rtl">
+        <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-3xl border border-red-700 bg-slate-900 p-6 text-right shadow-2xl space-y-4">
+          <h3 id="cleanup-title" className="text-lg font-black text-white">ניקוי יומן ולקוחות — {tenantToCleanup.name}</h3>
+          <div className="rounded-xl border border-red-700 bg-red-950 p-4 text-sm leading-6 text-red-100">יימחקו לצמיתות כל התורים, כולל תורים עתידיים, היסטוריית שינויים וביטולים, כל הלקוחות ויומני ההודעות של העסק הזה. אין שחזור מתוך המערכת.</div>
+          <p className="text-sm leading-6 text-slate-300">העסק, השירותים, שעות הפעילות וחשבון בעל העסק יישמרו. העסק יושבת לפני הגיבוי; לאחר הניקוי תוכל להפעיל אותו מחדש.</p>
+          {tenantToCleanup.dataCleanupPending&&<p className="rounded-xl bg-amber-950 p-3 text-sm text-amber-200">ניקוי קודם לא הסתיים. לחץ על השלמת הניקוי; הגיבוי שהורדת לפני הפעולה נשאר אצלך.</p>}
+          <label className="block text-sm text-slate-200">סיסמת הסופר אדמין<input type="password" autoComplete="current-password" disabled={!!busyTenant} value={cleanupPassword} onChange={e=>setCleanupPassword(e.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white"/></label>
+          {!tenantToCleanup.dataCleanupPending&&<button type="button" disabled={!cleanupPassword||!!busyTenant} onClick={prepareCleanup} className="w-full rounded-xl bg-emerald-800 p-3 font-bold text-white disabled:opacity-50">{busyTenant?'מכין גיבוי…':'1. אימות סיסמה והורדת גיבוי לפני הניקוי'}</button>}
+          {cleanupCounts&&<p className="text-sm font-bold text-red-200">בגיבוי: {cleanupCounts.appointments} תורים ו-{cleanupCounts.customers} לקוחות. כולם יימחקו, כולל ההיסטוריה.</p>}
+          {!!cleanupExportId&&<label className="flex gap-2 text-sm text-slate-200"><input type="checkbox" disabled={!!busyTenant} checked={cleanupBackupSaved} onChange={e=>setCleanupBackupSaved(e.target.checked)}/>שמרתי את קובץ הגיבוי במכשיר</label>}
+          <label className="block text-sm text-slate-200">הקלד את מזהה העסק לאישור: <b dir="ltr">{tenantToCleanup.id}</b><input dir="ltr" disabled={!!busyTenant} value={cleanupConfirmation} onChange={e=>setCleanupConfirmation(e.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white"/></label>
+          {cleanupError&&<p role="alert" className="rounded-xl border border-red-700 bg-red-950 p-3 text-sm text-red-200">{cleanupError}</p>}
+          <div className="flex gap-3"><button type="button" disabled={!!busyTenant} onClick={()=>{setTenantToCleanup(null);setCleanupPassword('');}} className="flex-1 rounded-xl bg-slate-800 p-3 text-sm font-bold text-slate-200 disabled:opacity-50">סגירה</button><button type="button" disabled={!!busyTenant||!cleanupPassword||cleanupConfirmation.trim()!==tenantToCleanup.id||(!tenantToCleanup.dataCleanupPending&&(!cleanupExportId||!cleanupBackupSaved))} onClick={confirmCleanup} className="flex-1 rounded-xl bg-red-700 p-3 text-sm font-black text-white disabled:opacity-50">{busyTenant?'מעבד…':tenantToCleanup.dataCleanupPending?'השלמת הניקוי':'מחיקת כל היומן והלקוחות'}</button></div>
+        </div>
+      </div>}
 
       {tenantToStatusChange&&<div className="fixed inset-0 z-[55] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
         <div className="w-full max-w-md rounded-3xl border border-amber-700 bg-slate-900 p-6 text-right shadow-2xl space-y-4" dir="rtl">

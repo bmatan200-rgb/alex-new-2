@@ -151,5 +151,6 @@ export interface TenantInfo {
   activeServicesCount?: number;
   customDomain?: string;
   isPrimary?: boolean;
+  dataCleanupPending?: boolean;
 }
 

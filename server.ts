@@ -336,18 +336,18 @@ async function optionalAdmin(req: Request) {
 async function activeTenant(tenantId: string) {
   const cached = tenantProfileCache.get(tenantId);
   if (cached && cached.expiresAt > Date.now()) {
-    if (!['active','trial'].includes(cached.data?.status)) throw new Error('העסק אינו פעיל או לא נמצא');
+    if (!['active','trial'].includes(cached.data?.status)) throw Object.assign(new Error('העסק אינו פעיל או לא נמצא'),{status:423});
     return cached.data;
   }
   if (firestoreQuotaBackoffActive()) {
     if (cached) {
-      if (!['active','trial'].includes(cached.data?.status)) throw new Error('העסק אינו פעיל או לא נמצא');
+      if (!['active','trial'].includes(cached.data?.status)) throw Object.assign(new Error('העסק אינו פעיל או לא נמצא'),{status:423});
       return cached.data;
     }
     throw quotaBackoffError(`tenant ${tenantId}`);
   }
   const snap = await getDoc(getTenantDoc(tenantId));
-  if (!snap.exists || !['active','trial'].includes(snap.data()?.status)) throw new Error('העסק אינו פעיל או לא נמצא');
+  if (!snap.exists || !['active','trial'].includes(snap.data()?.status)) throw Object.assign(new Error('העסק אינו פעיל או לא נמצא'),{status:423});
   const data = snap.data();
   tenantProfileCache.set(tenantId, { expiresAt: Date.now() + TENANT_CACHE_TTL_MS, data });
   return data;
@@ -733,6 +733,7 @@ app.post('/api/super-admin/tenants/:tenantId/status',requireSuperAdmin,async(req
     await recentPasswordAuth(req);
     const tenantId=req.params.tenantId,suspended=req.body?.suspended;
     if(typeof suspended!=='boolean')throw new Error('יש לבחור השבתה או הפעלה');
+    if(suspended && req.body?.confirmation!==tenantId)throw new Error('יש להקליד את מזהה העסק לאישור ההשבתה');
     await db.runTransaction(async tx=>{
       const ref=getTenantDoc(tenantId),snap=await tx.get(ref),data=snap.data();
       if(!snap.exists||['deleted','deleting'].includes(data?.status))throw new Error('לא ניתן לשנות עסק שנמחק');
@@ -1080,7 +1081,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '54.0.0';
+const APP_VERSION = '55.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];
@@ -2515,7 +2516,7 @@ app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{
   const quotaExceeded = noteFirestoreQuota(err, 'API request');
   console.error('[API]',err?.message || err);
   if (quotaExceeded) return res.status(503).json({success:false,error:'מכסת Firestore היומית נוצלה זמנית. השירות יישאר פעיל ויחזור לנתונים לאחר איפוס המכסה.'});
-  res.status(err.status || 500).json({success:false,error:'הפעולה נכשלה. יש לנסות שוב או לפנות למנהלת.'});
+  res.status(err.status || 500).json({success:false,error:err.status===423?'העסק מושבת זמנית. ניתן להפעילו מחדש בסופר אדמין.':'הפעולה נכשלה. יש לנסות שוב או לפנות למנהלת.'});
 });
 let bootstrapRetryTimer: ReturnType<typeof setTimeout> | null = null;
 async function runBootstrapMaintenance() {

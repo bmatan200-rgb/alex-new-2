@@ -1,3 +1,4 @@
+import {readJson,HttpFailure,isAccessDenied} from '../utils/readRequest';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   initializeFirestore,
@@ -84,9 +85,10 @@ export async function tenantApi(
     token = auth.currentUser ? await auth.currentUser.getIdToken() : '';
     if (authMode === 'required' && !token) throw new Error('נדרשת התחברות מנהל');
   }
+  if(path==='/api/auth/me') return readJson(path,{headers:{Authorization:`Bearer ${token}`,'x-tenant-id':tenantId}});
   const res=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','x-tenant-id':tenantId,'x-operation-context':authMode === 'required' ? 'admin' : 'customer',...(token?{Authorization:`Bearer ${token}`}:{})},...(body===undefined?{}:{body:JSON.stringify({...body,tenantId})})});
   const data=await res.json();
-  if(!res.ok || !data.success) throw new Error(data.error || 'הפעולה נכשלה');
+  if(!res.ok || !data.success) throw new HttpFailure(data.error || 'הפעולה נכשלה',res.status);
   return data;
 }
 function capabilities(tenantId:string):Record<string,string> {
@@ -322,7 +324,7 @@ export async function verifyAdminLoginInFirestore(credentials: {
   try {
     const cred = await signInWithEmailAndPassword(auth, email, password);
     const idToken = await cred.user.getIdToken();
-    try { await tenantApi('/api/auth/me'); } catch(err) {await signOut(auth);throw err;}
+    try { await tenantApi('/api/auth/me'); } catch(err) {if(isAccessDenied(err))await signOut(auth);throw err;}
 
     return {
       success: true,

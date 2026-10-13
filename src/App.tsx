@@ -1,3 +1,4 @@
+import {isAccessDenied} from './utils/readRequest';
 import { CustomerBookingRecovery } from './components/CustomerBookingRecovery';
 import { canonicalPhone } from './utils/phone';
 import { AdminAccountSettings } from './components/AdminAccountSettings';
@@ -267,22 +268,29 @@ function MainApp() {
   // Synchronize Firebase Auth state for Admin session
   useEffect(() => {
     let active=true, generation=0;
-    const unsubscribe=auth.onAuthStateChanged(async user=>{
+    let verifiedUid:string|null=null;
+    let retry:ReturnType<typeof setTimeout>|undefined;
+    const verify=async(user:typeof auth.currentUser)=>{
       const current=++generation;
-      setAdminAuthReady(false);
+      clearTimeout(retry);
+      if(user?.uid!==verifiedUid){setAdminSession(null);setAdminAuthReady(false);}
+      if(!user){verifiedUid=null;clearAdminSession();setAdminSession(null);setAdminAuthReady(true);return;}
       try {
-        if(!user) throw new Error('Signed out');
         const result=await tenantApi('/api/auth/me');
-        if(!active || current !== generation) return;
+        if(!active || current!==generation || auth.currentUser?.uid!==user.uid)return;
         const profile=result.user;
-        const session:UserSession={name:user.displayName || user.email || '',phone:'',email:user.email || '',isAdmin:true,role:profile.role,tenantId:profile.tenantId,uid:profile.uid,loggedInAt:new Date().toISOString()};
-        // Firebase admin identity and the public customer profile are separate.
-        // Never erase a tenant-scoped customer session during admin auth hydration.
-        saveAdminSession(session);setAdminSession(session);
-      }catch {if(active && current === generation){clearAdminSession();setAdminSession(null);}}
-      finally { if (active && current === generation) setAdminAuthReady(true); }
-    });
-    return ()=>{active=false;unsubscribe();};
+        const session:UserSession={name:user.displayName||user.email||'',phone:'',email:user.email||'',isAdmin:true,role:profile.role,tenantId:profile.tenantId,uid:profile.uid,loggedInAt:new Date().toISOString()};
+        verifiedUid=user.uid;saveAdminSession(session);setAdminSession(session);setAdminAuthReady(true);
+      }catch(error){
+        if(!active||current!==generation)return;
+        if(isAccessDenied(error)){clearAdminSession();setAdminSession(null);setAdminAuthReady(true);}
+        else retry=setTimeout(()=>void verify(auth.currentUser),5000);
+      }
+    };
+    const unsubscribe=auth.onAuthStateChanged(user=>void verify(user));
+    const reconnect=()=>void verify(auth.currentUser);
+    window.addEventListener('online',reconnect);
+    return ()=>{active=false;generation++;clearTimeout(retry);unsubscribe();window.removeEventListener('online',reconnect);};
   },[tenantId]);
 
   // Customer Login / Registration callback
@@ -806,9 +814,12 @@ function ScopedMainApp() {
 }
 
 export default function App() {
+  const {pathname} = useLocation();
+  const navigate = useNavigate();
+  const platform = pathname === "/super-admin" || pathname === "/super-admin/";
   return (
     <TenantProvider>
-      <ScopedMainApp />
+      {pathname === "/super-admin/login" ? <AdminLoginPage onLoginSuccess={() => navigate("/super-admin", {replace:true})} /> : platform ? <SuperAdminPage /> : <ScopedMainApp />}
     </TenantProvider>
   );
 }

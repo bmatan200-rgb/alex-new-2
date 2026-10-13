@@ -1,3 +1,4 @@
+import {readJson,HttpFailure} from '../utils/readRequest';
 import { TenantLoading } from '../components/TenantLoading';
 import { pwaMetadata, pwaRoleForPath } from '../utils/pwa';
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
@@ -85,27 +86,28 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [loading, setLoading] = useState<boolean>(true);
 
   const [loadError,setLoadError]=useState('');
+  const [loadStatus,setLoadStatus]=useState(0);
+  const [resolvedQuery,setResolvedQuery]=useState<string|null>(null);
+  const resolved=useRef<string|null>(null);
   const generation=useRef(0);
   const fetchTenantData = useCallback(async () => {
     const current=++generation.current;
-    setLoading(true); setLoadError(''); setServices([]);
-    setScheduleSettings({businessOpen:'',businessClose:'',fridayOpen:'',fridayClose:'',durationMinutes:60});
+    setLoading(resolved.current!==activeQuery); setLoadError(''); setLoadStatus(0);
     try {
-      const q=getActiveQueryTenant();
-      const res=await fetch('/api/tenant/current'+(q?'?tenant='+encodeURIComponent(q):''));
-      const data=await res.json();
-      if(!res.ok || !data.success) throw new Error(data.error || 'העסק לא נמצא או אינו פעיל');
-      if(current!==generation.current) return;
-      localStorage.setItem('active_tenant_id_v1',data.tenant.id);
+      const q=activeQuery;
+      const data=await readJson('/api/tenant/current'+(q?'?tenant='+encodeURIComponent(q):''));
+      if(current!==generation.current)return;
+      try{localStorage.setItem('active_tenant_id_v1',data.tenant.id);}catch{}
       const p=data.tenant;
       const digits=String(p.phone||'').replace(/\D/g,'');
-      localStorage.setItem('tenant_profile__'+p.id,JSON.stringify({...p,whatsappNumber:digits.startsWith('0')?'972'+digits.slice(1):digits,openingHours:[]}));
+      try{localStorage.setItem('tenant_profile__'+p.id,JSON.stringify({...p,whatsappNumber:digits.startsWith('0')?'972'+digits.slice(1):digits,openingHours:[]}));}catch{}
+      resolved.current=q;setResolvedQuery(q);
       setTenant(data.tenant);
       setServices(data.config.services || []);
       setScheduleSettings(data.config.scheduleSettings);
-    } catch(err:any) {if(current===generation.current)setLoadError(err.message);}
+    } catch(err:any) {if(current===generation.current){setLoadError(err.message);setLoadStatus(err instanceof HttpFailure?err.status:0);}}
     finally {if(current===generation.current)setLoading(false);}
-  },[getActiveQueryTenant]);
+  },[activeQuery]);
   useEffect(()=>{
     if (isSuperAdminPath) {
       generation.current++;
@@ -116,6 +118,14 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     void fetchTenantData();
     return ()=>{generation.current++;};
   },[fetchTenantData,isSuperAdminPath]);
+
+  useEffect(()=>{
+    if(isSuperAdminPath)return;
+    const reconnect=()=>void fetchTenantData();
+    const timer=loadError && (loadStatus===0||loadStatus>=500||loadStatus===429)?setTimeout(reconnect,5000):undefined;
+    window.addEventListener('online',reconnect);
+    return ()=>{clearTimeout(timer);window.removeEventListener('online',reconnect);};
+  },[loadError,loadStatus,isSuperAdminPath,fetchTenantData]);
 
   // Apply tenant branding colors dynamically to CSS custom variables
   useEffect(() => {
@@ -165,8 +175,8 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   };
 
   const effectiveTenantId = tenant.id;
-  if(loading && !isSuperAdminPath) return <TenantLoading />;
-  if(loadError && !isSuperAdminPath) return <div dir="rtl" className="p-12 text-center"><p>{loadError}</p><button onClick={fetchTenantData}>ניסיון נוסף</button></div>;
+  if((loading || (resolvedQuery!==activeQuery && !loadError)) && !isSuperAdminPath) return <TenantLoading />;
+  if(loadError && !isSuperAdminPath && (resolvedQuery!==activeQuery || (loadStatus>=400 && loadStatus<500 && loadStatus!==429))) return <div dir="rtl" className="p-12 text-center"><p>{loadError}</p><button onClick={fetchTenantData}>ניסיון נוסף</button></div>;
 
   return (
     <TenantContext.Provider
@@ -183,6 +193,7 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         updateScheduleSettings,
       }}
     >
+      {loadError&&!isSuperAdminPath&&<div role="status" dir="rtl" className="bg-amber-100 p-3 text-center text-amber-950">החיבור לשרת נותק זמנית. מנסה להתחבר מחדש…</div>}
       {children}
     </TenantContext.Provider>
   );

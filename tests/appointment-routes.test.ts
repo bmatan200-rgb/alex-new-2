@@ -75,7 +75,9 @@ routeTest('business suspension is reversible, blocks owner and booking, and disa
  const before=structuredClone(memory.values.get('tenants/audit_test/appointments/after_reset'));
  const route='/api/super-admin/tenants/audit_test/status';
  assert.equal((await api(route,{suspended:true},'owner')).http,403);
- assert.equal((await api(route,{suspended:true},'super')).success,true);
+ assert.equal((await api(route,{suspended:true},'super')).success,false);
+ assert.equal((await api(route,{suspended:true,confirmation:'wrong'},'super')).success,false);
+ assert.equal((await api(route,{suspended:true,confirmation:'audit_test'},'super')).success,true);
  assert.equal(memory.values.get('tenants/audit_test').status,'suspended');
  assert.equal(memory.values.get('sms_schedules/audit_test_today').enabled,false);
  assert.equal((await api('/api/appointments/book',{appointment,requestId:'blocked'})).success,false);
@@ -92,7 +94,7 @@ routeTest('full export and permanent deletion include nested audit, protect othe
  memory.put('sms_delivery_jobs/keep',{tenantId:'keep',messageId:'two'});
  memory.put('domains/test.example.com',{tenantId:'audit_test'});
  memory.put('tenantAdminIcons/flower_purple',{tenantId:'audit_test'});
- await api('/api/super-admin/tenants/audit_test/status',{suspended:true},'super');
+ await api('/api/super-admin/tenants/audit_test/status',{suspended:true,confirmation:'audit_test'},'super');
  assert.equal((await api('/api/super-admin/tenants/audit_test/export',{},'owner')).http,403);
  const exported=await api('/api/super-admin/tenants/audit_test/export',{},'super');assert.equal(exported.success,true);
  assert.ok(JSON.stringify(exported.backup).includes('orphan audit'));
@@ -145,7 +147,7 @@ routeTest('Super Admin all-customer CSV includes tenant labels, skips deleted te
 routeTest('interrupted deletion stays blocked and can be retried without a new export',async()=>{
  memory.put('tenants/retry_test',{status:'trial',name:'Retry'});
  memory.put('tenants/retry_test/customers/one',{full_name:'Retry'});
- await api('/api/super-admin/tenants/retry_test/status',{suspended:true},'super');
+ await api('/api/super-admin/tenants/retry_test/status',{suspended:true,confirmation:'retry_test'},'super');
  const exported=await api('/api/super-admin/tenants/retry_test/export',{},'super');assert.equal(exported.success,true);
  const remove=async()=>{const r=await fetch(base+'/api/super-admin/tenants/retry_test',{method:'DELETE',headers:{'Content-Type':'application/json',authorization:'Bearer super'},body:JSON.stringify({confirmation:'retry_test',downloadConfirmed:true,exportId:exported.exportId})});return r.json();};
  (db as any).recursiveDelete=async()=>{throw Error('interrupted storage request');};
@@ -174,7 +176,7 @@ routeTest('activity cleanup requires fresh auth and a current backup; removes fu
  assert.equal((await api(path+'/activity/clear',body,'owner')).http,403);
  assert.equal((await api(path+'/activity/clear',body,'stale-super')).success,false);
  assert.equal((await api(path+'/activity/clear',body,'super')).success,false);
- await api(path+'/status',{suspended:true},'super');
+ await api(path+'/status',{suspended:true,confirmation:id},'super');
  const ordinary=await api(path+'/export',{},'super');assert.equal((await api(path+'/activity/clear',{...body,exportId:ordinary.exportId},'super')).success,false);
  const exported=await api(path+'/export',{purpose:'cleanup'},'super');assert.equal(exported.success,true);
  body.exportId=exported.exportId;
@@ -196,7 +198,7 @@ routeTest('activity cleanup requires fresh auth and a current backup; removes fu
 routeTest('interrupted activity cleanup stays suspended, blocks reactivation and deletion, and resumes using the original backup',async()=>{
  const id='cleanup_retry',root='tenants/'+id,path=`/api/super-admin/tenants/${id}`;
  memory.put(root,{status:'active',name:'Retry'});memory.put(root+'/appointments/one',{value:'trial'});memory.put(root+'/customers/one',{value:'trial'});
- await api(path+'/status',{suspended:true},'super');
+ await api(path+'/status',{suspended:true,confirmation:id},'super');
  const exported=await api(path+'/export',{purpose:'cleanup'},'super');
  const body={confirmation:id,downloadConfirmed:true,exportId:exported.exportId};
  const remove=(db as any).recursiveDelete;
@@ -218,7 +220,7 @@ routeTest('Alex cleanup includes untagged legacy activity, preserves settings an
  memory.put('settings/services_config',{services:[{id:1,name:'Keep legacy'}]});
  memory.put('appointments/untagged_trial',{customer_name:'Trial'});memory.put('customers/untagged_trial',{full_name:'Trial'});
  memory.put('sms_logs/sms_alex_beauty_old',{message:'Trial'});memory.put('appointments/other_tenant_trial',{tenantId:'keep'});
- await api(path+'/status',{suspended:true},'super');
+ await api(path+'/status',{suspended:true,confirmation:id},'super');
  const exported=await api(path+'/export',{purpose:'cleanup'},'super');assert.equal(exported.success,true);
  memory.put(root+'/reminder_locks/sending',{status:'sending',leaseUntil:Date.now()+120_000});
  const body={confirmation:id,downloadConfirmed:true,exportId:exported.exportId};
@@ -236,7 +238,7 @@ routeTest('activity cleanup removes appointment/customer rows that survive the f
  memory.put(root+'/appointments/leftover',{status:'cancelled'});
  memory.put(root+'/customers/leftover',{full_name:'Leftover'});
  memory.put('appointments/legacy_leftover',{tenantId:id,status:'cancelled'});
- await api(path+'/status',{suspended:true},'super');
+ await api(path+'/status',{suspended:true,confirmation:id},'super');
  const exported=await api(path+'/export',{purpose:'cleanup'},'super');
  const body={confirmation:id,downloadConfirmed:true,exportId:exported.exportId};
  const remove=(db as any).recursiveDelete;

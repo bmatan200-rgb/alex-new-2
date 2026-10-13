@@ -1,3 +1,4 @@
+import {readJson,isAccessDenied} from '../utils/readRequest';
 import { requestAdminPasswordReset } from '../lib/adminAccount';
 import { accountError } from '../utils/accountSecurity';
 import { useTenant } from '../context/TenantContext';
@@ -75,14 +76,9 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onLoginSuccess }
         // ignore
       }
 
-      const profileRes = await fetch('/api/auth/me', {
-        headers: { Authorization: `Bearer ${idToken}` },
-      });
-      const profileData = await profileRes.json().catch(() => ({}));
-      if (!profileRes.ok || !profileData?.success) {
-        await signOut(auth).catch(() => {});
-        throw new Error(profileData?.error || 'לחשבון אין הרשאת ניהול במערכת');
-      }
+      let profileData;
+      try { profileData=await readJson('/api/auth/me',{headers:{Authorization:`Bearer ${idToken}`}}); }
+      catch(error){if(isAccessDenied(error))await signOut(auth).catch(()=>{});throw error;}
       const profile = profileData.user || {};
       // /api/auth/me may bootstrap the configured Super Admin claim on first login.
       // Force-refresh once so Firestore Rules immediately see the new role.

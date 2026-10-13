@@ -1,5 +1,5 @@
 import {canonicalPhone} from '../utils/phone';
-import { CALENDAR_BLOCK_LABEL, blocksForDay, releaseDayBlocks } from '../utils/calendarBlocks';
+import { CALENDAR_BLOCK_LABEL, blocksForDay, releaseDayBlocks, isCalendarBlock } from '../utils/calendarBlocks';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   X,
@@ -55,6 +55,7 @@ interface AdminBookingModalProps {
   scheduleSettings?: ScheduleSettings;
   onAddAppointment: (appointment: Omit<Appointment, 'id'>) => Promise<void> | void;
   onReleaseBlockedAppointment?: (appointmentId: string) => Promise<void> | void;
+  onRequestCancelAppointment?: (appointment: Appointment) => void;
   initialDate?: string;
   initialSlot?: string;
   initialCustomerName?: string;
@@ -78,6 +79,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   scheduleSettings,
   onAddAppointment,
   onReleaseBlockedAppointment,
+  onRequestCancelAppointment,
   initialDate,
   initialSlot,
   initialCustomerName = '',
@@ -113,6 +115,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [showExistingAppointments, setShowExistingAppointments] = useState(false);
 
   // 90 days for admin booking calendar (allows booking up to 3 months forward)
   const days: DayInfo[] = useMemo(() => buildNextDays(90), []);
@@ -126,6 +129,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      setShowExistingAppointments(false);
       const now = new Date();
       setViewedYear(now.getFullYear());
       setViewedMonth(now.getMonth());
@@ -661,6 +665,19 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
         {/* Modal Scrollable Body */}
         <div ref={modalBodyRef} className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-4">
+          {onRequestCancelAppointment && <section className="rounded-2xl border border-rose-200 bg-rose-50 p-3 space-y-3">
+            <button type="button" aria-expanded={showExistingAppointments} onClick={()=>setShowExistingAppointments(!showExistingAppointments)} className="w-full text-right text-sm font-bold text-rose-800">ביטול תור קיים</button>
+            {showExistingAppointments && <>
+              <label className="block text-sm font-bold text-slate-700">תאריך התור
+                <input type="date" value={selectedDate||initialDate||todayIso} onChange={e=>setSelectedDate(e.target.value)} className="mt-1 w-full min-w-0 rounded-xl border border-slate-200 bg-white p-2 text-base" />
+              </label>
+              {appointments.filter(a=>a.status==='active'&&!a.archivedAt&&!isCalendarBlock(a)&&a.appointment_date===(selectedDate||initialDate||todayIso)).sort((a,b)=>a.start_time.localeCompare(b.start_time)).map(a=><div key={a.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3">
+                <div className="min-w-0 text-sm"><p className="font-bold text-slate-900">{a.customer_name}</p><p className="text-slate-600"><bdi dir="ltr">{a.start_time}–{a.end_time}</bdi> · {a.service_name}</p></div>
+                <button type="button" onClick={()=>onRequestCancelAppointment(a)} className="shrink-0 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">ביטול תור</button>
+              </div>)}
+              {!appointments.some(a=>a.status==='active'&&!a.archivedAt&&!isCalendarBlock(a)&&a.appointment_date===(selectedDate||initialDate||todayIso))&&<p className="text-sm text-slate-600">אין תורים פעילים ללקוחות בתאריך זה.</p>}
+            </>}
+          </section>}
           
           {/* STEP 1: בחירת טיפול או תפיסת שעה/חופש */}
           {step === 'treatment' && (

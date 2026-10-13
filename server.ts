@@ -1,3 +1,4 @@
+import { activityRange } from './server/activityRange';
 import sharp from 'sharp';
 import { normalizeAppointment, cancellationPatch, validateBookingDetails, scheduleSnapshot } from './server/appointmentAudit';
 import { DeliveryTracker, DELIVERY_JOBS } from './server/sms/deliveryTracker';
@@ -481,7 +482,10 @@ async function verifiedCustomer(req: Request): Promise<{phone:string;legacyIds:s
   const token=req.body?.customerAccess;
   if (typeof token!=='string' || !/^[a-f0-9]{64}$/.test(token)) return null;
   const snap=await doc(db,'tenants',req.tenantId!,'customer_access',hash(token)).get();
-  return snap.exists && snap.data()!.expiresAt>Date.now() ? {phone:snap.data()!.phone,legacyIds:snap.data()!.legacyIds || []} : null;
+  if(!snap.exists) return null;
+  const data=snap.data()!;
+  const valid=data.persistent===true || (typeof data.expiresAt==='number' && data.expiresAt>Date.now());
+  return valid && typeof data.phone==='string' ? {phone:data.phone,legacyIds:data.legacyIds || []} : null;
 }
 app.post('/api/customer/access/check',async(req,res)=>{
  try {const customer=await verifiedCustomer(req);res.json({success:true,verified:!!customer && customer.phone===phoneDigits(req.body.phone)});}
@@ -518,7 +522,7 @@ app.post('/api/customer/recovery/verify',async(req,res)=>{
       if(!d || d.used || d.expiresAt<Date.now() || d.attempts>=5 || d.challenge!==challenge) return false;
       if(hash(challenge+code)!==d.codeHash){tx.update(ref,{attempts:d.attempts+1});return false;}
       tx.update(ref,{used:true});
-      tx.create(doc(db,'tenants',tenantId,'customer_access',hash(token)),{phone,expiresAt:Date.now()+30*86400_000});
+      tx.create(doc(db,'tenants',tenantId,'customer_access',hash(token)),{phone,persistent:true,createdAt:new Date().toISOString()});
       return true;
     });
     if(!valid) throw new Error('הקוד שגוי או פג תוקף');
@@ -580,10 +584,15 @@ async function recentPasswordAuth(req: Request) {
   const token=await getAuth().verifyIdToken(raw,true);
   if(token.firebase?.sign_in_provider!=='password'||Date.now()/1000-token.auth_time>120) throw new Error('יש לאמת מחדש את סיסמת המנהל לפני האיפוס');
 }
-app.post('/api/admin/calendar/export',requireAdmin,async(req,res)=>{
+async function exportCalendar(req:Request,res:Response) {
   try {
-    await recentPasswordAuth(req);
-    const tenantId=req.tenantId!,tenant=await getTenantDoc(tenantId).get(),revision=Number(tenant.data()?.calendarRevision||0);
+    const forReset=req.path==='/api/super-admin/calendar/export';
+    if(forReset) await recentPasswordAuth(req);
+    const tenantId=forReset?String(req.body?.tenantId||'').trim():req.tenantId!;
+    if(!validId(tenantId)) throw new Error('יש לבחור עסק תקין');
+    const tenant=await getTenantDoc(tenantId).get();
+    if(!tenant.exists) throw new Error('העסק לא נמצא');
+    const revision=Number(tenant.data()?.calendarRevision||0);
     const rows=await getTenantAppointmentsRef(tenantId).get();
     const appointments:any[]=new Array(rows.docs.length);
     await runBounded(rows.docs.map((d,index)=>({d,index})),20,async({d,index})=>{
@@ -595,16 +604,19 @@ app.post('/api/admin/calendar/export',requireAdmin,async(req,res)=>{
     const latest=await getTenantDoc(tenantId).get();
     if(Number(latest.data()?.calendarRevision||0)!==revision) throw new Error('היומן השתנה במהלך הייצוא; יש לנסות שוב');
     const exportId=randomUUID(),backup={schemaVersion:43,tenantId,exportedAt:new Date().toISOString(),calendarGeneration:tenant.data()?.calendarGeneration||'initial',appointments,resetHistory:resetRecords.docs.map(d=>({id:d.id,...d.data()}))};
+    if(!forReset) return res.json({success:true,backup});
     const digest=hash(JSON.stringify(backup));
     await doc(db,'tenants',tenantId,'calendar_exports',exportId).create({revision,digest,uid:(req as any).adminPayload.uid,createdAt:Date.now(),used:false,count:appointments.length});
     res.json({success:true,exportId,digest,backup});
   }catch(err:any){res.status(400).json({success:false,error:err.message});}
-});
-app.post('/api/admin/calendar/reset',requireAdmin,async(req,res)=>{
+}
+app.post('/api/admin/calendar/export',requireAdmin,exportCalendar);
+app.post('/api/super-admin/calendar/export',requireSuperAdmin,exportCalendar);
+app.post('/api/super-admin/calendar/reset',requireSuperAdmin,async(req,res)=>{
   try {
     await recentPasswordAuth(req);
-    const tenantId=req.tenantId!,id=req.body.exportId;
-    if(!validId(id)||req.body.downloadConfirmed!==true) throw new Error('נדרש ייצוא גיבוי ואישור שמירתו');
+    const tenantId=String(req.body?.tenantId||'').trim(),id=req.body.exportId;
+    if(!validId(tenantId)||!validId(id)||req.body.downloadConfirmed!==true) throw new Error('נדרש לבחור עסק, לייצא גיבוי ולאשר את שמירתו');
     await db.runTransaction(async tx=>{
       const tenantRef=getTenantDoc(tenantId),exportRef=doc(db,'tenants',tenantId,'calendar_exports',id);
       const [tenant,exported]=await tx.getAll(tenantRef,exportRef),e=exported.data();
@@ -619,6 +631,28 @@ app.post('/api/admin/calendar/reset',requireAdmin,async(req,res)=>{
     invalidateTenantCaches(tenantId);res.json({success:true});
   }catch(err:any){res.status(400).json({success:false,error:err.message});}
 });
+async function exportTenantActivity(req:Request,res:Response) {
+  try {
+    const tenantId=req.tenantId!;
+    const {start,end,period}=activityRange(req.body);
+    const tenant=await getTenantDoc(tenantId).get();
+    if(!tenant.exists) throw new Error('העסק לא נמצא');
+    const rows=await getTenantAppointmentsRef(tenantId).where('appointment_date','>=',start).where('appointment_date','<',end).get();
+    const appointments:any[]=new Array(rows.docs.length);
+    await runBounded(rows.docs.map((d:any,index:number)=>({d,index})),20,async({d,index}:any)=>{
+      const audit=await d.ref.collection('audit').orderBy('at').get();
+      const {accessTokenHash,...data}=normalizeAppointment({...d.data(),id:d.id});
+      const tenantData=tenant.data()||{};
+      appointments[index]={...data,...((data.calendarGeneration||'initial')!==(tenantData.calendarGeneration||'initial')?{archivedAt:tenantData.calendarResetAt||'archived'}:{}),audit:audit.docs.map((e:any)=>({id:e.id,...e.data()}))};
+    });
+    res.json({success:true,tenant:{id:tenantId,name:tenant.data()?.name||tenantId},period,start,end,appointments});
+  }catch(err:any){
+    const quotaExceeded=noteFirestoreQuota(err,'super admin activity export');
+    res.status(quotaExceeded?503:400).json({success:false,error:quotaExceeded?'מכסת מסד הנתונים מלאה זמנית':'לא ניתן לייצא את דוח הפעילות'});
+  }
+}
+app.post('/api/admin/tenant-activity/export',requireAdmin,exportTenantActivity);
+app.post('/api/super-admin/tenant-activity/export',requireSuperAdmin,requireAdmin,exportTenantActivity);
 
 // Super Admin only: create a full local backup, then permanently clear test
 // appointment/customer history for one selected tenant. Business settings and
@@ -953,7 +987,7 @@ async function registerCustomer(req: Request, res: Response) {
       phone: String(req.body.phone).trim(),
       ...(current.created_at ? {} : { created_at: now }),
       last_login_at: now,
-      termsConsent: { accepted: true, version: '2026-10-01', acceptedAt: now },
+      termsConsent: { accepted: true, version: '2026-10-12-v1', acceptedAt: now },
       ...(signature ? { signatureDataUrl: signature } : {}),
     }, { merge: true });
     return res.json({ success: true });
@@ -979,7 +1013,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '44.0.0';
+const APP_VERSION = '49.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];

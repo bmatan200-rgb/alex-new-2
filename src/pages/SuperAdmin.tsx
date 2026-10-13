@@ -1,3 +1,4 @@
+import {CalendarExports} from '../components/CalendarExports';
 import React, { useState, useEffect, useMemo } from 'react';
 import { EmailAuthProvider, onAuthStateChanged, reauthenticateWithCredential } from 'firebase/auth';
 import { Link, useNavigate } from 'react-router-dom';
@@ -73,7 +74,7 @@ export const SuperAdminPage: React.FC = () => {
   const [loadError, setLoadError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'trial' | 'suspended'>('all');
-  const [activeTab, setActiveTab] = useState<'onboarding' | 'tenants' | 'system'>('tenants');
+  const [activeTab, setActiveTab] = useState<'onboarding' | 'tenants' | 'reports' | 'system'>('tenants');
 
   // Form State
   const [tenantId, setTenantId] = useState('');
@@ -128,6 +129,13 @@ export const SuperAdminPage: React.FC = () => {
   const [wipePassword,setWipePassword]=useState('');
   const [wipeError,setWipeError]=useState('');
   const [isWiping,setIsWiping]=useState(false);
+  const [tenantToCalendarReset,setTenantToCalendarReset]=useState<TenantInfo|null>(null);
+  const [calendarResetPassword,setCalendarResetPassword]=useState('');
+  const [calendarResetError,setCalendarResetError]=useState('');
+  const [calendarResetBackup,setCalendarResetBackup]=useState<any>(null);
+  const [calendarBackupSaved,setCalendarBackupSaved]=useState(false);
+  const [isCalendarResetting,setIsCalendarResetting]=useState(false);
+  const [activityTenantId,setActivityTenantId]=useState('');
 
   const REQUIRED_DELETE_PHONE = '0543111408';
   const isPhoneMatch = verificationPhone.trim().replace(/[-\s]/g, '') === REQUIRED_DELETE_PHONE;
@@ -154,6 +162,40 @@ export const SuperAdminPage: React.FC = () => {
       await fetchTenants();
     } catch(err:any) { setWipeError(err?.message||'הניקוי נכשל'); }
     finally { setIsWiping(false); }
+  };
+
+  const exportCalendarBeforeReset = async () => {
+    if(!tenantToCalendarReset||!auth.currentUser?.email||!calendarResetPassword||isCalendarResetting)return;
+    setIsCalendarResetting(true);setCalendarResetError('');setCalendarResetBackup(null);setCalendarBackupSaved(false);
+    try {
+      const user=auth.currentUser;
+      await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email!,calendarResetPassword));
+      const headers={'Content-Type':'application/json',Authorization:`Bearer ${await user.getIdToken(true)}`};
+      const response=await fetch('/api/super-admin/calendar/export',{method:'POST',headers,body:JSON.stringify({tenantId:tenantToCalendarReset.id})});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok||!data.success)throw new Error(data.error||'ייצוא הגיבוי נכשל');
+      const fileName=`${tenantToCalendarReset.id}-calendar-backup-${new Date().toISOString().slice(0,10)}.json`;
+      const url=URL.createObjectURL(new Blob([JSON.stringify(data.backup,null,2)],{type:'application/json'}));
+      const link=document.createElement('a');link.href=url;link.download=fileName;document.body.appendChild(link);link.click();link.remove();window.setTimeout(()=>URL.revokeObjectURL(url),60_000);
+      setCalendarResetBackup(data);
+    }catch(err:any){setCalendarResetError(err?.message||'ייצוא הגיבוי נכשל');}
+    finally{setIsCalendarResetting(false);}
+  };
+
+  const runCalendarReset = async () => {
+    if(!tenantToCalendarReset||!calendarResetBackup||!calendarBackupSaved||!auth.currentUser?.email||!calendarResetPassword||isCalendarResetting)return;
+    setIsCalendarResetting(true);setCalendarResetError('');
+    try {
+      const user=auth.currentUser;
+      await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email!,calendarResetPassword));
+      const headers={'Content-Type':'application/json',Authorization:`Bearer ${await user.getIdToken(true)}`};
+      const response=await fetch('/api/super-admin/calendar/reset',{method:'POST',headers,body:JSON.stringify({tenantId:tenantToCalendarReset.id,exportId:calendarResetBackup.exportId,digest:calendarResetBackup.digest,downloadConfirmed:true})});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok||!data.success)throw new Error(data.error||'איפוס היומן נכשל');
+      window.dispatchEvent(new Event('appointments-changed'));
+      setTenantToCalendarReset(null);setCalendarResetPassword('');setCalendarResetBackup(null);setCalendarBackupSaved(false);
+    }catch(err:any){setCalendarResetError(err?.message||'איפוס היומן נכשל');}
+    finally{setIsCalendarResetting(false);}
   };
 
   const handleConfirmDelete = async () => {
@@ -605,6 +647,14 @@ export const SuperAdminPage: React.FC = () => {
             >
               <Activity className="w-4 h-4" />
               <span>תשתיות ו-Middleware</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { if(!activityTenantId&&tenants.length)setActivityTenantId(tenants[0].id); setActiveTab('reports'); }}
+              className={`px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm flex items-center gap-2 transition cursor-pointer ${activeTab==='reports'?'bg-purple-600 text-white shadow-md shadow-purple-600/30':'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800'}`}
+            >
+              <Calendar className="w-4 h-4" />
+              <span>דוחות פעילות</span>
             </button>
           </div>
         </div>
@@ -1285,6 +1335,16 @@ export const SuperAdminPage: React.FC = () => {
 
                         <button
                           type="button"
+                          onClick={() => { setTenantToCalendarReset(t); setCalendarResetPassword(''); setCalendarResetError(''); setCalendarResetBackup(null); setCalendarBackupSaved(false); }}
+                          className="px-3 py-1.5 bg-red-950/70 hover:bg-red-900 text-red-200 border border-red-800 rounded-lg text-xs font-bold flex items-center gap-1 transition"
+                          title={`איפוס יומן והעברה לארכיון עבור ${t.name}`}
+                        >
+                          <Calendar className="w-3 h-3" />
+                          <span>איפוס יומן</span>
+                        </button>
+
+                        <button
+                          type="button"
                           onClick={() => navigate(`/admin/dashboard?tenant=${encodeURIComponent(tenantSlug)}`)}
                           className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold flex items-center gap-1 transition shadow-xs cursor-pointer active:scale-95"
                           title={`פתיחת אדמין של ${t.name}`}
@@ -1317,6 +1377,16 @@ export const SuperAdminPage: React.FC = () => {
             </div>
           </div>
         )}
+
+        {activeTab==='reports'&&<section className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-5" dir="rtl">
+          <h2 className="text-xl font-black text-white">דוחות פעילות</h2>
+          <label className="block text-sm font-bold text-slate-300">עסק
+            <select value={activityTenantId} onChange={e=>setActivityTenantId(e.target.value)} className="mt-2 w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white">
+              <option value="">בחר עסק</option>{tenants.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </label>
+          {activityTenantId&&<div key={activityTenantId}><CalendarExports tenantId={activityTenantId}/></div>}
+        </section>}
 
         {/* TAB 3: SYSTEM ARCHITECTURE */}
         {activeTab === 'system' && (
@@ -1355,6 +1425,26 @@ export const SuperAdminPage: React.FC = () => {
           </div>
         )}
       </main>
+
+      {tenantToCalendarReset&&(
+        <div className="fixed inset-0 z-[65] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg rounded-3xl border border-red-800 bg-slate-900 p-6 sm:p-8 text-right shadow-2xl space-y-5" dir="rtl">
+            <div className="flex items-center gap-3 border-b border-slate-700 pb-4"><div className="h-12 w-12 rounded-2xl bg-red-950 text-red-300 flex items-center justify-center"><Calendar className="h-6 w-6"/></div><div><h3 className="text-xl font-black text-white">איפוס יומן והעברה לארכיון</h3><p className="text-sm text-red-200">{tenantToCalendarReset.name}</p></div></div>
+            <p className="text-sm leading-6 text-slate-300">האיפוס מעביר את התורים הקיימים לארכיון ומשחרר את השעות ביומן. הרשומות והיסטוריית השינויים נשמרות; זו לא מחיקה לצמיתות.</p>
+            <label className="block text-sm font-bold text-slate-200">סיסמת הסופר־אדמין
+              <input type="password" autoComplete="current-password" value={calendarResetPassword} onChange={e=>setCalendarResetPassword(e.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-base text-white focus:border-red-500 focus:outline-none" />
+            </label>
+            {calendarResetError&&<div role="alert" className="rounded-xl border border-red-700 bg-red-950 p-3 text-sm text-red-200">{calendarResetError}</div>}
+            <button type="button" disabled={!calendarResetPassword||isCalendarResetting} onClick={exportCalendarBeforeReset} className="w-full rounded-xl bg-slate-700 px-4 py-3 text-sm font-bold text-white disabled:opacity-50">{isCalendarResetting?'מייצא…':'1. אימות סיסמה והורדת גיבוי מלא'}</button>
+            {calendarResetBackup&&<div className="space-y-3 rounded-xl border border-slate-700 p-4">
+              <p className="text-sm text-slate-200">הקובץ כולל {calendarResetBackup.backup.appointments.length} תורים והיסטוריית שינויים.</p>
+              <label className="flex items-start gap-2 text-sm text-slate-300"><input type="checkbox" checked={calendarBackupSaved} onChange={e=>setCalendarBackupSaved(e.target.checked)} className="mt-1"/>שמרתי את קובץ הגיבוי במכשיר</label>
+              <button type="button" disabled={!calendarBackupSaved||isCalendarResetting} onClick={runCalendarReset} className="w-full rounded-xl bg-red-700 hover:bg-red-600 px-4 py-3 text-sm font-black text-white disabled:opacity-50">{isCalendarResetting?'מאפס…':'2. איפוס היומן והעברה לארכיון'}</button>
+            </div>}
+            <button type="button" disabled={isCalendarResetting} onClick={()=>{setTenantToCalendarReset(null);setCalendarResetPassword('');setCalendarResetError('');setCalendarResetBackup(null);setCalendarBackupSaved(false);}} className="w-full rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-bold text-slate-200 disabled:opacity-50">ביטול</button>
+          </div>
+        </div>
+      )}
 
       {tenantToWipe && (
         <div className="fixed inset-0 z-[60] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">

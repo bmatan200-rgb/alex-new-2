@@ -100,6 +100,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         full_name: trimmedName,
         phone: phone.trim(),
         acceptedTerms: true,
+        acceptedTermsVersion: '2026-10-12-v1',
         signatureDataUrl: signatureDataUrl || '',
       }, tenantId, { auth: 'none' });
     } catch (err: any) {
@@ -206,7 +207,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <div className="flex items-center justify-between font-bold text-purple-950 border-b border-purple-200/60 pb-1">
                   <div className="flex items-center gap-1.5">
                     <FileText className="w-3.5 h-3.5 text-purple-700" />
-                    <span>תקנון ותנאי שימוש ללקוחות</span>
+                    <span>תנאי הפלטפורמה ותנאי העסק</span>
                   </div>
                   <button
                     type="button"
@@ -219,7 +220,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
 
                 <p className="text-[11px] text-slate-600 leading-snug">
-                  הפרטים משמשים לתיאום תורים ושליחת תזכורות SMS בלבד.
+                  הפרטים משמשים לתיאום התור, יצירת קשר ועדכונים תפעוליים. תנאי הפלטפורמה ותנאי העסק מופיעים במסמך.
                 </p>
               </div>
 

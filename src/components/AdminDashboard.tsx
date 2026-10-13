@@ -37,6 +37,7 @@ import {
   Users,
   LogOut,
   MessageCircle,
+  FileText,
 } from 'lucide-react';
 import { Appointment, ScheduleSettings, Service } from '../types';
 import {
@@ -57,6 +58,7 @@ import { useTenant } from '../context/TenantContext';
 import { WhatsApp2HourAlertBanner } from './WhatsApp2HourAlertBanner';
 import { SmsReminderModal } from './SmsReminderModal';
 import { ServiceDurationModal } from './ServiceDurationModal';
+import { TermsOfServiceModal } from './TermsOfServiceModal';
 import { CustomerDirectory } from './CustomerDirectory';
 import { AdminBookingModal } from './AdminBookingModal';
 import { upsertCustomerToFirestore } from '../lib/firebase';
@@ -149,6 +151,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
   const [whatsAppModalTab, setWhatsAppModalTab] = useState<'how_it_works' | 'templates' | 'automation'>('how_it_works');
   const [isDurationModalOpen, setIsDurationModalOpen] = useState(false);
+  const [isBusinessTermsOpen, setIsBusinessTermsOpen] = useState(false);
   const [cancellationReason,setCancellationReason]=useState('');
   const [cancellationBusy,setCancellationBusy]=useState(false);
   const [appointmentToCancel, setAppointmentToCancel] = useState<Appointment | null>(null);
@@ -625,6 +628,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           <button
             type="button"
+            onClick={() => setIsBusinessTermsOpen(true)}
+            className="px-3.5 py-2.5 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
+            title="עיון בהסכם השירות של בעל העסק"
+          >
+            <FileText className="w-4 h-4 text-purple-700" />
+            <span>הסכם שירות למנויים</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => openAdminBooking({ date: selectedDate, mode: 'block' })}
             className="px-4 py-2.5 bg-slate-950 hover:bg-black text-white border border-purple-500/40 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-[0_0_12px_rgba(168,85,247,0.25)] active:scale-95"
             title="תפיסת שעות פנויות או יום חופש מלא"
@@ -881,6 +894,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         }}
       />
 
+      <TermsOfServiceModal
+        isOpen={isBusinessTermsOpen}
+        onClose={() => setIsBusinessTermsOpen(false)}
+        audience="business"
+      />
+
       {adminTab==='calendar' && <CalendarInspector appointments={appointments} date={selectedDate} tenantId={tenant.id} onSelectDate={setSelectedDate} />}
 
       {/* Admin Interactive Client Booking Modal */}
@@ -892,6 +911,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         scheduleSettings={scheduleSettings}
         onAddAppointment={onAddAppointment}
         onReleaseBlockedAppointment={(appointmentId) => onCancelAppointment(appointmentId,'שחרור חסימת יומן')}
+        onRequestCancelAppointment={(appointment) => { setIsAdminBookingOpen(false); setCancellationReason(''); setAppointmentToCancel(appointment); }}
         initialDate={adminBookingPrefill.date}
         initialSlot={adminBookingPrefill.slot}
         initialCustomerName={adminBookingPrefill.customerName}

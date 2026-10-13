@@ -229,3 +229,29 @@ routeTest('Alex cleanup includes untagged legacy activity, preserves settings an
  assert.ok(!memory.values.has('appointments/untagged_trial'));assert.ok(!memory.values.has('customers/untagged_trial'));assert.ok(!memory.values.has('sms_logs/sms_alex_beauty_old'));
  assert.ok(memory.values.has('appointments/other_tenant_trial'));assert.ok(memory.values.has('settings/services_config'));assert.ok(memory.values.has(root+'/settings/config'));
 });
+
+routeTest('activity cleanup removes appointment/customer rows that survive the first delete pass before reporting completion',async()=>{
+ const id='cleanup_residuals',root='tenants/'+id,path=`/api/super-admin/tenants/${id}`;
+ memory.put(root,{status:'active',name:'Residuals'});
+ memory.put(root+'/appointments/leftover',{status:'cancelled'});
+ memory.put(root+'/customers/leftover',{full_name:'Leftover'});
+ memory.put('appointments/legacy_leftover',{tenantId:id,status:'cancelled'});
+ await api(path+'/status',{suspended:true},'super');
+ const exported=await api(path+'/export',{purpose:'cleanup'},'super');
+ const body={confirmation:id,downloadConfirmed:true,exportId:exported.exportId};
+ const remove=(db as any).recursiveDelete;
+ let skipAppointmentCollectionDelete=true;
+ try{
+  (db as any).recursiveDelete=async(ref:any)=>{
+   if(ref.path===root+'/appointments'&&skipAppointmentCollectionDelete){skipAppointmentCollectionDelete=false;return;}
+   return remove(ref);
+  };
+  const result=await api(path+'/activity/clear',body,'super');
+  assert.equal(result.success,true);
+ }finally{(db as any).recursiveDelete=remove;}
+ assert.ok(!memory.values.has(root+'/appointments/leftover'));
+ assert.ok(!memory.values.has(root+'/customers/leftover'));
+ assert.ok(!memory.values.has('appointments/legacy_leftover'));
+ assert.equal(memory.values.get(root).dataCleanupPending,false);
+ assert.ok(memory.values.get(root).lastDataCleanupAt);
+});

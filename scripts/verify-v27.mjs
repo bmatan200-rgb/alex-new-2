@@ -19,9 +19,10 @@ const manifestRoute = server.slice(server.indexOf("app.get('/manifest.json'"), s
 const serviceWorker = readFileSync(new URL('../public/service-worker.js', import.meta.url), 'utf8');
 const tenantContext = readFileSync(new URL('../src/context/TenantContext.tsx', import.meta.url), 'utf8');
 
-assert.equal(pkg.version, '53.0.0');
+assert.equal(pkg.version, '54.0.0');
 assert.match(tenantContext, /const isSuperAdminPath = location\.pathname === '\/super-admin'/, 'Super Admin must remain accessible while a tenant is suspended');
 assert.match(tenantContext, /if\(loadError && !isSuperAdminPath\)/, 'tenant load errors must not block the Super Admin route');
+assert.match(server, /readCleanupRemainders/, 'activity cleanup must verify appointment/customer deletion before success');
 assert.match(server, /persistent===true/, 'customer access sessions must persist after phone verification');
 assert.match(server, /persistent:true,createdAt:new Date\(\)\.toISOString\(\)/, 'new customer access records must not expire');
 assert.match(server, /app\.post\('\/api\/super-admin\/calendar\/export',requireSuperAdmin/, 'calendar export must be Super Admin only');
@@ -113,5 +114,5 @@ assert.doesNotMatch(torFlow, /executeBookingSubmission\(cleanName, cleanPhone, i
 
 assert.match(readFileSync(new URL('../src/components/Header.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
 assert.match(readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'), /getBusinessAdminIconDetails\(tenant\.adminIcon/);
-console.log('V53 source verification passed');
+console.log('V54 source verification passed');
 assert.doesNotMatch(server, /app\.post\('\/api\/super-admin\/(calendar\/reset|tenant-data-wipe\/execute)'/);

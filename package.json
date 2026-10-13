@@ -1,7 +1,7 @@
 {
   "name": "alex-multi-tenant",
   "private": true,
-  "version": "53.0.0",
+  "version": "54.0.0",
   "type": "module",
   "scripts": {
     "dev": "node --import tsx server.ts",

@@ -784,6 +784,27 @@ app.post('/api/super-admin/tenants/:tenantId/activity/clear',requireSuperAdmin,a
     // source rows cannot be imported again on a later server restart.
     const legacy=(await legacyBusinessRows(tenantId)).filter(d=>d.ref.path.split('/')[0]!=='settings');
     await runBounded(legacy,3,async d=>{await db.recursiveDelete(d.ref);});
+    // Verify the exact tenant and legacy appointment/customer sources that the
+    // business export reads. Never report a successful cleanup while rows remain.
+    const readCleanupRemainders=async()=>{
+      const [appointments,customers,legacyRows]=await Promise.all([
+        ref.collection('appointments').get(),
+        ref.collection('customers').get(),
+        legacyBusinessRows(tenantId),
+      ]);
+      return [
+        ...appointments.docs,
+        ...customers.docs,
+        ...legacyRows.filter(d=>['appointments','customers'].includes(d.ref.path.split('/')[0])),
+      ];
+    };
+    for(let pass=0;pass<3;pass++){
+      const remaining=await readCleanupRemainders();
+      if(!remaining.length)break;
+      await runBounded(remaining,3,async d=>{await db.recursiveDelete(d.ref);});
+    }
+    const remaining=await readCleanupRemainders();
+    if(remaining.length)throw new Error(`הניקוי לא הושלם: נותרו ${remaining.length} רשומות תורים או לקוחות; העסק יישאר מושבת`);
     const schedules=await collection(db,SCHEDULE_COLLECTION).where('tenantId','==',tenantId).get();
     await runBounded(schedules.docs,3,async d=>{await d.ref.update({enabled:false,nextRunAt:null,processingToken:null,revision:randomUUID(),attempts:0,lastRun:null,lastAttention:null,attention:false,lastCompletedRunDate:null});});
     await db.runTransaction(async tx=>{
@@ -1059,7 +1080,7 @@ type AdminPayload = {
 // carries role=super_admin, the server will never grant global access unless the
 // authenticated Firebase email is the canonical account below.
 const PRIMARY_SUPER_ADMIN_EMAIL = 'bmatan200@gmail.com';
-const APP_VERSION = '53.0.0';
+const APP_VERSION = '54.0.0';
 
 function getSuperAdminEmails() {
   return [PRIMARY_SUPER_ADMIN_EMAIL];

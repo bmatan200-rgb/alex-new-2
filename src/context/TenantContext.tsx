@@ -41,6 +41,9 @@ const TenantContext = createContext<TenantContextValue | undefined>(undefined);
 
 export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const location = useLocation();
+  // The platform control panel must remain available even when the primary
+  // business is suspended; it is the place where a Super Admin can reactivate it.
+  const isSuperAdminPath = location.pathname === '/super-admin' || location.pathname.startsWith('/super-admin/');
 
   // Helper to extract ?tenant=... directly from location or window
   const getActiveQueryTenant = useCallback(() => {
@@ -103,7 +106,16 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     } catch(err:any) {if(current===generation.current)setLoadError(err.message);}
     finally {if(current===generation.current)setLoading(false);}
   },[getActiveQueryTenant]);
-  useEffect(()=>{void fetchTenantData();return ()=>{generation.current++;};},[fetchTenantData]);
+  useEffect(()=>{
+    if (isSuperAdminPath) {
+      generation.current++;
+      setLoadError('');
+      setLoading(false);
+      return;
+    }
+    void fetchTenantData();
+    return ()=>{generation.current++;};
+  },[fetchTenantData,isSuperAdminPath]);
 
   // Apply tenant branding colors dynamically to CSS custom variables
   useEffect(() => {
@@ -153,8 +165,8 @@ export const TenantProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   };
 
   const effectiveTenantId = tenant.id;
-  if(loading) return <TenantLoading />;
-  if(loadError) return <div dir="rtl" className="p-12 text-center"><p>{loadError}</p><button onClick={fetchTenantData}>ניסיון נוסף</button></div>;
+  if(loading && !isSuperAdminPath) return <TenantLoading />;
+  if(loadError && !isSuperAdminPath) return <div dir="rtl" className="p-12 text-center"><p>{loadError}</p><button onClick={fetchTenantData}>ניסיון נוסף</button></div>;
 
   return (
     <TenantContext.Provider
